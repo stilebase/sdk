@@ -1,0 +1,445 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { type GateOptions, createGate } from "../src/core.js";
+import { passToken } from "../src/signing.js";
+import { API, BROWSER, CHROME_UA, DOMAIN, FakeStilebase, GATEWAY_ID, GPTBOT, KEY, NOW, REQUIRED, liveConfig, request } from "./fake-stilebase.js";
+
+let stilebase: FakeStilebase;
+let clock: number;
+let errors: Error[];
+
+function gate(options: GateOptions = {}) {
+  return createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, now: () => clock, onError: (e) => errors.push(e), ...options }, "test");
+}
+
+/** Lets background reports finish. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+beforeEach(() => {
+  stilebase = new FakeStilebase();
+  clock = NOW;
+  errors = [];
+});
+
+describe("people and everything that isn't an agent", () => {
+  it("pass without asking Stilebase about them (the settings and address lists load once)", async () => {
+    const g = gate();
+    expect(await g.check(request("/listings", BROWSER))).toEqual({ action: "pass" });
+    expect(await g.check(request("/listings", BROWSER))).toEqual({ action: "pass" });
+    expect(stilebase.calls.map((c) => c.path)).toEqual([`/v1/x402/sites/${GATEWAY_ID}/config`, "/v1/x402/agent-ranges"]);
+  });
+
+  it("pass when the gate has no key, and it says so", async () => {
+    const keyless = createGate({ key: "", fetch: stilebase.fetch, onError: (e) => errors.push(e) });
+    expect(await keyless.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    expect(errors[0]?.message).toMatch(/STILEBASE_KEY isn't set/);
+    expect(createGate({ key: "sbsec_old", onError: (e) => errors.push(e) })).toBeTruthy();
+    expect(errors[1]?.message).toMatch(/isn't a site key/);
+    expect(stilebase.calls).toHaveLength(0);
+  });
+});
+
+describe("settings", () => {
+  it("are fetched signed, saying which package this is", async () => {
+    await gate().check(request("/", BROWSER));
+    const [call] = stilebase.calls;
+    expect(call?.headers.get("stilebase-client")).toMatch(/^@stilebase\/sdk\/\d+\.\d+\.\d+ gate\/test$/);
+    expect(call?.headers.get("stilebase-timestamp")).toBe(String(NOW / 1000));
+    expect(call?.headers.get("stilebase-signature")).toMatch(/^v2=[0-9a-f]{64}$/);
+  });
+
+  it("a refused key lets everyone through", async () => {
+    stilebase.config = { status: 401 };
+    expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    expect(errors[0]?.message).toMatch(/refused the site key/);
+  });
+
+  it("when Stilebase is down at start, requests don't each wait for it", async () => {
+    stilebase.config = new Error("connect ECONNREFUSED");
+    const g = gate();
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    clock += 10_000;
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    expect(stilebase.to(`/v1/x402/sites/${GATEWAY_ID}/config`)).toHaveLength(1);
+    stilebase.config = { status: 200, body: liveConfig() };
+    clock += 30_000; // tried again in the background
+    await g.check(request("/listings", GPTBOT));
+    await settled();
+    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
+  });
+
+  it("are refreshed in the background, keeping the last good ones on failure", async () => {
+    const g = gate();
+    await g.check(request("/", BROWSER));
+    clock += 299_000;
+    await g.check(request("/", BROWSER));
+    expect(stilebase.to(`/v1/x402/sites/${GATEWAY_ID}/config`)).toHaveLength(1);
+    stilebase.config = { status: 500 };
+    clock += 2_000;
+    await g.check(request("/", BROWSER));
+    await settled();
+    expect(stilebase.to(`/v1/x402/sites/${GATEWAY_ID}/config`)).toHaveLength(2);
+    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond"); // still gated
+  });
+
+  it("serve the verification file until the domain is proven, even before it's live", async () => {
+    stilebase.config = {
+      status: 200,
+      body: liveConfig({ gateway: { id: GATEWAY_ID, domain: DOMAIN, live: false, reason: "domain_not_verified" }, verification: { path: "/.well-known/stilebase-verify.txt", value: "stilebase-verify=tok" } }),
+    };
+    const g = gate();
+    expect(await g.check(request("/.well-known/stilebase-verify.txt"))).toEqual({
+      action: "respond",
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      body: "stilebase-verify=tok\n",
+    });
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" }); // not live: nobody is asked
+    expect(stilebase.to("/v1/x402/requirements")).toHaveLength(0);
+  });
+});
+
+describe("AI agents", () => {
+  it("get the 402 with Stilebase's requirement, and the visit is reported", async () => {
+    const decision = await gate().check(request("/listings?city=Haifa", GPTBOT, { ip: "198.51.100.4" }));
+    expect(decision.action).toBe("respond");
+    if (decision.action !== "respond") return;
+    expect(decision.status).toBe(402);
+    expect(JSON.parse(atob(decision.headers["PAYMENT-REQUIRED"]!))).toEqual(REQUIRED);
+    expect(JSON.parse(decision.body)).toEqual(REQUIRED);
+    const [asked] = stilebase.to("/v1/x402/requirements");
+    expect(Object.fromEntries(asked!.query)).toEqual({ host: DOMAIN, url: `https://${DOMAIN}/listings?city=Haifa`, ua: GPTBOT["user-agent"], ip: "198.51.100.4" });
+    await settled();
+    const [visit] = stilebase.to("/v1/x402/visits");
+    expect(visit?.body).toEqual({ host: DOMAIN, request: { method: "GET", path: "/listings?city=Haifa" }, agent: { ip: "198.51.100.4", user_agent: GPTBOT["user-agent"], headers: {} } });
+    expect(visit?.headers.get("stilebase-signature")).toMatch(/^v2=/);
+  });
+
+  it("with a free pass read for free, reported as one", async () => {
+    stilebase.requirements = () => ({ status: 204, headers: { "cache-control": "public, max-age=300" } });
+    expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    await settled();
+    expect(stilebase.to("/v1/x402/visits")[0]?.body).toMatchObject({ free_pass: true });
+  });
+
+  it("are asked once per requirement for five minutes", async () => {
+    const g = gate();
+    await g.check(request("/listings", GPTBOT));
+    await g.check(request("/listings", GPTBOT));
+    expect(stilebase.to("/v1/x402/requirements")).toHaveLength(1);
+    clock += 301_000;
+    await g.check(request("/listings", GPTBOT));
+    expect(stilebase.to("/v1/x402/requirements")).toHaveLength(2);
+  });
+
+  it("pass when Stilebase has no live gateway or can't be reached", async () => {
+    stilebase.requirements = () => ({ status: 404 });
+    expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    stilebase.requirements = () => new Error("timeout");
+    expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("only on the paths you choose", async () => {
+    const g = gate({ paths: ["/listings/"] });
+    expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
+    expect((await g.check(request("/listings/2", GPTBOT))).action).toBe("respond");
+    const byTest = gate({ paths: (p) => p.endsWith(".json") });
+    expect((await byTest.check(request("/feed.json", GPTBOT))).action).toBe("respond");
+  });
+
+  it("in test mode, only Stilebase's test agent is asked", async () => {
+    const g = gate({ mode: "test" });
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    expect(await g.check(request("/listings", { "user-agent": "curl/8.4.0" }))).toEqual({ action: "pass" });
+    expect((await g.check(request("/listings", { "user-agent": "Mozilla/5.0 (compatible; StilebaseCheck/1.0)" }))).action).toBe("respond");
+  });
+});
+
+describe("hidden agents and scripts", () => {
+  it("scripts by their default user agent pay, unless let through", async () => {
+    expect((await gate().check(request("/listings", { "user-agent": "curl/8.4.0" }))).action).toBe("respond");
+    expect((await gate().check(request("/listings", {}))).action).toBe("respond"); // no user agent at all
+    expect(await gate({ catchHttpClients: false }).check(request("/listings", { "user-agent": "curl/8.4.0" }))).toEqual({ action: "pass" });
+  });
+
+  it("agents from their operators' addresses or signing with Web Bot Auth pay, behind a browser's user agent", async () => {
+    expect((await gate().check(request("/listings", BROWSER, { ip: "20.15.240.70" }))).action).toBe("respond");
+    expect((await gate().check(request("/listings", { ...BROWSER, "signature-agent": '"https://chatgpt.com"' }))).action).toBe("respond");
+    expect(await gate().check(request("/listings", BROWSER, { ip: "20.15.240.80" }))).toEqual({ action: "pass" });
+    expect(await gate({ catchHiddenAgents: false }).check(request("/listings", BROWSER, { ip: "20.15.240.70" }))).toEqual({ action: "pass" });
+    expect(stilebase.to("/v1/x402/agent-ranges").length).toBeGreaterThan(0);
+  });
+});
+
+describe("browser-looking requests that don't act like a browser", () => {
+  const SCRIPT = { "user-agent": CHROME_UA, accept: "*/*" };
+
+  it("are only counted while strict detection is off", async () => {
+    stilebase.requirements = (q) => (q.get("suspect") === "true" ? { status: 204 } : { status: 200, body: REQUIRED });
+    expect(await gate().check(request("/listings", SCRIPT))).toEqual({ action: "pass" });
+    await settled();
+    expect(stilebase.to("/v1/x402/visits")[0]?.body).toMatchObject({ signals: ["no_accept_language", "no_sec_fetch", "chrome_without_client_hints", "accept_any"] });
+  });
+
+  it("get a page that lets real browsers through under strict detection", async () => {
+    const decision = await gate().check(request("/listings", { ...SCRIPT, accept: "text/html" }));
+    expect(decision.action === "respond" && decision.status).toBe(402);
+    if (decision.action !== "respond") return;
+    expect(decision.headers["content-type"]).toMatch(/text\/html/);
+    expect(decision.body).toContain("stilebase_pass=");
+    expect(decision.headers["PAYMENT-REQUIRED"]).toBeTruthy();
+  });
+
+  it("with the browser check's cookie pass without asking Stilebase", async () => {
+    const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
+    const g = gate();
+    expect(await g.check(request("/listings", { ...SCRIPT, cookie: `a=1; stilebase_pass=${token}` }))).toEqual({ action: "pass" });
+    expect(stilebase.to("/v1/x402/requirements")).toHaveLength(0);
+    const forged = `${NOW / 1000}.${"0".repeat(32)}`;
+    expect((await g.check(request("/listings", { ...SCRIPT, cookie: `stilebase_pass=${forged}` }))).action).toBe("respond");
+  });
+
+  it("are checked when the app sees plain http (a proxy ended TLS), unless the site really is http, or checks are off", async () => {
+    const overHttp = request("/listings", SCRIPT, { url: `http://${DOMAIN}/listings` });
+    expect((await gate().check(overHttp)).action).toBe("respond");
+    expect(await gate({ assumeHttps: false }).check(overHttp)).toEqual({ action: "pass" });
+    expect(await gate({ checkBrowsers: false }).check(request("/listings", SCRIPT))).toEqual({ action: "pass" });
+  });
+});
+
+describe("payments", () => {
+  const PAID = { ...GPTBOT, "payment-signature": "eyJ4NDAyVmVyc2lvbiI6Mn0=" };
+
+  it("settled through Stilebase let the request through, with PAYMENT-RESPONSE", async () => {
+    expect(await gate().check(request("/listings/2", PAID, { ip: "198.51.100.4" }))).toEqual({ action: "pass", paymentResponse: "eyJzdWNjZXNzIjp0cnVlfQ==" });
+    const [settle] = stilebase.to("/v1/x402/settle");
+    expect(settle?.body).toEqual({
+      host: DOMAIN,
+      payment: PAID["payment-signature"],
+      request: { method: "GET", path: "/listings/2" },
+      agent: { ip: "198.51.100.4", user_agent: GPTBOT["user-agent"], headers: {} },
+    });
+  });
+
+  it("x402 v1's X-PAYMENT header too", async () => {
+    await gate().check(request("/listings/2", { ...GPTBOT, "x-payment": "v1payment" }));
+    expect(stilebase.to("/v1/x402/settle")[0]?.body).toMatchObject({ payment: "v1payment" });
+  });
+
+  it("refused get the 402 again, with the reason", async () => {
+    stilebase.settle = { status: 200, body: { success: false, errorReason: "invalid_exact_evm_payload_signature", header: "eyJmYWlsIjp0cnVlfQ==" } };
+    const decision = await gate().check(request("/listings/2", PAID));
+    expect(decision.action === "respond" && decision.status).toBe(402);
+    if (decision.action !== "respond") return;
+    expect(JSON.parse(decision.body).error).toBe("invalid_exact_evm_payload_signature");
+    expect(decision.headers["PAYMENT-RESPONSE"]).toBe("eyJmYWlsIjp0cnVlfQ==");
+  });
+
+  it("that can't be settled get 503: nothing was charged and nothing is given away", async () => {
+    for (const answer of [{ status: 502 }, new Error("timeout")]) {
+      stilebase.settle = answer;
+      const decision = await gate().check(request("/listings/2", PAID));
+      expect(decision).toMatchObject({ action: "respond", status: 503, headers: { "retry-after": "5" } });
+    }
+  });
+});
+
+describe("never breaking the site", () => {
+  it("a failing error handler still lets the request through", async () => {
+    stilebase.config = { status: 401 };
+    const g = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => { throw new Error("boom"); } });
+    expect(await g.check(request("/", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("an agent can't dodge the gate with a URL the parser rejects (it's read on the gateway's domain)", async () => {
+    for (const url of ["not a url", "https://999.999.999.999/listings/1", "https://example.com:99999/listings/1", "https://[::::]/x"]) {
+      expect((await gate().check({ ...request("/", GPTBOT), url })).action, url).toBe("respond");
+    }
+  });
+
+  it("warns on the console once in a while by default", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stilebase.config = { status: 401 };
+    const g = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, now: () => clock });
+    await g.check(request("/", GPTBOT));
+    clock += 31_000;
+    await g.check(request("/", GPTBOT));
+    await settled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
+
+describe("the review's cases (cycle 1)", () => {
+  it("cuts an over-long URL or user agent to Stilebase's limits, so its call can't be refused and serve the page", async () => {
+    const decision = await gate().check(request(`/a?pad=${"x".repeat(5000)}`, { "user-agent": `GPTBot/1.2 ${"y".repeat(3000)}` }));
+    expect(decision.action).toBe("respond");
+    const [asked] = stilebase.to("/v1/x402/requirements");
+    expect([asked!.query.get("url")!.length, asked!.query.get("ua")!.length]).toEqual([2048, 512]);
+    await settled();
+    const visit = stilebase.to("/v1/x402/visits")[0]?.body as { request: { path: string }; agent: { user_agent: string } };
+    expect([visit.request.path.length, visit.agent.user_agent.length]).toEqual([2048, 512]);
+  });
+
+  it("takes one path prefix as a string", async () => {
+    const g = gate({ paths: "/premium/" });
+    expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
+    expect((await g.check(request("/premium/x", GPTBOT))).action).toBe("respond");
+  });
+
+  it("doesn't run on settings of a version it can't read", async () => {
+    stilebase.config = { status: 200, body: liveConfig({ config_version: 2 }) };
+    expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    expect(errors[0]?.message).toMatch(/can't read/);
+  });
+});
+
+describe("the review's cases (cycle 2)", () => {
+  it("matches `paths` as routers do: any letter case, percent-decoded", async () => {
+    const g = gate({ paths: ["/listings/"] });
+    for (const path of ["/LISTINGS/2", "/%6Cistings/2", "/Listings/2"]) expect((await g.check(request(path, GPTBOT))).action, path).toBe("respond");
+    expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("asks scripts to pay from loopback too (a same-host proxy makes every visitor look local); owners exempt health checks", async () => {
+    expect((await gate().check(request("/", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).action).toBe("respond");
+    expect(await gate({ paths: ["/listings/"] }).check(request("/healthz", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).toEqual({ action: "pass" });
+    expect(await gate({ catchHttpClients: false }).check(request("/", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).toEqual({ action: "pass" });
+  });
+
+  it("takes a Fetch Request as it is", async () => {
+    const decision = await gate().check(new Request(`https://${DOMAIN}/listings`, { headers: GPTBOT }));
+    expect(decision.action).toBe("respond");
+  });
+
+  it("refreshes settings that don't say how often (every 5 minutes)", async () => {
+    const config = liveConfig() as unknown as Record<string, unknown>;
+    delete config.refresh_seconds;
+    stilebase.config = { status: 200, body: config };
+    const g = gate();
+    await g.check(request("/", BROWSER));
+    clock += 301_000;
+    await g.check(request("/", BROWSER));
+    await settled();
+    expect(stilebase.to(`/v1/x402/sites/${GATEWAY_ID}/config`)).toHaveLength(2);
+  });
+
+  it("treats an empty STILEBASE_API_URL as unset", async () => {
+    const saved = process.env.STILEBASE_API_URL;
+    process.env.STILEBASE_API_URL = "";
+    const seen: string[] = [];
+    try {
+      const g = createGate({ key: KEY, fetch: (input, init) => (seen.push(String(input)), stilebase.fetch(input, init)), onError: () => undefined });
+      await g.check(request("/", BROWSER));
+    } finally {
+      if (saved === undefined) delete process.env.STILEBASE_API_URL;
+      else process.env.STILEBASE_API_URL = saved;
+    }
+    expect(seen[0]?.startsWith("https://stilebase.com/v1/x402/sites/")).toBe(true);
+  });
+});
+
+describe("the review's cases (cycle 3)", () => {
+  it("names the page by the gateway's domain over https, not the Host header (a proxy's app:3000)", async () => {
+    await gate().check({ ...request("/listings/1?a=b", GPTBOT), url: "http://app:3000/listings/1?a=b" });
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings/1?a=b`);
+    await gate().check({ ...request("/", GPTBOT), url: "//evil.example/x" });
+    expect(stilebase.to("/v1/x402/requirements")[1]?.query.get("url")).toBe(`https://${DOMAIN}/evil.example/x`);
+  });
+
+  it("keeps the price lookup's URL under proxies' 8 KB limit however the request is padded", async () => {
+    await gate().check(request(`/listings/1?${"/".repeat(2048)}`, { "user-agent": `GPTBot/1.2 ${"é".repeat(512)}` }));
+    const [asked] = stilebase.to("/v1/x402/requirements");
+    expect(new URLSearchParams(asked!.query).toString().length).toBeLessThan(6000);
+  });
+
+  it("answers with the last price when Stilebase refuses a lookup, instead of serving the page", async () => {
+    const g = gate();
+    await g.check(request("/listings/1", GPTBOT));
+    stilebase.requirements = () => ({ status: 414 });
+    const decision = await g.check(request("/listings/2", GPTBOT));
+    expect(decision.action === "respond" && decision.status).toBe(402);
+    if (decision.action !== "respond") return;
+    expect(JSON.parse(decision.body).resource.url).toBe(`https://${DOMAIN}/listings/2`);
+    // With no price known yet, a refused lookup still never breaks the site.
+    expect(await gate().check(request("/listings/2", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("decodes each run of escapes, so a malformed one doesn't hide the rest from `paths`", async () => {
+    expect((await gate({ paths: ["/listings/"] }).check(request("/%6Cistings/1%E0", GPTBOT))).action).toBe("respond");
+  });
+
+  it("rejects an address range with an empty length instead of matching everyone", async () => {
+    const { parseNetwork } = await import("../src/detect.js");
+    expect(parseNetwork("20.15.240.64/")).toBeNull();
+    expect(parseNetwork("20.15.240.64/33")).toBeNull();
+  });
+});
+
+describe("the review's cases (cycle 4)", () => {
+  it("resolves dot segments, so `..` (or ..%2F) can't step around a prefix", async () => {
+    const g = gate({ paths: ["/listings/"] });
+    for (const path of ["/public/..%2Flistings/1.html", "/x/%2e%2e/listings/1", "/public/..%2F..%2Flistings/1"]) {
+      expect((await g.check(request(path, GPTBOT))).action, path).toBe("respond");
+    }
+    expect(await g.check(request("/listings/../about", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("hands a `paths` function the path as routers see it", async () => {
+    const seen: string[] = [];
+    const g = gate({ paths: (p) => (seen.push(p), p.endsWith(".json")) });
+    expect((await g.check(request("/data.js%6Fn", GPTBOT))).action).toBe("respond");
+    expect(seen).toEqual(["/data.json"]);
+  });
+
+  it("measures the lookup as it's sent (form encoding), so parentheses can't blow the budget", async () => {
+    await gate().check(request(`/a?${"(".repeat(2040)}`, { "user-agent": `GPTBot/1.2 ${"(".repeat(500)}` }));
+    const [asked] = stilebase.to("/v1/x402/requirements");
+    expect(new URLSearchParams(asked!.query).toString().length).toBeLessThan(6000);
+  });
+
+  it("calls a given fetch as a plain function (a fetch bound to the gate throws on Workers)", async () => {
+    let self: unknown = "unset";
+    const g = createGate({
+      key: KEY,
+      apiUrl: API,
+      onError: () => undefined,
+      fetch: function (this: unknown, input, init) {
+        self = this; // eslint-disable-line @typescript-eslint/no-this-alias -- what the test checks
+        return stilebase.fetch(input, init);
+      },
+    });
+    await g.check(request("/", BROWSER));
+    expect(self).toBeUndefined();
+  });
+});
+
+describe("the review's cases (cycle 5)", () => {
+  it("counts an over-long address as none, so it can't bloat the price lookup", async () => {
+    await gate().check(request("/listings", GPTBOT, { ip: `198.51.100.4, ${"1.1.1.1, ".repeat(500)}` }));
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("");
+  });
+});
+
+describe("the review's cases (cycle 7)", () => {
+  it("keeps asking agents to pay when a refreshed key is refused (rotated, or the clock is off): only payments fail", async () => {
+    const g = gate();
+    await g.check(request("/listings", GPTBOT));
+    stilebase.config = { status: 401 };
+    clock += 301_000;
+    await g.check(request("/", BROWSER)); // the refresh is refused
+    await settled();
+    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond"); // still the 402, never a free read
+    expect(errors.some((e) => /refused the site key/.test(e.message))).toBe(true);
+  });
+
+  it("stops asking once the gateway is gone (404)", async () => {
+    const g = gate();
+    await g.check(request("/listings", GPTBOT));
+    stilebase.config = { status: 404 };
+    clock += 301_000;
+    await g.check(request("/", BROWSER));
+    await settled();
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+  });
+});

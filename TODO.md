@@ -32,3 +32,26 @@ What's known and not yet done, each with why it waits. Findings from code review
   common stacks.
 - **More languages**, each on `conformance/` and [SPEC.md](SPEC.md): Go (`net/http`, Gin, Echo, Caddy and Traefik
   plugins), PHP (Laravel, Symfony), Ruby (Rack), Java/Kotlin, .NET, Rust. *Waits:* demand decides the order.
+- **A refused price lookup reuses the last price**, which can be another agent's per-agent price; that payment then
+  fails settlement and gets the 402 again. *Waits:* it only happens when a proxy refuses a lookup, which cutting the
+  lookup to Stilebase's limits now avoids.
+- **The price lookup cuts the user agent by encoded length, settle by characters.** A user agent full of non-ASCII
+  text before the agent's name can make the two see different agents, so different prices. Cut both the same way.
+  *Waits:* it needs a contrived user agent, and the agent only gets the 402 again.
+- **Cutting a user agent to 512 characters could split an emoji** where a runtime decodes headers as UTF-8. *Waits:*
+  the Fetch API, Node and Python decode headers as Latin-1, so it can't happen there. Cut by code points anyway.
+- **The JS and Python SDKs name a `/a/../b` page differently** (JS resolves dot segments through `new URL`). Add a
+  conformance case. *Waits:* only the page's name in statistics differs, not whether it's gated.
+- **Paths that resolve to the root become `//` for `paths` matching** (`/a/..`). A `paths` function checking
+  `p == "/"` would miss them. *Waits:* prefixes, the documented use, are unaffected.
+- **Test mode is invisible on the gateway page.** A gate in `mode: "test"` passes Stilebase's **Test now**, and the
+  page then says agents get a 402 while real ones read free. Report the mode in `Stilebase-Client`. *Waits:* it goes
+  with the first release, together with Stilebase showing it.
+
+## @stilebase/sdk
+
+- **Next.js middleware on Vercel's Edge runtime must answer within 25 seconds**, and a settlement can take longer.
+  The README should recommend the Node.js runtime for middleware (Next 15.5+), or the gate in a route handler.
+  *Waits:* the README change goes with the first release.
+- **An end-to-end test against a running Stilebase API.** *Waits:* the Python SDK has one in Stilebase's server
+  suite, and both SDKs pass the same conformance cases.

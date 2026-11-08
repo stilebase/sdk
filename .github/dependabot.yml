@@ -8,3 +8,10 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /sdk-js
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        dependency-type: development
