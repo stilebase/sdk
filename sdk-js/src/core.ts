@@ -240,7 +240,7 @@ class SiteGate implements Gate {
         throw new Error(`Stilebase answered the settlement ${answer.status}`);
       }
       const body: unknown = await answer.json();
-      if (!isRecord(body)) throw new Error("Stilebase's settlement answer isn't a JSON object");
+      if (!isRecord(body) || typeof body.success !== "boolean") throw new Error("Stilebase's settlement answer has no boolean success");
       settlement = body as typeof settlement;
     } catch (error) {
       this.report(error);

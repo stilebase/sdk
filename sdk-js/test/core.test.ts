@@ -236,7 +236,7 @@ describe("payments", () => {
   });
 
   it("that Stilebase doesn't confirm get 503, and nothing is given away", async () => {
-    for (const answer of [{ status: 502 }, new Error("timeout"), { status: 200, body: null }, { status: 200, body: [] }, { status: 200, body: 1 }]) {
+    for (const answer of [{ status: 502 }, new Error("timeout"), { status: 200, body: null }, { status: 200, body: [] }, { status: 200, body: 1 }, { status: 200, body: {} }, { status: 200, body: { success: "false" } }]) {
       stilebase.settle = answer;
       const decision = await gate().check(request("/listings/2", PAID));
       expect(decision).toMatchObject({ action: "respond", status: 503, headers: { "retry-after": "5" } });
