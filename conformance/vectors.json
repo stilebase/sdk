@@ -1,0 +1,365 @@
+{
+  "about": "Shared test vectors (README.md): Stilebase's server, its Cloudflare Worker, @stilebase/sdk, stilebase-sdk and any other gate must agree with every case here. Keys and secrets are made up, derived from the server test suite's signing key.",
+  "signing": [
+    {
+      "secret": "sbsec_test_secret",
+      "method": "POST",
+      "path": "/v1/x402/settle",
+      "body": "{\"host\":\"api.example.com\"}",
+      "timestamp": 1792756800,
+      "canonical": "v2\n1792756800\nPOST\n/v1/x402/settle\n7c31cd5b2db1f368afd5784b82ce24cdd467527ed3fe83a989747008a0dcfb4e",
+      "headers": {
+        "Stilebase-Timestamp": "1792756800",
+        "Stilebase-Signature": "v2=1b62b7fb8256ce2dd98b1394fc1f2cc1253226aec29180733e72d5f2e458730a"
+      }
+    },
+    {
+      "secret": "sbsec_test_secret",
+      "method": "POST",
+      "path": "/v1/x402/settle",
+      "body": "{}",
+      "timestamp": 1792756800,
+      "canonical": "v2\n1792756800\nPOST\n/v1/x402/settle\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "headers": {
+        "Stilebase-Timestamp": "1792756800",
+        "Stilebase-Signature": "v2=207dec736db70cdf02ecd3fb495ad4934a8d9961587b3ddd11c6382a59e90983"
+      }
+    },
+    {
+      "secret": "sbsec_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b",
+      "method": "GET",
+      "path": "/v1/x402/sites/8f14e45f-ceea-467a-9575-1e2a5e4c8a01/config",
+      "body": "",
+      "timestamp": 1792756800,
+      "canonical": "v2\n1792756800\nGET\n/v1/x402/sites/8f14e45f-ceea-467a-9575-1e2a5e4c8a01/config\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "headers": {
+        "Stilebase-Timestamp": "1792756800",
+        "Stilebase-Signature": "v2=da991e4ffc10448376702863b4d8cde0dd56274c69578dfaab6a8364e4aa9026"
+      }
+    }
+  ],
+  "site_keys": {
+    "valid": [
+      {
+        "key": "sbk_8f14e45fceea467a95751e2a5e4c8a01_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b",
+        "gateway_id": "8f14e45f-ceea-467a-9575-1e2a5e4c8a01",
+        "secret": "sbsec_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b"
+      },
+      {
+        "key": "  sbk_8f14e45fceea467a95751e2a5e4c8a01_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b\n",
+        "gateway_id": "8f14e45f-ceea-467a-9575-1e2a5e4c8a01",
+        "secret": "sbsec_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b"
+      }
+    ],
+    "invalid": [
+      "",
+      "sbsec_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b",
+      "sbk_8f14e45f-ceea-467a-9575-1e2a5e4c8a01_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b",
+      "sbk_8f14e45fceea467a95751e2a5e4c8a01",
+      "sbk_8f14e45fceea467a95751e2a5e4c8a01_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7",
+      "sbk_8F14E45FCEEA467A95751E2A5E4C8A01_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b",
+      "SBK_8f14e45fceea467a95751e2a5e4c8a01_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b"
+    ]
+  },
+  "pass_tokens": [
+    {
+      "secret": "sbsec_test_secret",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+      "timestamp": 1792756800,
+      "token": "1792756800.1a3aa6e98ca3de4431a79f518f4e35af"
+    },
+    {
+      "secret": "sbsec_3eeb078b24345866e15397844ac08818b439ba8b9e71f66e18addd3555721c7b",
+      "user_agent": "",
+      "timestamp": 1792756800,
+      "token": "1792756800.9e346ab6c57d7b03292bd60ab57013d3"
+    }
+  ],
+  "agent_matching": {
+    "about": "Against the lists in gate-config.example.json. agent: asked to pay as an AI agent (live mode); test_mode: asked to pay in test mode; script: asked to pay as a script (catchHttpClients).",
+    "cases": [
+      {
+        "user_agent": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)",
+        "agent": true,
+        "test_mode": false,
+        "script": false
+      },
+      {
+        "user_agent": "claudebot",
+        "agent": true,
+        "test_mode": false,
+        "script": false
+      },
+      {
+        "user_agent": "Mozilla/5.0 (compatible; StilebaseCheck/1.0; +https://stilebase.com)",
+        "agent": true,
+        "test_mode": true,
+        "script": false
+      },
+      {
+        "user_agent": "CoinbaseBazaarDiscovery/1.0",
+        "agent": true,
+        "test_mode": false,
+        "script": false
+      },
+      {
+        "user_agent": "curl/8.4.0",
+        "agent": false,
+        "test_mode": false,
+        "script": true
+      },
+      {
+        "user_agent": "python-requests/2.32.3",
+        "agent": false,
+        "test_mode": false,
+        "script": true
+      },
+      {
+        "user_agent": "",
+        "agent": false,
+        "test_mode": false,
+        "script": true
+      },
+      {
+        "user_agent": "   ",
+        "agent": false,
+        "test_mode": false,
+        "script": true
+      },
+      {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "agent": false,
+        "test_mode": false,
+        "script": false
+      },
+      {
+        "user_agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "agent": false,
+        "test_mode": false,
+        "script": false
+      }
+    ]
+  },
+  "suspect_signals": {
+    "about": "A request's header checks against the browser_checks in gate-config.example.json. url's scheme is how the visitor reached the site; http_protocol and asn are what the edge knows (null elsewhere).",
+    "cases": [
+      {
+        "name": "a real Chrome",
+        "method": "GET",
+        "url": "https://shop.example.com/",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml",
+          "accept-language": "en-US,en;q=0.9",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-dest": "document",
+          "sec-ch-ua": "\"Chromium\";v=\"130\""
+        },
+        "http_protocol": null,
+        "asn": null,
+        "signals": []
+      },
+      {
+        "name": "a script with Chrome's user agent",
+        "method": "GET",
+        "url": "https://shop.example.com/listings",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "headers": {
+          "accept": "*/*"
+        },
+        "http_protocol": null,
+        "asn": null,
+        "signals": [
+          "no_accept_language",
+          "no_sec_fetch",
+          "chrome_without_client_hints",
+          "accept_any"
+        ]
+      },
+      {
+        "name": "the same over plain http",
+        "method": "GET",
+        "url": "http://shop.example.com/listings",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "headers": {
+          "accept": "*/*"
+        },
+        "http_protocol": null,
+        "asn": null,
+        "signals": []
+      },
+      {
+        "name": "a POST",
+        "method": "POST",
+        "url": "https://shop.example.com/listings",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "headers": {},
+        "http_protocol": null,
+        "asn": null,
+        "signals": []
+      },
+      {
+        "name": "a known bot",
+        "method": "GET",
+        "url": "https://shop.example.com/",
+        "user_agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "headers": {},
+        "http_protocol": null,
+        "asn": null,
+        "signals": []
+      },
+      {
+        "name": "not a browser user agent",
+        "method": "GET",
+        "url": "https://shop.example.com/",
+        "user_agent": "Wget/1.21",
+        "headers": {},
+        "http_protocol": null,
+        "asn": null,
+        "signals": []
+      },
+      {
+        "name": "Firefox without Accept-Language: 2, not enough",
+        "method": "GET",
+        "url": "https://shop.example.com/",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-dest": "document"
+        },
+        "http_protocol": null,
+        "asn": null,
+        "signals": []
+      },
+      {
+        "name": "Firefox without Accept-Language, Accept */*: 3",
+        "method": "HEAD",
+        "url": "https://shop.example.com/",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+        "headers": {
+          "accept": "*/*",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-dest": "document"
+        },
+        "http_protocol": null,
+        "asn": null,
+        "signals": [
+          "no_accept_language",
+          "accept_any"
+        ]
+      },
+      {
+        "name": "a browser on HTTP/1.1 from a cloud network: 2",
+        "method": "GET",
+        "url": "https://shop.example.com/",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml",
+          "accept-language": "en-US,en;q=0.9",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-dest": "document"
+        },
+        "http_protocol": "HTTP/1.1",
+        "asn": 16509,
+        "signals": []
+      },
+      {
+        "name": "no Accept-Language over HTTP/1.1: 3",
+        "method": "GET",
+        "url": "https://shop.example.com/",
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+        "headers": {
+          "accept": "text/html,application/xhtml+xml",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "none",
+          "sec-fetch-dest": "document"
+        },
+        "http_protocol": "HTTP/1.1",
+        "asn": null,
+        "signals": [
+          "no_accept_language",
+          "http1"
+        ]
+      }
+    ]
+  },
+  "ip_ranges": {
+    "prefixes": [
+      "20.15.240.64/28",
+      "8.8.8.8/32",
+      "2600:1f28:365:80b0::/60"
+    ],
+    "cases": [
+      {
+        "ip": "20.15.240.70",
+        "in": true
+      },
+      {
+        "ip": "20.15.240.80",
+        "in": false
+      },
+      {
+        "ip": "8.8.8.8",
+        "in": true
+      },
+      {
+        "ip": "8.8.8.9",
+        "in": false
+      },
+      {
+        "ip": "2600:1f28:365:80bf::1",
+        "in": true
+      },
+      {
+        "ip": "2600:1f28:365:80c0::1",
+        "in": false
+      },
+      {
+        "ip": "::ffff:8.8.8.8",
+        "in": false
+      },
+      {
+        "ip": "not-an-ip",
+        "in": false
+      },
+      {
+        "ip": "",
+        "in": false
+      },
+      {
+        "ip": "300.1.1.1",
+        "in": false
+      }
+    ]
+  },
+  "client_ips": {
+    "about": "How a gate normalizes the address an adapter gives it before using or reporting it: IPv4-mapped IPv6 (dual-stack servers report IPv4 visitors so) becomes plain IPv4; surrounding space is trimmed.",
+    "cases": [
+      {
+        "ip": "::ffff:8.8.8.8",
+        "normalized": "8.8.8.8"
+      },
+      {
+        "ip": "::FFFF:20.15.240.70",
+        "normalized": "20.15.240.70"
+      },
+      {
+        "ip": " 198.51.100.4 ",
+        "normalized": "198.51.100.4"
+      },
+      {
+        "ip": "2600:1f28:365:80bf::1",
+        "normalized": "2600:1f28:365:80bf::1"
+      },
+      {
+        "ip": "",
+        "normalized": null
+      }
+    ]
+  }
+}
