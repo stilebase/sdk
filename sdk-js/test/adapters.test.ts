@@ -51,6 +51,22 @@ describe("express", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9");
   });
 
+  it("with trust proxy true (req.ip is then the visitor's first entry), takes the last X-Forwarded-For entry and warns", async () => {
+    const warnings: string[] = [];
+    const app = express();
+    app.set("trust proxy", true);
+    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: (e) => warnings.push(e.message) }));
+    app.get("/listings", (req, res) => {
+      res.send(req.ip ?? "");
+    });
+    server = app.listen(0);
+    await new Promise((resolve) => server!.once("listening", resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await fetch(`${base}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70, 198.51.100.9" } });
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9"); // not the spoofed 20.15.240.70
+    expect(warnings.filter((w) => w.includes("trust proxy"))).toHaveLength(1);
+  });
+
   it("takes the last X-Forwarded-For entry, the one the proxy added, not one the visitor wrote", async () => {
     await fetch(`${await site({ ipHeader: "x-forwarded-for" })}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70, 198.51.100.9" } });
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9");

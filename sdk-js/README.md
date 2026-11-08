@@ -126,7 +126,9 @@ gate({
 
 **The visitor's address** is used to recognise agents and to verify free passes:
 
-- Express: `req.ip`, which follows Express's `trust proxy` setting.
+- Express: `req.ip`, which follows Express's `trust proxy` setting. Set it to your proxies (a hop count such as `1`,
+  or their addresses), not `true`: with `true`, `req.ip` is the first `X-Forwarded-For` entry, which visitors write,
+  so the gate then takes the last entry instead and warns.
 - Cloudflare: `CF-Connecting-IP`.
 - Vercel: `x-real-ip`.
 
