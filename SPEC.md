@@ -10,18 +10,24 @@ The spec for `@stilebase/sdk`, `stilebase-sdk`, and a gate in any other language
 ## The one rule: never break the site
 
 When Stilebase can't be reached, answers with an error, or has no live gateway for the site, **everyone gets the site
-as usual**. Requests never wait on Stilebase for longer than the timeouts below, and a person's request never waits on
-it at all. Three exceptions, each because the alternative lets agents read without paying:
+as usual**. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
+in three cases: the gate's very first request waits for the settings (at most 3 seconds); the first request with an
+address waits for the operators' address lists (at most 5 seconds) while hidden agents are caught; and a browser that
+looks like a script (a *suspect*, section 5, step 5) waits on the price lookup (at most 5 seconds) unless it carries a valid
+pass cookie or that answer is cached.
+
+Three exceptions to "everyone gets the site", each because the alternative lets agents read without paying:
 
 - **A refused price lookup** (400, 413, 414, 422, 431) is answered with 402 at the last price the gate had, for this
   page. Only when it has none yet does the request pass.
-- **A 401 on the settings** keeps the last settings (rule 3 below).
-- **A failed settlement** answers 503 with `Retry-After`. Nothing was charged.
+- **A 401 on the settings** keeps the last settings (section 3).
+- **A settlement without an answer** answers 503 with `Retry-After` (section 5, step 8). The page isn't served, since the
+  payment may not have settled.
 
 ## 1. The key
 
-The gate reads `STILEBASE_KEY`, the **site key**: `sbk_` + the gateway's id (32 lowercase hex) + `_` + 64 hex.
-Surrounding whitespace is ignored. The signing secret is `sbsec_` + those 64 hex. Without a valid key every request
+The gate reads `STILEBASE_KEY`, the **site key**: `sbk_` + the gateway's id (32 lowercase hex) + `_` + 64 lowercase
+hex. Surrounding whitespace is ignored; anything else (uppercase, a dashed id, a missing part) is not a site key. The signing secret is `sbsec_` + those 64 hex. Without a valid key every request
 passes, and the gate warns once. The key belongs on the site's server only: it never goes to agents or browsers.
 
 ## 2. Signing calls to Stilebase
@@ -31,7 +37,7 @@ passes, and the gate warns once. The key belongs on the site's server only: it n
 | Header | Value |
 | --- | --- |
 | `Stilebase-Timestamp` | Unix seconds now. Stilebase refuses calls more than five minutes off |
-| `Stilebase-Signature` | `v2=` + hex HMAC-SHA256 of the canonical string, keyed with the whole secret (`sbsec_…`) |
+| `Stilebase-Signature` | `v2=` + lowercase hex HMAC-SHA256 of the canonical string, keyed with the whole secret (`sbsec_…`) |
 
 The canonical string is five lines joined with `\n`:
 
@@ -40,8 +46,10 @@ v2
 <Stilebase-Timestamp>
 <METHOD, e.g. POST>
 <the API path, e.g. /v1/x402/settle>
-<hex SHA-256 of the exact body bytes sent; of the empty string for a GET>
+<lowercase hex SHA-256 of the exact body bytes sent; of the empty string for a GET>
 ```
+
+Every hex value is lowercase: Stilebase refuses an uppercase signature or body hash.
 
 ```python
 import hashlib, hmac, json, time
@@ -62,7 +70,8 @@ The gate sends `GET <stilebase>/v1/x402/sites/<gateway id>/config`, signed over 
 gateway's page shows the site as **Connected** from it. The answer
 ([`conformance/gate-config.example.json`](conformance/gate-config.example.json) is an example):
 
-- `config_version`: a gate runs only on the version it knows (1). On any other it lets everyone through and warns.
+- `config_version`: a gate runs only on the version it knows (1). Any other is a failed fetch: the gate warns and keeps
+  the last good settings, and with none yet everyone passes.
 - `gateway`: `id`, `domain`, `live`. When `live` is false, `reason` says why: `paused`, `account_switched_off`,
   `domain_not_verified`, `domain_claimed_by_another_gateway`.
 - `verification`: the file's `path` and `value` while the domain is unverified, otherwise null.
@@ -84,16 +93,32 @@ and only their payments fail until the key or the clock is fixed. Dropping them 
 
 ## 4. The visitor's address
 
-The gate normalizes it (`::ffff:1.2.3.4` becomes `1.2.3.4`) and **never trusts a forwarded header** unless the owner
-names one their proxy sets. A spoofed operator address with an agent's user agent would otherwise get a free pass or
-that agent's price. From a list such as `X-Forwarded-For` it takes the **last** entry, the one the owner's proxy
-added: the entries before it are the visitor's to write. An address over 45 characters counts as none.
+The gate normalizes it (`::ffff:1.2.3.4` becomes `1.2.3.4`) and **never trusts a header the visitor can set**. A
+spoofed operator address with an agent's user agent would otherwise get a free pass or that agent's price. By
+default it uses:
+
+- the address the framework gives, where the framework works it out from proxies the owner configured (Express's
+  `req.ip`, an ASGI server's client address, WSGI's `REMOTE_ADDR`). Owners configure their actual proxies, never
+  "trust every hop": then the first `X-Forwarded-For` entry wins, and the visitor wrote it. Where the gate can tell
+  that every hop is trusted (Express's `trust proxy: true`), it takes the last entry instead and warns;
+- on platforms that set a header themselves and overwrite the visitor's: `CF-Connecting-IP` on Cloudflare Workers,
+  `x-real-ip` on Vercel;
+- elsewhere (Bun, Deno, self-hosted Next.js, Hono on Node) no address, unless the owner names the header their proxy
+  sets. Without an address, free passes can't verify, per-agent prices don't apply, and hidden agents aren't caught by
+  address, so the packages' READMEs tell owners to name one.
+
+From a header holding a list, such as `X-Forwarded-For`, it takes the **last** entry, the one the owner's proxy added:
+the entries before it are the visitor's to write. An address over 45 characters counts as none.
 
 ## 5. Each request
 
 1. **The verification file.** While `verification` is set, the gate answers `GET <path>` with `value` as plain text.
 2. **Not live:** everyone passes.
-3. **Who is an agent.** A request is asked to pay when:
+3. **A request with a payment** (`PAYMENT-SIGNATURE`, x402 v2, or `X-PAYMENT`, v1) skips steps 4 and 5: whoever
+   sends a payment is treated as an agent. It still goes through the price lookup (step 6), which names the requirement
+   the payment must meet, and then to settlement (step 8). When the lookup brings no requirement (204, or an answer that
+   lets the request pass), the request passes without settling.
+4. **Who is an agent.** A request is asked to pay when:
    - its user agent matches `agents` (in test mode, only `test_mode_agents`);
    - it matches `http_clients`, or has no user agent, unless the owner lets scripts through;
    - it comes from an address on the AI operators' published lists: `GET <stilebase>/v1/x402/agent-ranges` (public),
@@ -102,13 +127,13 @@ added: the entries before it are the visitor's to write. An address over 45 char
 
    Scripts pay from anywhere, the machine itself included: a proxy on the same host makes every visitor look local.
    Owners exempt their own health checks with `paths`, a user agent of their own, or by letting scripts through.
-4. **Scripts posing as browsers.** A GET with a browser's user agent that doesn't match `known_bots` is scored on what
-   a browser would send, with `browser_checks.weights`:
+5. **Scripts posing as browsers.** A GET or HEAD whose user agent starts with `Mozilla/` (case-sensitive) and doesn't
+   match `known_bots` is scored on what a browser would send, with `browser_checks.weights`:
 
    | Signal | Weight in the example |
    | --- | --- |
    | `no_accept_language`: no `Accept-Language` | 2 |
-   | `no_sec_fetch`: none of the `Sec-Fetch-*` headers | 2 |
+   | `no_sec_fetch`: none of `Sec-Fetch-Mode`, `Sec-Fetch-Site`, `Sec-Fetch-Dest` | 2 |
    | `chrome_without_client_hints`: a `Chrome/` user agent without `Sec-CH-UA` | 2 |
    | `accept_any`: `Accept` missing or `*/*` | 1 |
    | `http1`: HTTP/1.x, where the runtime reports it | 1 |
@@ -117,7 +142,7 @@ added: the entries before it are the visitor's to write. An address over 45 char
    At `suspect_score` or more it's a *suspect*. The checks assume the visitor came over HTTPS, whatever scheme the app
    sees (behind a proxy that ends TLS, the app sees plain http); owners of a site really served over http turn that
    off. A suspect with a valid pass cookie passes (below). Other suspects go to the price lookup with `suspect=true`.
-5. **The price.** `GET <stilebase>/v1/x402/requirements?host=<domain>&url=<page URL>&ua=<user agent>&ip=<address>`
+6. **The price.** `GET <stilebase>/v1/x402/requirements?host=<domain>&url=<page URL>&ua=<user agent>&ip=<address>`
    (public). The URL is cut to 2,048 characters and the user agent to 512, then both are cut to fit 4,096 and 1,536
    characters once form-encoded: a call Stilebase refused would serve the page unpaid. Answers:
    - **200**: the x402 `PaymentRequired`. Answer **402** with it as the JSON body and, base64-encoded, in
@@ -132,11 +157,11 @@ added: the entries before it are the visitor's to write. An address over 45 char
    - Anything else, or no answer within 5 seconds: the request passes.
 
    200 and 204 answers are cached for as long as their `Cache-Control` says, at most 5 minutes, at most 1,000 entries.
-6. **The pass cookie.** `<cookie>=<unix time>.<first 32 hex of HMAC-SHA256(secret, "stilebase-pass\n<unix time>\n<User-Agent>")>`,
+7. **The pass cookie.** `<cookie>=<unix time>.<first 32 hex of HMAC-SHA256(secret, "stilebase-pass\n<unix time>\n<User-Agent>")>`,
    for `max_age_seconds`, `Path=/; SameSite=Lax; Secure`. The gate checks it itself, with no call to Stilebase: the
    time at most `max_age_seconds` old and at most a minute ahead, the HMAC for this user agent, compared in constant
    time.
-7. **A payment.** A request with `PAYMENT-SIGNATURE` (x402 v2) or `X-PAYMENT` (v1) goes to a signed
+8. **A payment.** A request with `PAYMENT-SIGNATURE` (x402 v2) or `X-PAYMENT` (v1) goes to a signed
    `POST <stilebase>/v1/x402/settle`, waiting up to 65 seconds (longer than Stilebase takes at most: giving up first
    would answer 503 for a payment that then settles):
 
@@ -153,8 +178,11 @@ added: the entries before it are the visitor's to write. An address over 45 char
    `SettlementResponse` plus `header`:
    - `"success": true`: the request goes to the site, and the response gets `PAYMENT-RESPONSE: <header>`.
    - `"success": false`: answer 402 again, with `error` set to the `errorReason` and `PAYMENT-RESPONSE`.
-   - Anything else: 503 with `Retry-After: 5`. Nothing was charged.
-8. **Visits** are reported with a signed `POST <stilebase>/v1/x402/visits`, the same body as settle without
+   - No answer, or any other answer (Stilebase down, a timeout): 503 with `Retry-After: 5`, and the page isn't
+     served. **The outcome is unknown**: the payment may have settled after all (an answer lost on the way), so a gate
+     never tells the agent it wasn't charged. An agent that retries should send the same payment again, not a new
+     one.
+9. **Visits** are reported with a signed `POST <stilebase>/v1/x402/visits`, the same body as settle without
    `payment` (plus `free_pass` or `signals`), in the background: a request never waits on it. A gate keeps a bounded
    number of reports in flight and drops the rest.
 
@@ -176,7 +204,7 @@ dot segments resolved. So `/LISTINGS/2`, `/%6Cistings/2` and `/x/..%2Flistings/2
 | API URL | `STILEBASE_API_URL`, else `https://stilebase.com` | Where Stilebase is |
 | mode | live | `test`: only `test_mode_agents` are asked to pay |
 | paths | everything | Gate only these prefixes, or the paths a function accepts |
-| client IP / IP header | the connection's address | Where the visitor's real address is, behind a proxy |
+| client IP / IP header | per platform (section 4) | Where the visitor's real address is: a header the owner's proxy sets, or a function (each package's README lists what its adapters take) |
 | catch HTTP clients | on | Off lets scripts with default user agents through |
 | catch hidden agents | on | Off skips the address lists and `Signature-Agent` |
 | check browsers | on | Off skips the browser checks |

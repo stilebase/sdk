@@ -9,6 +9,9 @@ it, and the site's owner sees every payment and agent on their dashboard.
 
 If Stilebase can't be reached, everyone gets the site as usual: the gate never breaks it.
 
+> **Not published yet.** The packages are built and tested here; they reach npm and PyPI with their first release.
+> Until then, Stilebase's gateway page offers its Cloudflare Worker and copy-paste code instead.
+
 | Package | Install | Works with |
 | --- | --- | --- |
 | [`@stilebase/sdk`](sdk-js) | `npm i @stilebase/sdk` | Express, Next.js, Cloudflare Workers, Hono, Bun, Deno (Node 20+, no dependencies) |

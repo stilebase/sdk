@@ -1,5 +1,5 @@
 {
-  "about": "Shared test vectors (README.md): Stilebase's server, its Cloudflare Worker, @stilebase/sdk, stilebase-sdk and any other gate must agree with every case here. Keys and secrets are made up, derived from the server test suite's signing key.",
+  "about": "Shared test vectors (README.md): Stilebase's server, its Cloudflare Worker, @stilebase/sdk, stilebase-sdk and any other gate must agree with every case here. Every key and secret is made up, for a gateway that doesn't exist.",
   "signing": [
     {
       "secret": "sbsec_test_secret",

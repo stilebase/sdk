@@ -13,8 +13,9 @@ CI), `test/`. Then a short kebab-case name: `feature/sdk-js-fastify`, `bugfix/py
 Never force-push `main`. Changes reach `main` only by squash-merging a pull request whose CI checks are all green; a
 ruleset enforces it. Before the first commit, check the branch (`git branch --show-current`).
 
-One package per pull request: a change to `sdk-js` and one to `sdk-python` are two pull requests, except when they
-must land together (a conformance change both have to pass).
+One package per pull request: a change to `sdk-js` and one to `sdk-python` are two pull requests. The exception is a
+change to how a gate behaves (SPEC.md, `conformance/`): both SDKs must behave the same (CLAUDE.md), so that change
+goes to both in one pull request.
 
 ## 2. Plan first
 

@@ -21,8 +21,8 @@ customers. The SDKs talk only to Stilebase's public API.
   `stilebase_sdk.gate`: `_core.decide` is one sans-IO decision generator that yields effects; `AsyncGate` and
   `SyncGate` drive it. Adapters `asgi`, `wsgi`, `django`.
 - `conformance/`: `vectors.json` and `gate-config.example.json`, the cases every gate must pass. Both SDKs test
-  against them, and so do Stilebase's server and Cloudflare Worker, which pin this repository as a git submodule.
-  They describe what the server does: change them only together with it (`conformance/README.md`).
+  against them, and so does Stilebase. They describe what Stilebase does: change them only together with it
+  (`conformance/README.md`).
 
 ## Build & test
 
@@ -41,10 +41,12 @@ These are what the reviews check first. Breaking one is a blocking finding.
 
 - **Never break the site.** When Stilebase can't be reached or errors, everyone gets the site. The only exceptions
   are the three in SPEC.md, each because the alternative lets agents read free.
-- **Never trust a forwarded header** unless the owner names one. A spoofed operator address would get a free pass.
+- **Never tell an agent it wasn't charged when the outcome is unknown** (a settlement without an answer).
+- **Never trust a header the visitor can set** for their address (SPEC.md, "The visitor's address"). A spoofed
+  operator address would get a free pass.
 - **Cut what's sent to Stilebase to its limits** (SPEC.md, "The price"): a refused call would serve the page unpaid.
-- **Both SDKs behave the same.** A change to one is made to the other in the same pull request, with a conformance
-  case when it's observable.
+- **Both SDKs behave the same.** A change to how a gate behaves is made to both in the same pull request, with a
+  conformance case when it's observable. Changes to one package only (an adapter, its docs) are its own pull request.
 - **Secrets stay on the server.** The site key never reaches an agent, a browser, a log line or an error message.
 - **No new runtime dependencies** without a reason written in the pull request. The JS package has none.
 
