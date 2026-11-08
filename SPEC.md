@@ -10,7 +10,8 @@ The spec for `@stilebase/sdk`, `stilebase-sdk`, and a gate in any other language
 ## The one rule: never break the site
 
 When Stilebase can't be reached, answers with an error, or has no live gateway for the site, **everyone gets the site
-as usual**. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
+as usual**, except that a gate keeps working on the last settings it fetched (section 3): during an outage, agents are
+still asked to pay at the price of the last lookups. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
 in three cases: the gate's very first request waits for the settings (at most 3 seconds); the first request with an
 address waits for the operators' address lists (at most 5 seconds) while hidden agents are caught; and a browser that
 looks like a script (a *suspect*, section 5, step 5) waits on the price lookup (at most 5 seconds) unless it carries a valid
@@ -18,9 +19,11 @@ pass cookie or that answer is cached.
 
 Three exceptions to "everyone gets the site", each because the alternative lets agents read without paying:
 
-- **A refused price lookup** (400, 413, 414, 422, 431) is answered with 402 at the last price the gate had, for this
-  page. Only when it has none yet does the request pass.
-- **A 401 on the settings** keeps the last settings (section 3).
+- **A refused price lookup** (400, 413, 414, 422, 429, 431) is answered with 402 at the last price the gate had, for
+  this page. Only when it has none yet does the request pass. A visitor can provoke these (a padded URL, many unique
+  URLs), so passing would let agents read free.
+- **A failed settings fetch** keeps the last good settings, whatever the failure (a 401 after a rotated key, a 5xx, a
+  timeout, an unknown `config_version`). Only a 404 drops them (section 3).
 - **A settlement without an answer** answers 503 with `Retry-After` (section 5, step 8). The page isn't served, since the
   payment may not have settled.
 
@@ -83,7 +86,8 @@ gateway's page shows the site as **Connected** from it. The answer
   - `known_bots`: search engines, link previews, monitors and feed readers, never checked as browsers.
 - `browser_checks`: the signal `weights`, `suspect_score`, `cloud_asns`.
 - `pass`: the browser check's `cookie` name and `max_age_seconds`.
-- `refresh_seconds`.
+- `refresh_seconds`: how often to fetch them again. A gate uses 300 when it's missing, not a number or not positive,
+  and never less than 30.
 
 **When.** On the first request, waiting at most 3 seconds. Then in the background every `refresh_seconds`, keeping
 the last good settings on failure. With no settings yet it retries at most every 30 seconds and lets everyone through
@@ -136,16 +140,20 @@ the entries before it are the visitor's to write. An address over 45 characters 
    | `no_sec_fetch`: none of `Sec-Fetch-Mode`, `Sec-Fetch-Site`, `Sec-Fetch-Dest` | 2 |
    | `chrome_without_client_hints`: a `Chrome/` user agent without `Sec-CH-UA` | 2 |
    | `accept_any`: `Accept` missing or `*/*` | 1 |
-   | `http1`: HTTP/1.x, where the runtime reports it | 1 |
-   | `cloud_asn`: a network on `cloud_asns`, where the runtime reports it | 1 |
+   | `http1`: the visitor's connection was HTTP/1.x | 1 |
+   | `cloud_asn`: the visitor's network is on `cloud_asns` | 1 |
+
+   `http1` and `cloud_asn` count only where the edge that met the visitor reports them (Cloudflare's `request.cf`),
+   never from the app's own connection: behind a proxy, that's the proxy's hop, and every person would score.
 
    At `suspect_score` or more it's a *suspect*. The checks assume the visitor came over HTTPS, whatever scheme the app
    sees (behind a proxy that ends TLS, the app sees plain http); owners of a site really served over http turn that
    off. A suspect with a valid pass cookie passes (below). Other suspects go to the price lookup with `suspect=true`.
 6. **The price.** `GET <stilebase>/v1/x402/requirements?host=<domain>&url=<page URL>&ua=<user agent>&ip=<address>`
    (public). The URL is cut to 2,048 characters and the user agent to 512, then both are cut to fit 4,096 and 1,536
-   characters once form-encoded: a call Stilebase refused would serve the page unpaid. Answers:
-   - **200**: the x402 `PaymentRequired`. Answer **402** with it as the JSON body and, base64-encoded, in
+   characters once form-encoded as `application/x-www-form-urlencoded` (the WHATWG URL standard's serializer): a call
+   Stilebase refused would serve the page unpaid. Answers:
+   - **200** with a JSON object: the x402 `PaymentRequired`. Answer **402** with it as the JSON body and, base64-encoded, in
      `PAYMENT-REQUIRED`. Report the visit (below).
    - **204**: a free pass (the owner lets this agent read free, and its address verified), or a suspect while the
      owner's strict detection is off. The request passes; report it with `"free_pass": true`, or with `signals` for a
@@ -153,8 +161,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
    - **200 for a suspect** (strict detection on): report it with `signals`, then answer 402. When the request asked for
      HTML (`Accept` contains `text/html`), the body is a small page whose script sets the pass cookie and reloads, so
      a real browser goes straight through.
-   - **400, 413, 414, 422, 431**: 402 with the last price (the rule at the top).
-   - Anything else, or no answer within 5 seconds: the request passes.
+   - **400, 413, 414, 422, 429, 431**: 402 with the last price (the rule at the top).
+   - Anything else (a 200 that isn't a JSON object included), or no answer within 5 seconds: the request passes.
 
    200 and 204 answers are cached for as long as their `Cache-Control` says, at most 5 minutes, at most 1,000 entries.
 7. **The pass cookie.** `<cookie>=<unix time>.<first 32 hex of HMAC-SHA256(secret, "stilebase-pass\n<unix time>\n<User-Agent>")>`,
@@ -176,12 +184,13 @@ the entries before it are the visitor's to write. An address over 45 characters 
 
    `agent.headers` carries only the Web Bot Auth headers that are present. The answer is the x402
    `SettlementResponse` plus `header`:
+   The answer is read only when it's a 200 with a JSON object:
    - `"success": true`: the request goes to the site, and the response gets `PAYMENT-RESPONSE: <header>`.
    - `"success": false`: answer 402 again, with `error` set to the `errorReason` and `PAYMENT-RESPONSE`.
-   - No answer, or any other answer (Stilebase down, a timeout): 503 with `Retry-After: 5`, and the page isn't
-     served. **The outcome is unknown**: the payment may have settled after all (an answer lost on the way), so a gate
-     never tells the agent it wasn't charged. An agent that retries should send the same payment again, not a new
-     one.
+   - No answer, or any other answer (Stilebase down, a timeout, a body that isn't a JSON object): 503 with
+     `Retry-After: 5`, and the page isn't served. **The outcome is unknown**: the payment may have settled after all
+     (an answer lost on the way), so a gate never tells the agent it wasn't charged. Sending the same payment again
+     can never charge twice: each authorization is spent once, on-chain.
 9. **Visits** are reported with a signed `POST <stilebase>/v1/x402/visits`, the same body as settle without
    `payment` (plus `free_pass` or `signals`), in the background: a request never waits on it. A gate keeps a bounded
    number of reports in flight and drops the rest.

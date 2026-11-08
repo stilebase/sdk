@@ -16,10 +16,29 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Every conformance file is valid JSON
+      - name: Every conformance file is strict JSON (no NaN or Infinity, no duplicate keys)
         run: |
-          set -euo pipefail
-          for f in conformance/*.json; do
-            python3 -m json.tool "$f" > /dev/null || { echo "::error file=$f::not valid JSON"; exit 1; }
-            echo "ok $f"
-          done
+          python3 - <<'PY'
+          import glob, json, sys
+
+          def no_duplicates(pairs):
+              keys = [k for k, _ in pairs]
+              duplicate = next((k for k in keys if keys.count(k) > 1), None)
+              if duplicate is not None:
+                  raise ValueError(f"duplicate key {duplicate!r}")
+              return dict(pairs)
+
+          def no_constant(name):
+              raise ValueError(f"{name} isn't JSON")
+
+          failed = False
+          for path in sorted(glob.glob("conformance/*.json")):
+              try:
+                  with open(path, encoding="utf-8") as f:
+                      json.load(f, object_pairs_hook=no_duplicates, parse_constant=no_constant)
+                  print(f"ok {path}")
+              except ValueError as error:
+                  print(f"::error file={path}::{error}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY

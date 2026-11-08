@@ -19,5 +19,10 @@ build/
 .DS_Store
 Thumbs.db
 
+# Local settings and secrets: a site key (STILEBASE_KEY) must never be committed
+.env
+.env.*
+!.env.example
+
 # Local Claude Code settings
 .claude/settings.local.json
