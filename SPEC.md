@@ -208,6 +208,8 @@ out of reach of the `paths` option. A URL the adapter can't parse is still gated
 
 `paths` (prefixes, or a function) sees the path as routers and static file servers do: percent-decoded, lowercased,
 dot segments resolved. So `/LISTINGS/2`, `/%6Cistings/2` and `/x/..%2Flistings/2` are all gated like `/listings/2`.
+A prefix that ends in `/` also covers the same path without it (`/listings/` gates `/listings`), since routers serve
+both as one page; it doesn't cover `/listingsfoo`.
 
 ## 7. Options every gate offers
 

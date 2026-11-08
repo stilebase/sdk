@@ -18,9 +18,12 @@ export function gate(options: NextGateOptions = {}) {
   const siteGate = createGate(options, "next");
   const onVercel = Boolean((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.VERCEL);
   return async function stilebaseGate(request: NextRequest, event?: NextFetchEvent): Promise<NextResponse> {
-    const ip = options.clientIp
-      ? options.clientIp(request)
-      : addressFrom(request.headers, options.ipHeader ?? (onVercel ? "x-real-ip" : undefined), null);
+    let ip: string | null | undefined = null;
+    try {
+      ip = options.clientIp ? options.clientIp(request) : addressFrom(request.headers, options.ipHeader ?? (onVercel ? "x-real-ip" : undefined), null);
+    } catch {
+      ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
+    }
     const decision = await siteGate.check(
       { method: request.method, url: request.url, headers: request.headers, ip: ip ?? null },
       event ? (task) => event.waitUntil(task) : undefined,

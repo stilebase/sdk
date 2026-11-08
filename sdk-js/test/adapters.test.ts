@@ -67,6 +67,51 @@ describe("express", () => {
     expect(warnings.filter((w) => w.includes("trust proxy"))).toHaveLength(1);
   });
 
+  it("never hands the request to the routes when the gate's own answer can't be sent", async () => {
+    const { gate } = await import("../src/express.js");
+    const handler = gate({ key: KEY, apiUrl: API, fetch: stilebase.fetch });
+    const passed: unknown[] = [];
+    const res = {
+      headersSent: false,
+      status() {
+        return this;
+      },
+      set() {
+        throw new Error("ERR_INVALID_CHAR");
+      },
+      setHeader() {},
+      send() {},
+    };
+    const req = { method: "GET", protocol: "https", originalUrl: "/listings", get: (name: string) => ({ "user-agent": GPTBOT["user-agent"], host: DOMAIN })[name.toLowerCase()] };
+    await new Promise<void>((resolve) => handler(req, res, (error?: unknown) => (passed.push(error), resolve())));
+    expect(passed).toHaveLength(1);
+    expect(passed[0]).toBeInstanceOf(Error); // an error, never next() with no argument (which serves the page)
+  });
+
+  it("a clientIp or onError that throws doesn't break the request", async () => {
+    const app = express();
+    app.set("trust proxy", true);
+    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => { throw new Error("boom"); } }));
+    app.get("/listings", (_req, res) => {
+      res.send("the listings");
+    });
+    server = app.listen(0);
+    await new Promise((resolve) => server!.once("listening", resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect((await fetch(`${base}/listings`, { headers: BROWSER })).status).toBe(200);
+    server.close();
+    server = undefined;
+    const throwing = express();
+    throwing.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, clientIp: () => { throw new Error("boom"); } }));
+    throwing.get("/listings", (_req, res) => {
+      res.send("the listings");
+    });
+    server = throwing.listen(0);
+    await new Promise((resolve) => server!.once("listening", resolve));
+    const other = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect((await fetch(`${other}/listings`, { headers: GPTBOT })).status).toBe(402);
+  });
+
   it("takes the last X-Forwarded-For entry, the one the proxy added, not one the visitor wrote", async () => {
     await fetch(`${await site({ ipHeader: "x-forwarded-for" })}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70, 198.51.100.9" } });
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9");

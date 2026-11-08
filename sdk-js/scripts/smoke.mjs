@@ -13,7 +13,8 @@ const npm = (args, cwd) => execFileSync("npm", args, { cwd, stdio: ["ignore", "p
 try {
   const tarball = join(work, JSON.parse(npm(["pack", "--json", "--pack-destination", work], root))[0].filename);
   writeFileSync(join(work, "package.json"), JSON.stringify({ name: "smoke", private: true, type: "module" }));
-  npm(["install", "--no-audit", "--no-fund", tarball, "express@5", "next@15", "react@19", "react-dom@19", "typescript@5.6", "@types/express@5", "@types/node@20"], work);
+  // --ignore-scripts: third-party install scripts never run next to a build (CI and the release job).
+  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5", "next@15", "react@19", "react-dom@19", "typescript@5.6", "@types/express@5", "@types/node@20"], work);
 
   writeFileSync(
     join(work, "esm.mjs"),

@@ -28,9 +28,14 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
       "fetch",
     );
     const cf = (request as CloudflareRequest).cf;
-    const ip = options.clientIp
-      ? options.clientIp(request, ...rest)
-      : addressFrom(request.headers, options.ipHeader ?? (cf ? "cf-connecting-ip" : undefined), null);
+    let ip: string | null | undefined = null;
+    try {
+      ip = options.clientIp
+        ? options.clientIp(request, ...rest)
+        : addressFrom(request.headers, options.ipHeader ?? (cf ? "cf-connecting-ip" : undefined), null);
+    } catch {
+      ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
+    }
     const ctx = rest[1] as { waitUntil?: (task: Promise<unknown>) => void } | undefined;
     const waitUntil = typeof ctx?.waitUntil === "function" ? (task: Promise<unknown>) => ctx.waitUntil!(task) : undefined;
     const decision = await siteGate.check(

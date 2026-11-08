@@ -67,7 +67,9 @@ export default { fetch: withGate(handler) }; // Workers: `npx wrangler secret pu
 import { createGate } from "@stilebase/sdk/gate";
 
 const gate = createGate();
-const decision = await gate.check({ method, url, headers, ip });
+// url: the full request URL; headers: a Fetch API Headers (or anything with get(name)), not a plain object;
+// ip: the visitor's address (see "The visitor's address" below), or null.
+const decision = await gate.check({ method, url, headers: new Headers(rawHeaders), ip });
 // decision.action === "respond": send decision.status, decision.headers, decision.body instead.
 // decision.action === "pass": serve the request; add PAYMENT-RESPONSE: decision.paymentResponse when it's set.
 ```

@@ -57,6 +57,10 @@ These are what the reviews check first. Breaking one is a blocking finding.
 publish job gets only the built files and waits for approval in the `release` environment, then publishes through
 trusted publishing (no stored tokens), with provenance. Bump the version and `CHANGELOG.md` in a pull request first.
 
+Approving a release in the `release` environment: check that the run's commit is the head of `main` (or on it) and
+that `release.yml` there is unchanged. The workflow checks it too, but that check lives in the tagged commit's own copy
+of the workflow.
+
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`
 reads. The tests check both.

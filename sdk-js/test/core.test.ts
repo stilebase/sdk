@@ -91,7 +91,7 @@ describe("settings", () => {
     expect(await g.check(request("/.well-known/stilebase-verify.txt"))).toEqual({
       action: "respond",
       status: 200,
-      headers: { "content-type": "text/plain; charset=utf-8" },
+      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
       body: "stilebase-verify=tok\n",
     });
     expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" }); // not live: nobody is asked
@@ -143,6 +143,11 @@ describe("AI agents", () => {
     const g = gate({ paths: ["/listings/"] });
     expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
     expect((await g.check(request("/listings/2", GPTBOT))).action).toBe("respond");
+    // "/listings/" covers "/listings" too, which routers serve as the same page; but not "/listingsfoo".
+    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
+    expect((await g.check(request("/LISTINGS", GPTBOT))).action).toBe("respond");
+    expect(await g.check(request("/listingsfoo", GPTBOT))).toEqual({ action: "pass" });
+    expect(await gate({ paths: ["/"] }).check(request("/", GPTBOT))).not.toEqual({ action: "pass" });
     const byTest = gate({ paths: (p) => p.endsWith(".json") });
     expect((await byTest.check(request("/feed.json", GPTBOT))).action).toBe("respond");
   });
@@ -223,6 +228,11 @@ describe("payments", () => {
 
   it("x402 v1's X-PAYMENT header too", async () => {
     await gate().check(request("/listings/2", { ...GPTBOT, "x-payment": "v1payment" }));
+    expect(stilebase.to("/v1/x402/settle")[0]?.body).toMatchObject({ payment: "v1payment" });
+  });
+
+  it("an empty PAYMENT-SIGNATURE doesn't hide an X-PAYMENT", async () => {
+    await gate().check(request("/listings/2", { ...GPTBOT, "payment-signature": "", "x-payment": "v1payment" }));
     expect(stilebase.to("/v1/x402/settle")[0]?.body).toMatchObject({ payment: "v1payment" });
   });
 
@@ -459,5 +469,24 @@ describe("the review's cases (cycle 7)", () => {
     await g.check(request("/", BROWSER));
     await settled();
     expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+  });
+});
+
+describe("loads another request started", () => {
+  it("never hold a request past its own deadline (a runtime may have cancelled the first one)", async () => {
+    const g = createGate({ key: KEY, apiUrl: API, fetch: () => new Promise<Response>(() => undefined), onError: () => undefined });
+    const started = Date.now();
+    expect(await g.check(request("/listings/1", GPTBOT))).toEqual({ action: "pass" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 10_000);
+
+  it("keep the last address lists when an answer has none", async () => {
+    const g = gate();
+    await g.check(request("/listings/1", BROWSER, { ip: "20.15.240.70" }));
+    clock += 2 * 60 * 60 * 1000;
+    stilebase.ranges = { status: 200, body: {} };
+    await g.check(request("/listings/1", BROWSER, { ip: "20.15.240.70" })); // refreshes in the background
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect((await g.check(request("/listings/1", BROWSER, { ip: "20.15.240.70" }))).action).toBe("respond");
   });
 });

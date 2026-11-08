@@ -32,7 +32,7 @@ jobs:
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "20.18.1" # the Node CI tests on
       - name: The tag is the package's version
         run: test "sdk-js-v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
       - run: npm ci
@@ -40,7 +40,8 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: npm run smoke
+      # Pack and hand over the tarball before anything else is installed: the smoke test installs third-party packages,
+      # which must never get a chance to touch what's published. The artifact can't be replaced once uploaded.
       - name: Pack the tarball that gets published
         run: mkdir -p ../release && npm pack --pack-destination ../release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -49,6 +50,8 @@ jobs:
           path: release/*.tgz
           if-no-files-found: error
           retention-days: 7
+      - name: The package as users get it (install scripts off)
+        run: npm run smoke
 
   npm-publish:
     needs: npm-build
@@ -64,8 +67,10 @@ jobs:
           path: release
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "20.18.1"
           registry-url: "https://registry.npmjs.org"
-      - run: npm install -g npm@11 # trusted publishing needs npm 11.5 or later; pinned to the major
+      # Trusted publishing needs npm 11.5 or later. An exact version, installed without its scripts: this job can mint
+      # the publishing token, so nothing in it may change between releases unnoticed.
+      - run: npm install -g npm@11.21.2 --ignore-scripts
       - name: Publish the built tarball (no lifecycle scripts run here)
         run: npm publish release/*.tgz --provenance --access public --ignore-scripts

@@ -33,6 +33,7 @@ const SETTLE_TIMEOUT_MS = 65_000;
 const REPORT_TIMEOUT_MS = 10_000;
 const RETRY_WITHOUT_CONFIG_MS = 30_000; // no settings yet: try again at most this often, never on every request
 const MIN_REFRESH_MS = 30_000;
+const STALE_LOAD_MS = 10_000; // longer than any load's own timeout
 const RANGES_MAX_AGE_MS = 60 * 60 * 1000;
 const REQUIREMENTS_CACHE_SIZE = 1000;
 const MAX_PENDING_REPORTS = 1000;
@@ -117,9 +118,11 @@ class SiteGate implements Gate {
   private configCheckedAt = 0;
   private configTried = false;
   private configLoading: Promise<void> | null = null;
+  private configLoadingAt = 0;
   private ranges: NetworkIndex | null = null;
   private rangesAt = 0;
   private rangesLoading: Promise<void> | null = null;
+  private rangesLoadingAt = 0;
   private readonly requirementsCache = new Map<string, Cached>();
   private readonly warned = new Map<string, number>();
   private pendingReports = 0;
@@ -169,12 +172,13 @@ class SiteGate implements Gate {
     if (!config) return PASS;
     const url = siteUrl(request.url, config.gateway.domain);
     if (config.verification && url.pathname === config.verification.path) {
-      return respond(200, { "content-type": "text/plain; charset=utf-8" }, `${config.verification.value}\n`);
+      return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
     if (!config.gateway.live || !this.gated(url.pathname)) return PASS;
 
     const headers = request.headers;
-    const payment = headers.get("payment-signature") ?? headers.get("x-payment") ?? null;
+    // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
+    const payment = headers.get("payment-signature") || headers.get("x-payment") || null;
     const userAgent = headers.get("user-agent") ?? "";
     let signals: string[] = []; // a browser-looking request that failed the header checks: which ones
     if (!payment && !(await this.isAgent(request, userAgent, config, waitUntil))) {
@@ -259,7 +263,11 @@ class SiteGate implements Gate {
     if (paths === undefined) return true;
     const path = pathForMatching(pathname); // decoded, lowercased, dot segments resolved: as routers see it
     if (typeof paths === "function") return paths(path);
-    return (typeof paths === "string" ? [paths] : paths).some((prefix) => path.startsWith(pathForMatching(prefix)));
+    return (typeof paths === "string" ? [paths] : paths).some((raw) => {
+      const prefix = pathForMatching(raw);
+      // "/listings/" also covers "/listings": routers serve the same page with or without the trailing slash.
+      return path.startsWith(prefix) || (prefix.length > 1 && prefix.endsWith("/") && path === prefix.slice(0, -1));
+    });
   }
 
   /** An AI agent by its user agent; a script by its default user agent (or none); an agent hiding behind a browser's
@@ -277,7 +285,9 @@ class SiteGate implements Gate {
   /** The settings: fetched on the first request, then refreshed in the background every refresh_seconds. */
   private async settings(waitUntil?: WaitUntil): Promise<GateConfig | null> {
     if (!this.configTried) {
-      await this.loadSettings();
+      // Bounded by this request's own timer: a load started by another request (which a runtime may have cancelled)
+      // must never hold this one.
+      await bounded(this.loadSettings(), CONFIG_TIMEOUT_MS + 500);
       return this.config;
     }
     const every = this.config ? Math.max(this.config.refresh_seconds * 1000, MIN_REFRESH_MS) : RETRY_WITHOUT_CONFIG_MS;
@@ -286,6 +296,9 @@ class SiteGate implements Gate {
   }
 
   private loadSettings(): Promise<void> {
+    // A load that outlived its own timeout belongs to a request the runtime gave up on: start a fresh one.
+    if (this.configLoading && this.now() - this.configLoadingAt > STALE_LOAD_MS) this.configLoading = null;
+    if (!this.configLoading) this.configLoadingAt = this.now();
     this.configLoading ??= this.fetchSettings().finally(() => {
       this.configTried = true;
       this.configCheckedAt = this.now();
@@ -325,16 +338,20 @@ class SiteGate implements Gate {
 
   /** The AI operators' published address ranges: fetched on first use, refreshed in the background once an hour old. */
   private async agentRanges(waitUntil?: WaitUntil): Promise<NetworkIndex> {
-    const load = () =>
-      (this.rangesLoading ??= (async () => {
+    const load = () => {
+      if (this.rangesLoading && this.now() - this.rangesLoadingAt > STALE_LOAD_MS) this.rangesLoading = null;
+      if (!this.rangesLoading) this.rangesLoadingAt = this.now();
+      return (this.rangesLoading ??= (async () => {
         try {
           const answer = await this.fetch(`${this.api}/v1/x402/agent-ranges`, { signal: AbortSignal.timeout(REQUIREMENTS_TIMEOUT_MS) });
           if (answer.status !== 200) {
             discard(answer);
             throw new Error(`Stilebase answered the agent ranges ${answer.status}`);
           }
-          const body = (await answer.json()) as { prefixes?: unknown };
-          const prefixes = Array.isArray(body.prefixes) ? body.prefixes : [];
+          const body: unknown = await answer.json();
+          // No list in the answer: keep the last good one rather than stop catching hidden agents.
+          if (!isRecord(body) || !Array.isArray(body.prefixes)) throw new Error("Stilebase's agent ranges have no prefixes list");
+          const prefixes: unknown[] = body.prefixes;
           this.ranges = new NetworkIndex(prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : [])));
         } catch (error) {
           this.report(error);
@@ -344,7 +361,8 @@ class SiteGate implements Gate {
           this.rangesLoading = null;
         }
       })());
-    if (this.ranges === null) await load();
+    };
+    if (this.ranges === null) await bounded(load(), REQUIREMENTS_TIMEOUT_MS + 500);
     else if (this.now() - this.rangesAt > RANGES_MAX_AGE_MS) this.background(load(), waitUntil);
     return this.ranges ?? new NetworkIndex([]);
   }
@@ -468,4 +486,17 @@ export function addressFrom(headers: GateRequest["headers"], ipHeader: string | 
 /** A JSON object (not null, an array or a primitive): the only shape Stilebase's answers are read from. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `promise`, or nothing once `ms` have passed: this request's own deadline, whatever happens to the work it waits on. */
+async function bounded(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([promise.then(() => undefined, () => undefined), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

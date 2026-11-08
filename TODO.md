@@ -50,6 +50,21 @@ What's known and not yet done, each with why it waits. Findings from code review
 
 ## @stilebase/sdk
 
+- **Types under `moduleResolution: node`** (`"module": "commonjs"` projects): subpath types resolve only through
+  `exports`. Add `typesVersions` for `gate`, `gate/express`, `gate/next`, `gate/fetch`. *Waits:* NodeNext and bundler
+  resolution, the defaults for new projects, work.
+- **The fetch adapter finds `waitUntil` only on the third argument** (Workers' `ctx`). Vercel and Netlify Edge pass a
+  `context` second, so background reports and refreshes may be cut off there. *Waits:* the settings are still fetched
+  on the next request; only statistics can be lost.
+- **Dot segments after an empty segment, and `\`:** `/public//../listings/1` resolves to `/public/listings/1` by RFC
+  3986, while servers that collapse `//` first serve `/listings/1`; Windows file servers treat `\` as a separator.
+  *Waits:* the common routers and static servers reject or redirect these.
+- **The price lookup cuts the URL by encoded length, settle by characters**, as for the user agent (above). *Waits:*
+  only the statistics' page name differs.
+- **Identical concurrent price lookups aren't combined**, and a refused lookup's 402 names the uncut URL. *Waits:*
+  performance and cosmetics only.
+- **`next.ts` and `express.ts` repeat small parts of core** (the environment, the warning throttle). *Waits:* cleanup.
+
 - **Next.js middleware on Vercel's Edge runtime must answer within 25 seconds**, and a settlement can take longer.
   The README should recommend the Node.js runtime for middleware (Next 15.5+), or the gate in a route handler.
   *Waits:* the README change goes with the first release.
