@@ -1,0 +1,118 @@
+{
+  "config_version": 1,
+  "refresh_seconds": 300,
+  "gateway": {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "domain": "shop.example.com",
+    "live": false,
+    "reason": "domain_not_verified"
+  },
+  "verification": {
+    "path": "/.well-known/stilebase-verify.txt",
+    "value": "stilebase-verify=0123456789abcdef0123456789abcdef"
+  },
+  "agents": [
+    "GPTBot",
+    "OAI-SearchBot",
+    "ChatGPT-User",
+    "OAI-AdsBot",
+    "ClaudeBot",
+    "Claude-User",
+    "Claude-SearchBot",
+    "PerplexityBot",
+    "Perplexity-User",
+    "CCBot",
+    "GoogleAgent-URLContext",
+    "Google-Agent",
+    "Google-Extended",
+    "Bytespider",
+    "Amazonbot",
+    "StilebaseCheck",
+    "CoinbaseBazaarDiscovery"
+  ],
+  "test_mode_agents": [
+    "StilebaseCheck"
+  ],
+  "http_clients": [
+    "curl",
+    "Wget",
+    "python-requests",
+    "python-httpx",
+    "Python-urllib",
+    "aiohttp",
+    "Go-http-client",
+    "axios",
+    "node-fetch",
+    "undici",
+    "okhttp",
+    "Java-http-client",
+    "Apache-HttpClient",
+    "libwww-perl",
+    "Scrapy",
+    "HeadlessChrome",
+    "PhantomJS"
+  ],
+  "known_bots": [
+    "Googlebot",
+    "bingbot",
+    "DuckDuckBot",
+    "Applebot",
+    "YandexBot",
+    "Baiduspider",
+    "Slackbot",
+    "facebookexternalhit",
+    "Facebot",
+    "Twitterbot",
+    "WhatsApp",
+    "Discordbot",
+    "LinkedInBot",
+    "TelegramBot",
+    "Pinterestbot",
+    "redditbot",
+    "Embedly",
+    "SkypeUriPreview",
+    "Iframely",
+    "UptimeRobot",
+    "Pingdom",
+    "StatusCake",
+    "Site24x7",
+    "Feedly",
+    "Feedbin",
+    "NewsBlur",
+    "Inoreader"
+  ],
+  "browser_checks": {
+    "weights": {
+      "no_accept_language": 2,
+      "no_sec_fetch": 2,
+      "chrome_without_client_hints": 2,
+      "accept_any": 1,
+      "http1": 1,
+      "cloud_asn": 1
+    },
+    "suspect_score": 3,
+    "cloud_asns": [
+      16509,
+      14618,
+      8987,
+      15169,
+      396982,
+      8075,
+      14061,
+      24940,
+      213230,
+      16276,
+      63949,
+      31898,
+      45102,
+      132203,
+      20473,
+      51167,
+      12876
+    ]
+  },
+  "pass": {
+    "cookie": "stilebase_pass",
+    "max_age_seconds": 43200
+  }
+}
