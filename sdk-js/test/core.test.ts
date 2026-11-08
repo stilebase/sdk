@@ -231,6 +231,20 @@ describe("payments", () => {
     expect(stilebase.to("/v1/x402/settle")[0]?.body).toMatchObject({ payment: "v1payment" });
   });
 
+  it("a receipt that can't be a header is dropped, never a broken answer", async () => {
+    stilebase.settle = { status: 200, body: { success: true, transaction: "0xabc", network: "eip155:8453", header: "bad\r\nvalue" } };
+    expect(await gate().check(request("/listings/2", PAID))).toEqual({ action: "pass" });
+    stilebase.settle = { status: 200, body: { success: false, errorReason: "insufficient_funds", header: "bad\r\nvalue" } };
+    const refused = await gate().check(request("/listings/2", PAID));
+    expect(refused.action === "respond" && refused.status).toBe(402);
+    if (refused.action === "respond") expect(refused.headers["PAYMENT-RESPONSE"]).toBeUndefined();
+  });
+
+  it("an address that isn't a string (a custom clientIp's mistake) is none, and agents still pay", async () => {
+    const decision = await gate().check({ ...request("/listings/2", GPTBOT), ip: { hostname: "1.2.3.4" } as unknown as string });
+    expect(decision.action === "respond" && decision.status).toBe(402);
+  });
+
   it("an empty PAYMENT-SIGNATURE doesn't hide an X-PAYMENT", async () => {
     await gate().check(request("/listings/2", { ...GPTBOT, "payment-signature": "", "x-payment": "v1payment" }));
     expect(stilebase.to("/v1/x402/settle")[0]?.body).toMatchObject({ payment: "v1payment" });

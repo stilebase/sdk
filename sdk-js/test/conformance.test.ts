@@ -78,14 +78,18 @@ describe("conformance vectors: the gate's decisions", () => {
     const stilebase = new FakeStilebase();
     const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, paths: v.prefixes, onError: () => undefined });
     const decision = await gate.check(request(v.path, GPTBOT, { url: `https://${DOMAIN}${v.path}` }));
-    expect(decision.action === "respond").toBe(v.gated);
+    expect(decision.action === "respond" && decision.status === 402).toBe(v.gated);
+    if (!v.gated) expect(decision).toEqual({ action: "pass" });
   });
 
   it.each(vectors.payment_headers.cases)("takes the payment from $headers", async (v) => {
     const stilebase = new FakeStilebase();
     const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
-    await gate.check(request("/listings/1", { ...GPTBOT, ...(v.headers as Record<string, string>) }));
+    const decision = await gate.check(request("/listings/1", { ...GPTBOT, ...(v.headers as Record<string, string>) }));
     const settled = stilebase.to("/v1/x402/settle")[0]?.body as { payment?: string } | undefined;
     expect(settled?.payment ?? null).toBe(v.payment);
+    // No payment: the agent is asked to pay (402), never let through. A payment: settled and served.
+    if (v.payment === null) expect(decision.action === "respond" && decision.status).toBe(402);
+    else expect(decision.action).toBe("pass");
   });
 });

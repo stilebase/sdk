@@ -8,7 +8,8 @@ export interface FetchGateOptions extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets). Default: on Cloudflare,
    * CF-Connecting-IP; elsewhere none. Never a header anyone can set. */
   ipHeader?: string;
-  /** Or work it out yourself (Bun: `server.requestIP(request)?.address`; Deno: the handler's info.remoteAddr). */
+  /** Or work it out yourself (Bun: `server.requestIP(request)?.address`; Deno: the handler's info.remoteAddr.hostname). It must
+   * return a string (or null): anything else counts as no address. */
   clientIp?: (request: Request, ...rest: unknown[]) => string | null | undefined;
 }
 

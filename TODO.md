@@ -73,6 +73,11 @@ What's known and not yet done, each with why it waits. Findings from code review
   release again from a new run. *Waits:* to confirm on the first release.
 - **Tests for a superseded load finishing late**, and for the address lists' bound. *Waits:* the code keeps the newer
   load (ownership checks); a test pins it.
+- **A superseded load still marks the settings as tried, and a superseded failed address-list load still sets an
+  empty list.** Only matters with a custom `fetch` that ignores its abort signal. Gate those writes on ownership too
+  (a generation counter). *Waits:* the built-in fetch aborts loads well before they're superseded.
+- **The default warning throttle's map is never pruned**, so error messages that vary grow it slowly. Cap it.
+  *Waits:* default `onError` only, and slow.
 - **Cleanup:** `next.ts` and `express.ts` repeat small parts of core (the environment, the warning throttle);
   `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy;
   `paths` prefixes are normalized on every request rather than once. *Waits:* no behaviour changes.

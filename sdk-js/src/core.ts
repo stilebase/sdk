@@ -164,7 +164,9 @@ class SiteGate implements Gate {
       method: original.method,
       url: original.url,
       headers: original.headers,
-      ip: usableIp(normalizeIp(original.ip)),
+      // Only a string is an address: a custom clientIp returning an object (Deno's info.remoteAddr) must never throw here,
+      // which would let every request through.
+      ip: typeof original.ip === "string" ? usableIp(normalizeIp(original.ip)) : null,
       httpProtocol: original.httpProtocol ?? null,
       asn: original.asn ?? null,
     };
@@ -253,9 +255,10 @@ class SiteGate implements Gate {
       return respond(503, { "content-type": "application/json", "retry-after": "5", "cache-control": "no-store" }, JSON.stringify({ error: "Payment settlement unavailable" }));
     }
     if (!settlement.success) {
-      return paymentRequired({ ...required, error: settlement.errorReason ?? "payment_rejected" }, settlement.header);
+      return paymentRequired({ ...required, error: settlement.errorReason ?? "payment_rejected" }, receipt(settlement.header));
     }
-    return settlement.header ? { action: "pass", paymentResponse: settlement.header } : PASS;
+    const header = receipt(settlement.header);
+    return header ? { action: "pass", paymentResponse: header } : PASS;
   }
 
   private gated(pathname: string): boolean {
@@ -317,7 +320,10 @@ class SiteGate implements Gate {
       const headers = { ...(await signedHeaders(site.secret, "GET", path, EMPTY, this.now())), "Stilebase-Client": this.client };
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) });
       if (answer.status !== 200) discard(answer);
-      if (!current()) return;
+      if (!current()) {
+        discard(answer); // superseded: release the connection, apply nothing
+        return;
+      }
       if (answer.status === 404) {
         this.config = null; // the gateway was removed: stop asking agents to pay
         throw new Error("Stilebase has no gateway for this site key (404): every request passes");
@@ -511,4 +517,10 @@ async function bounded(promise: Promise<unknown>, ms: number): Promise<void> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Stilebase's PAYMENT-RESPONSE value, only when it can be a header (a base64 string): anything else is dropped, so a
+ * runtime never rejects the gate's answer over it. */
+function receipt(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9+/=_-]{1,8192}$/.test(value) ? value : undefined;
 }
