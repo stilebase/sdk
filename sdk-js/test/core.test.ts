@@ -235,8 +235,8 @@ describe("payments", () => {
     expect(decision.headers["PAYMENT-RESPONSE"]).toBe("eyJmYWlsIjp0cnVlfQ==");
   });
 
-  it("that can't be settled get 503: nothing was charged and nothing is given away", async () => {
-    for (const answer of [{ status: 502 }, new Error("timeout")]) {
+  it("that Stilebase doesn't confirm get 503, and nothing is given away", async () => {
+    for (const answer of [{ status: 502 }, new Error("timeout"), { status: 200, body: null }, { status: 200, body: [] }, { status: 200, body: 1 }]) {
       stilebase.settle = answer;
       const decision = await gate().check(request("/listings/2", PAID));
       expect(decision).toMatchObject({ action: "respond", status: 503, headers: { "retry-after": "5" } });
@@ -363,6 +363,24 @@ describe("the review's cases (cycle 3)", () => {
     expect(JSON.parse(decision.body).resource.url).toBe(`https://${DOMAIN}/listings/2`);
     // With no price known yet, a refused lookup still never breaks the site.
     expect(await gate().check(request("/listings/2", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("answers a rate-limited lookup (429) with the last price too: many unique URLs mustn't read free", async () => {
+    const g = gate();
+    await g.check(request("/listings/1", GPTBOT));
+    stilebase.requirements = () => ({ status: 429 });
+    const decision = await g.check(request("/listings/2?x=1", GPTBOT));
+    expect(decision.action === "respond" && decision.status).toBe(402);
+  });
+
+  it("reads a price only from a JSON object, and keeps the last one", async () => {
+    const g = gate();
+    await g.check(request("/listings/1", GPTBOT));
+    stilebase.requirements = () => ({ status: 200, body: null });
+    expect(await g.check(request("/listings/2", GPTBOT))).toEqual({ action: "pass" });
+    stilebase.requirements = () => ({ status: 414 });
+    const decision = await g.check(request("/listings/3", GPTBOT));
+    expect(decision.action === "respond" && decision.status).toBe(402); // the last real price, not null
   });
 
   it("decodes each run of escapes, so a malformed one doesn't hide the rest from `paths`", async () => {

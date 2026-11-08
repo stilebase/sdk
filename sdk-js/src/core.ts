@@ -3,8 +3,8 @@
 // of copied in. SPEC.md, at the root of this repository, is the spec.
 //
 // It never breaks the site: without a key, without settings, or when Stilebase can't be reached, every request
-// passes. Only a payment Stilebase can't settle is refused (503, nothing charged), since serving it would give the
-// page away for a payment that wasn't taken.
+// passes. Only a payment Stilebase doesn't confirm is refused (503), since serving it would give the page away for a
+// payment that may not have been taken.
 
 import {
   type GateConfig,
@@ -28,8 +28,7 @@ import { PACKAGE, VERSION } from "./version.js";
 export const DEFAULT_API_URL = "https://stilebase.com";
 const CONFIG_TIMEOUT_MS = 3_000;
 const REQUIREMENTS_TIMEOUT_MS = 5_000;
-// Longer than Stilebase takes at most to settle (the facilitator's verify and settle, 30 s each, behind a 60 s proxy):
-// giving up first would answer 503 for a payment that then settles.
+// Longer than Stilebase takes at most to settle: giving up first would answer 503 for a payment that then settles.
 const SETTLE_TIMEOUT_MS = 65_000;
 const REPORT_TIMEOUT_MS = 10_000;
 const RETRY_WITHOUT_CONFIG_MS = 30_000; // no settings yet: try again at most this often, never on every request
@@ -44,8 +43,9 @@ const MAX_USER_AGENT = 512;
 // The price lookup's query, encoded, stays well under the 8 KB request line proxies allow.
 const MAX_ENCODED_URL = 4096;
 const MAX_ENCODED_USER_AGENT = 1536;
-// Stilebase refusing the price lookup (malformed, too long): the gate asks with the last price it had.
-const REFUSED = new Set([400, 413, 414, 422, 431]);
+// Stilebase refusing the price lookup (malformed, too long, too many): the gate asks with the last price it had. A
+// visitor can provoke each of these (a padded URL, many unique URLs), so letting the request through would serve it free.
+const REFUSED = new Set([400, 413, 414, 422, 429, 431]);
 const EMPTY = new Uint8Array();
 const WARN_EVERY_MS = 10 * 60 * 1000;
 
@@ -209,8 +209,8 @@ class SiteGate implements Gate {
         this.reportVisit(visit, waitUntil);
         return PASS;
       }
-      if (answer.status === 200) {
-        required = answer.body as Record<string, unknown>;
+      if (answer.status === 200 && isRecord(answer.body)) {
+        required = answer.body;
         this.lastRequired = required;
       } else if (REFUSED.has(answer.status) && this.lastRequired) {
         // Stilebase refused the lookup (a request built to be refused?): ask with the last price rather than give the page.
@@ -239,10 +239,13 @@ class SiteGate implements Gate {
         discard(answer);
         throw new Error(`Stilebase answered the settlement ${answer.status}`);
       }
-      settlement = (await answer.json()) as typeof settlement;
+      const body: unknown = await answer.json();
+      if (!isRecord(body)) throw new Error("Stilebase's settlement answer isn't a JSON object");
+      settlement = body as typeof settlement;
     } catch (error) {
       this.report(error);
-      // Nothing was charged; the agent can retry.
+      // The outcome is unknown: the payment may have settled (an answer lost on the way). Never serve the page, and never
+      // tell the agent it wasn't charged. Sending the same payment again can't charge twice.
       return respond(503, { "content-type": "application/json", "retry-after": "5", "cache-control": "no-store" }, JSON.stringify({ error: "Payment settlement unavailable" }));
     }
     if (!settlement.success) {
@@ -460,4 +463,9 @@ function browserCheck(required: Record<string, unknown>, token: string, config: 
 export function addressFrom(headers: GateRequest["headers"], ipHeader: string | undefined, fallback: string | null | undefined): string | null {
   if (ipHeader) return headers.get(ipHeader)?.split(",").pop()?.trim() || null;
   return fallback || null;
+}
+
+/** A JSON object (not null, an array or a primitive): the only shape Stilebase's answers are read from. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

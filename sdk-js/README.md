@@ -90,7 +90,9 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   but only from their operator's official addresses.
 - **Payments.** A request with a payment (`PAYMENT-SIGNATURE`, or x402 v1's `X-PAYMENT`) is settled through Stilebase.
   Once settled, your page is served with `PAYMENT-RESPONSE`. A refused payment gets the 402 again, with the reason.
-  If Stilebase can't settle it, the agent gets `503`: nothing was charged.
+  If Stilebase doesn't confirm the settlement (it can't be reached, or its answer is lost), the agent gets `503` and
+  the page isn't served. The payment may have settled anyway, so the gate never says it wasn't charged; sending the
+  same payment again can't charge twice.
 - **Agents hiding behind a browser's user agent** are asked too: requests from the addresses AI operators publish for
   their agents, or signed with Web Bot Auth's `Signature-Agent`.
 - **Scripts** with their default user agent (curl, python-requests, Go-http-client…) are asked too, since no person
