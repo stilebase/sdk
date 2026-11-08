@@ -119,7 +119,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
 1. **The verification file.** While `verification` is set, the gate answers requests for `path` with `value` as plain
    text.
 2. **Not live:** everyone passes.
-3. **A request with a payment** (`PAYMENT-SIGNATURE`, x402 v2, or `X-PAYMENT`, v1) skips steps 4 and 5: whoever
+3. **A request with a payment** (`PAYMENT-SIGNATURE`, x402 v2, else `X-PAYMENT`, v1; an empty header is no payment)
+   skips steps 4 and 5: whoever
    sends a payment is treated as an agent. It still goes through the price lookup (step 6), which names the requirement
    the payment must meet, and then to settlement (step 8). When the lookup brings no requirement (204, or an answer that
    lets the request pass), the request passes without settling.

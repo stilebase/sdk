@@ -1,5 +1,6 @@
 // The package as users get it: `npm pack`, installed into an empty project, every entry imported (ESM and CommonJS)
-// and its types checked. Run after `npm run build`.
+// and its types checked. Run after `npm run build`. SMOKE_TARBALL=<path> checks that tarball instead of packing one
+// (the release checks the exact file it publishes).
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -11,9 +12,11 @@ const work = mkdtempSync(join(tmpdir(), "stilebase-sdk-smoke-"));
 const npm = (args, cwd) => execFileSync("npm", args, { cwd, stdio: ["ignore", "pipe", "inherit"], shell: process.platform === "win32" }).toString();
 
 try {
-  const tarball = join(work, JSON.parse(npm(["pack", "--json", "--pack-destination", work], root))[0].filename);
+  const tarball = process.env.SMOKE_TARBALL
+    ? resolve(process.env.SMOKE_TARBALL)
+    : join(work, JSON.parse(npm(["pack", "--json", "--pack-destination", work], root))[0].filename);
   writeFileSync(join(work, "package.json"), JSON.stringify({ name: "smoke", private: true, type: "module" }));
-  // --ignore-scripts: third-party install scripts never run next to a build (CI and the release job).
+  // --ignore-scripts: the smoke test's own third-party installs run no scripts.
   npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5", "next@15", "react@19", "react-dom@19", "typescript@5.6", "@types/express@5", "@types/node@20"], work);
 
   writeFileSync(

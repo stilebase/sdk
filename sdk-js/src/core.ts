@@ -298,22 +298,26 @@ class SiteGate implements Gate {
   private loadSettings(): Promise<void> {
     // A load that outlived its own timeout belongs to a request the runtime gave up on: start a fresh one.
     if (this.configLoading && this.now() - this.configLoadingAt > STALE_LOAD_MS) this.configLoading = null;
-    if (!this.configLoading) this.configLoadingAt = this.now();
-    this.configLoading ??= this.fetchSettings().finally(() => {
+    if (this.configLoading) return this.configLoading;
+    this.configLoadingAt = this.now();
+    const load: Promise<void> = this.fetchSettings(() => this.configLoading === load).finally(() => {
       this.configTried = true;
       this.configCheckedAt = this.now();
-      this.configLoading = null;
+      if (this.configLoading === load) this.configLoading = null; // a superseded load leaves the newer one alone
     });
-    return this.configLoading;
+    this.configLoading = load;
+    return load;
   }
 
-  private async fetchSettings(): Promise<void> {
+  /** `current()` is false once this load was superseded by a newer one: its answer is then dropped, never applied. */
+  private async fetchSettings(current: () => boolean = () => true): Promise<void> {
     const site = this.site!;
     const path = `/v1/x402/sites/${site.gatewayId}/config`;
     try {
       const headers = { ...(await signedHeaders(site.secret, "GET", path, EMPTY, this.now())), "Stilebase-Client": this.client };
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) });
       if (answer.status !== 200) discard(answer);
+      if (!current()) return;
       if (answer.status === 404) {
         this.config = null; // the gateway was removed: stop asking agents to pay
         throw new Error("Stilebase has no gateway for this site key (404): every request passes");
@@ -330,7 +334,7 @@ class SiteGate implements Gate {
       if (answer.status !== 200) throw new Error(`Stilebase answered the settings ${answer.status}`);
       const config = parseConfig(await answer.json());
       if (!config) throw new Error("Stilebase sent settings this version can't read");
-      this.config = config;
+      if (current()) this.config = config;
     } catch (error) {
       this.report(error); // keep the last good settings, if any
     }
@@ -340,8 +344,10 @@ class SiteGate implements Gate {
   private async agentRanges(waitUntil?: WaitUntil): Promise<NetworkIndex> {
     const load = () => {
       if (this.rangesLoading && this.now() - this.rangesLoadingAt > STALE_LOAD_MS) this.rangesLoading = null;
-      if (!this.rangesLoading) this.rangesLoadingAt = this.now();
-      return (this.rangesLoading ??= (async () => {
+      if (this.rangesLoading) return this.rangesLoading;
+      this.rangesLoadingAt = this.now();
+      const run = async (): Promise<void> => {
+        await Promise.resolve(); // `loading` is assigned before anything below runs, a synchronous failure included
         try {
           const answer = await this.fetch(`${this.api}/v1/x402/agent-ranges`, { signal: AbortSignal.timeout(REQUIREMENTS_TIMEOUT_MS) });
           if (answer.status !== 200) {
@@ -352,15 +358,21 @@ class SiteGate implements Gate {
           // No list in the answer: keep the last good one rather than stop catching hidden agents.
           if (!isRecord(body) || !Array.isArray(body.prefixes)) throw new Error("Stilebase's agent ranges have no prefixes list");
           const prefixes: unknown[] = body.prefixes;
+          if (this.rangesLoading !== loading) return; // superseded: the newer load's answer counts
           this.ranges = new NetworkIndex(prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : [])));
         } catch (error) {
           this.report(error);
           this.ranges ??= new NetworkIndex([]); // keep what we had (or none) and try again in an hour
         } finally {
-          this.rangesAt = this.now();
-          this.rangesLoading = null;
+          if (this.rangesLoading === loading) {
+            this.rangesAt = this.now();
+            this.rangesLoading = null;
+          }
         }
-      })());
+      };
+      const loading = run();
+      this.rangesLoading = loading;
+      return loading;
     };
     if (this.ranges === null) await bounded(load(), REQUIREMENTS_TIMEOUT_MS + 500);
     else if (this.now() - this.rangesAt > RANGES_MAX_AGE_MS) this.background(load(), waitUntil);

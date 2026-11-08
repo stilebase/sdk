@@ -361,5 +361,110 @@
         "normalized": null
       }
     ]
+  },
+  "paths": {
+    "about": "`paths` prefixes, matched as SPEC.md section 6 says: against the path as routers see it (decoded, lowercased, dot segments resolved); a prefix ending in / also covers the same path without it. gated: the request is asked to pay (for an AI agent).",
+    "cases": [
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/listings/2",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/listings",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/LISTINGS",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/%6Cistings/2",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/x/..%2Flistings/2",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/listingsfoo",
+        "gated": false
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/about",
+        "gated": false
+      },
+      {
+        "prefixes": [
+          "/listings"
+        ],
+        "path": "/listings-archive",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/"
+        ],
+        "path": "/",
+        "gated": true
+      }
+    ]
+  },
+  "payment_headers": {
+    "about": "Which header is the payment (SPEC.md section 5, step 3): PAYMENT-SIGNATURE, else X-PAYMENT; an empty header is no payment. payment: what's sent to /v1/x402/settle, or null for an unpaid request.",
+    "cases": [
+      {
+        "headers": {
+          "payment-signature": "v2payment"
+        },
+        "payment": "v2payment"
+      },
+      {
+        "headers": {
+          "x-payment": "v1payment"
+        },
+        "payment": "v1payment"
+      },
+      {
+        "headers": {
+          "payment-signature": "v2payment",
+          "x-payment": "v1payment"
+        },
+        "payment": "v2payment"
+      },
+      {
+        "headers": {
+          "payment-signature": "",
+          "x-payment": "v1payment"
+        },
+        "payment": "v1payment"
+      },
+      {
+        "headers": {
+          "payment-signature": ""
+        },
+        "payment": null
+      }
+    ]
   }
 }

@@ -45,9 +45,13 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
     if (decision.action === "respond") return new Response(decision.body, { status: decision.status, headers: decision.headers });
     const response = await handler(request, ...rest);
     if (!decision.paymentResponse) return response;
-    const paid = new Response(response.body, response); // a fresh Response: the handler's headers may be immutable
-    paid.headers.set("PAYMENT-RESPONSE", decision.paymentResponse);
-    return paid;
+    try {
+      const paid = new Response(response.body, response); // a fresh Response: the handler's headers may be immutable
+      paid.headers.set("PAYMENT-RESPONSE", decision.paymentResponse);
+      return paid;
+    } catch {
+      return response; // the payment settled: serve the page the agent paid for, even without its receipt header
+    }
   };
 }
 

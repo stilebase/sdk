@@ -8,6 +8,8 @@ import { type GateConfig, inNetworks, isAiAgent, isScript, normalizeIp, parseNet
 import { parseSiteKey, passToken, signedHeaders } from "../src/signing.js";
 import { VERSION } from "../src/version.js";
 import pkg from "../package.json";
+import { createGate } from "../src/core.js";
+import { API, DOMAIN, FakeStilebase, GPTBOT, KEY, request } from "./fake-stilebase.js";
 
 const config = example as GateConfig;
 
@@ -68,5 +70,22 @@ describe("the review's cases (cycle 1)", () => {
     expect(requestUrl("http", "[::1]:8080", "/")).toBe("http://[::1]:8080/");
     expect(requestUrl("https", "shop.example.com", "http://evil.example/premium/x?b")).toBe("https://shop.example.com/premium/x?b");
     expect(new URL(requestUrl("https", "shop.example.com", "/premium/a#b")).pathname).toBe("/premium/a%23b");
+  });
+});
+
+describe("conformance vectors: the gate's decisions", () => {
+  it.each(vectors.paths.cases)("matches paths: $prefixes against $path", async (v) => {
+    const stilebase = new FakeStilebase();
+    const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, paths: v.prefixes, onError: () => undefined });
+    const decision = await gate.check(request(v.path, GPTBOT, { url: `https://${DOMAIN}${v.path}` }));
+    expect(decision.action === "respond").toBe(v.gated);
+  });
+
+  it.each(vectors.payment_headers.cases)("takes the payment from $headers", async (v) => {
+    const stilebase = new FakeStilebase();
+    const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
+    await gate.check(request("/listings/1", { ...GPTBOT, ...(v.headers as Record<string, string>) }));
+    const settled = stilebase.to("/v1/x402/settle")[0]?.body as { payment?: string } | undefined;
+    expect(settled?.payment ?? null).toBe(v.payment);
   });
 });

@@ -63,7 +63,19 @@ What's known and not yet done, each with why it waits. Findings from code review
   only the statistics' page name differs.
 - **Identical concurrent price lookups aren't combined**, and a refused lookup's 402 names the uncut URL. *Waits:*
   performance and cosmetics only.
-- **`next.ts` and `express.ts` repeat small parts of core** (the environment, the warning throttle). *Waits:* cleanup.
+- **A first load another request started, and the runtime cancelled** (Workers, Next edge): each request waits on it
+  at most its own deadline (3.5 s settings, 5.5 s address lists) until it's replaced after 10 seconds, so for those 10
+  seconds every request waits the full bound. Hand the first load to `waitUntil` as well, so it survives the
+  disconnect. *Waits:* it needs a cold isolate whose first visitor disconnects mid-fetch.
+- **A `clientIp` that throws, or a receipt header that can't be set, is swallowed silently.** Report it through the
+  gate's warning, throttled. *Waits:* the gate keeps working (no address, or no receipt header).
+- **Re-running a release job whose smoke test failed** may fail at the upload (an artifact name is unique per run);
+  release again from a new run. *Waits:* to confirm on the first release.
+- **Tests for a superseded load finishing late**, and for the address lists' bound. *Waits:* the code keeps the newer
+  load (ownership checks); a test pins it.
+- **Cleanup:** `next.ts` and `express.ts` repeat small parts of core (the environment, the warning throttle);
+  `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy;
+  `paths` prefixes are normalized on every request rather than once. *Waits:* no behaviour changes.
 
 - **Next.js middleware on Vercel's Edge runtime must answer within 25 seconds**, and a settlement can take longer.
   The README should recommend the Node.js runtime for middleware (Next 15.5+), or the gate in a route handler.

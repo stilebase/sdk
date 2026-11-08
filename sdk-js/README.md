@@ -67,9 +67,11 @@ export default { fetch: withGate(handler) }; // Workers: `npx wrangler secret pu
 import { createGate } from "@stilebase/sdk/gate";
 
 const gate = createGate();
-// url: the full request URL; headers: a Fetch API Headers (or anything with get(name)), not a plain object;
+// url: the full request URL; headers: a Fetch API Headers (or anything with get(name)). From Node's req.headers (a
+// plain object, not req.rawHeaders), build one: new Headers(Object.entries(req.headers).flatMap(([k, v]) =>
+// v === undefined ? [] : [[k, Array.isArray(v) ? v.join(", ") : v]])).
 // ip: the visitor's address (see "The visitor's address" below), or null.
-const decision = await gate.check({ method, url, headers: new Headers(rawHeaders), ip });
+const decision = await gate.check({ method, url, headers, ip });
 // decision.action === "respond": send decision.status, decision.headers, decision.body instead.
 // decision.action === "pass": serve the request; add PAYMENT-RESPONSE: decision.paymentResponse when it's set.
 ```
@@ -105,7 +107,8 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   can verify without touching DNS.
 - **Your own health checks** are scripts too (curl, wget, urllib): exempt them with `paths` (gate only your content), a
   user agent of your own on the check, or `catchHttpClients: false`.
-- **`paths`** match ignoring letter case and percent-encoding, as routers do.
+- **`paths`** match ignoring letter case and percent-encoding, as routers do. A prefix ending in `/` also covers the
+  same path without it: `"/listings/"` gates `/listings` too.
 
 The agent lists and checks come from Stilebase. The gate refreshes them every five minutes, so new agents are caught
 without a redeploy. Price changes and free passes on the gateway page apply within five minutes too.

@@ -30,7 +30,13 @@ export function gate(options: NextGateOptions = {}) {
     );
     if (decision.action === "respond") return new NextResponse(decision.body, { status: decision.status, headers: decision.headers });
     const response = NextResponse.next();
-    if (decision.paymentResponse) response.headers.set("PAYMENT-RESPONSE", decision.paymentResponse);
+    if (decision.paymentResponse) {
+      try {
+        response.headers.set("PAYMENT-RESPONSE", decision.paymentResponse);
+      } catch {
+        // the payment settled: serve the page the agent paid for, even without its receipt header
+      }
+    }
     return response;
   };
 }
