@@ -23,6 +23,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+.npmrc
+.pypirc
 
 # Local Claude Code settings
 .claude/settings.local.json

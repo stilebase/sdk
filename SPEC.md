@@ -10,8 +10,8 @@ The spec for `@stilebase/sdk`, `stilebase-sdk`, and a gate in any other language
 ## The one rule: never break the site
 
 When Stilebase can't be reached, answers with an error, or has no live gateway for the site, **everyone gets the site
-as usual**, except that a gate keeps working on the last settings it fetched (section 3): during an outage, agents are
-still asked to pay at the price of the last lookups. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
+as usual**. A gate keeps working on the last settings it fetched (section 3) and on the price lookups it has cached
+(at most 5 minutes); once those run out during an outage, agents pass too. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
 in three cases: the gate's very first request waits for the settings (at most 3 seconds); the first request with an
 address waits for the operators' address lists (at most 5 seconds) while hidden agents are caught; and a browser that
 looks like a script (a *suspect*, section 5, step 5) waits on the price lookup (at most 5 seconds) unless it carries a valid
@@ -19,9 +19,9 @@ pass cookie or that answer is cached.
 
 Three exceptions to "everyone gets the site", each because the alternative lets agents read without paying:
 
-- **A refused price lookup** (400, 413, 414, 422, 429, 431) is answered with 402 at the last price the gate had, for
-  this page. Only when it has none yet does the request pass. A visitor can provoke these (a padded URL, many unique
-  URLs), so passing would let agents read free.
+- **A refused price lookup** (400, 413, 414, 422, 429, 431) is answered with 402 at the last price the gate saw for any
+  page, with this page's URL. Only when it has none yet does the request pass. A visitor can try to provoke these
+  (many unique URLs, a request built to be refused), so passing would let agents read free.
 - **A failed settings fetch** keeps the last good settings, whatever the failure (a 401 after a rotated key, a 5xx, a
   timeout, an unknown `config_version`). Only a 404 drops them (section 3).
 - **A settlement without an answer** answers 503 with `Retry-After` (section 5, step 8). The page isn't served, since the
@@ -116,7 +116,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
 
 ## 5. Each request
 
-1. **The verification file.** While `verification` is set, the gate answers `GET <path>` with `value` as plain text.
+1. **The verification file.** While `verification` is set, the gate answers requests for `path` with `value` as plain
+   text.
 2. **Not live:** everyone passes.
 3. **A request with a payment** (`PAYMENT-SIGNATURE`, x402 v2, or `X-PAYMENT`, v1) skips steps 4 and 5: whoever
    sends a payment is treated as an agent. It still goes through the price lookup (step 6), which names the requirement
@@ -183,17 +184,20 @@ the entries before it are the visitor's to write. An address over 45 characters 
    ```
 
    `agent.headers` carries only the Web Bot Auth headers that are present. The answer is the x402
-   `SettlementResponse` plus `header`:
-   The answer is read only when it's a 200 with a JSON object:
+   `SettlementResponse` plus `header`, read only when it's a 200 with a JSON object whose `success` is a boolean:
    - `"success": true`: the request goes to the site, and the response gets `PAYMENT-RESPONSE: <header>`.
    - `"success": false`: answer 402 again, with `error` set to the `errorReason` and `PAYMENT-RESPONSE`.
-   - No answer, or any other answer (Stilebase down, a timeout, a body that isn't a JSON object): 503 with
+   - No answer, or any other answer (Stilebase down, a timeout, a body that isn't a JSON object, a `success` that isn't
+     a boolean): 503 with
      `Retry-After: 5`, and the page isn't served. **The outcome is unknown**: the payment may have settled after all
      (an answer lost on the way), so a gate never tells the agent it wasn't charged. Sending the same payment again
      can never charge twice: each authorization is spent once, on-chain.
 9. **Visits** are reported with a signed `POST <stilebase>/v1/x402/visits`, the same body as settle without
    `payment` (plus `free_pass` or `signals`), in the background: a request never waits on it. A gate keeps a bounded
    number of reports in flight and drops the rest.
+
+Every answer the gate makes itself (402, the browser check's page, 503, the verification file) carries
+`Cache-Control: no-store`, so no cache in front of the site keeps it and serves it to people.
 
 ## 6. The page's name
 
