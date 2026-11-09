@@ -16,10 +16,8 @@ import {
   fitEncoded,
   isScript,
   normalizeIp,
-  decodePath,
-  isPlainUrl,
-  pathReadings,
-  rawPath,
+  isLiteralPath,
+  literalPath,
   siteUrl,
   parseConfig,
   parseNetwork,
@@ -138,7 +136,7 @@ class SiteGate implements Gate {
     private readonly options: GateOptions,
     adapter: string,
   ) {
-    const env = environment();
+    const env = { STILEBASE_API_URL: envVar("STILEBASE_API_URL"), STILEBASE_KEY: envVar("STILEBASE_KEY") };
     this.client = `${PACKAGE}/${VERSION} gate/${adapter}`; // e.g. "@stilebase/sdk/0.1.0 gate/express"
     this.api = (options.apiUrl || env.STILEBASE_API_URL || DEFAULT_API_URL).replace(/\/+$/, ""); // empty counts as unset
     // Called as plain functions, never as this.fetch(...): a fetch with `this` bound to the gate throws on Workers.
@@ -148,9 +146,9 @@ class SiteGate implements Gate {
     this.testMode = options.mode === "test";
     // Exact paths, decoded as the readings are (a single string counts as one path, never its characters).
     const free: unknown = options.free;
-    const listed: unknown[] = typeof free === "string" ? [free] : Array.isArray(free) ? free : free === undefined ? [] : [free];
-    const usable = listed.filter((p): p is string => typeof p === "string" && p.startsWith("/") && pathReadings(p).every((r) => r === decodePath(p)));
-    this.freePaths = new Set(usable.map(decodePath));
+    const listed: unknown[] = typeof free === "string" ? [free] : Array.isArray(free) ? free : free == null ? [] : [free];
+    const usable = listed.filter((p): p is string => typeof p === "string" && isLiteralPath(p));
+    this.freePaths = new Set(usable);
     this.unusableFree = listed.filter((p) => !usable.includes(p as string));
     const key = options.key ?? env.STILEBASE_KEY ?? "";
     this.site = parseSiteKey(key);
@@ -185,7 +183,7 @@ class SiteGate implements Gate {
     if (this.unusableFree.length) {
       const entries = this.unusableFree.map((p) => JSON.stringify(p)).join(", ");
       this.unusableFree.length = 0;
-      this.report(new Error(`free: ${entries} can never match (use exact paths from the site's root, like "/healthz", with no query, "..", "//" or "\\")`));
+      this.report(new Error(`free: ${entries} can never match (use literal paths from the site's root, like "/healthz": letters, digits, - . _ ~ and /, no query, %, "..", "//")`));
     }
     const config = await this.settings(waitUntil);
     if (!config) return PASS;
@@ -193,7 +191,7 @@ class SiteGate implements Gate {
     if (config.verification && url.pathname === config.verification.path) {
       return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
-    if (!config.gateway.live || this.isFree(request.method, request.url, url.pathname)) return PASS;
+    if (!config.gateway.live || this.isFree(request.method, request.url)) return PASS;
 
     const headers = request.headers;
     // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
@@ -278,13 +276,15 @@ class SiteGate implements Gate {
     return header ? { action: "pass", paymentResponse: header } : PASS;
   }
 
-  /** A free path: every reading of the request's path is one of the owner's free paths exactly. Any doubt means gated. */
-  private isFree(method: string, requestUrl: string, pathname: string): boolean {
+  /** A free path: the request's URL is literal (no encoding, no dot segments, a plain host) and its path is one of the
+   * owner's free paths character for character. Anything unusual is gated: no two parsers can read it differently. */
+  private isFree(method: string, requestUrl: string): boolean {
     if (this.freePaths.size === 0) return false;
     // Reading a page only (a POST can run code a free page shares with gated ones), and only from a URL every parser
     // reads the same way.
-    if (!["GET", "HEAD"].includes(method.toUpperCase()) || !isPlainUrl(requestUrl)) return false;
-    return pathReadings(pathname, rawPath(requestUrl)).every((reading) => this.freePaths.has(reading));
+    if (!["GET", "HEAD"].includes(method.toUpperCase())) return false;
+    const path = literalPath(requestUrl);
+    return path !== null && this.freePaths.has(path);
   }
 
   /** An AI agent by its user agent; a script by its default user agent (or none); an agent hiding behind a browser's
@@ -462,8 +462,15 @@ class SiteGate implements Gate {
   }
 }
 
-function environment(): Record<string, string | undefined> {
-  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+/** One environment variable, or undefined: unset, no `process` (Workers), or a read the runtime refuses (Deno with
+ * --allow-env for other names). A refused read never stops the gate. */
+function envVar(name: string): string | undefined {
+  try {
+    const value = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** No address is longer than 45 characters: anything longer (a header someone stuffed) counts as none, as Stilebase

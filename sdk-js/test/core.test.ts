@@ -139,19 +139,39 @@ describe("AI agents", () => {
     expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
   });
 
+  it("starts when the runtime refuses to read one environment variable (Deno's --allow-env for the key only)", async () => {
+    const original = process.env;
+    process.env = new Proxy(original, {
+      get(target, name) {
+        if (name === "STILEBASE_API_URL") throw new Error("NotCapable: requires env access to STILEBASE_API_URL");
+        return Reflect.get(target, name);
+      },
+    });
+    try {
+      const g = createGate({ key: KEY, fetch: (input, init) => stilebase.fetch(String(input).replace("https://stilebase.com", API), init), onError: (e) => errors.push(e) }, "test");
+      expect((await g.check(request("/listings/2", GPTBOT))).action).toBe("respond"); // the default API, gating as usual
+    } finally {
+      process.env = original;
+    }
+  });
+
   it("reports free entries that can never match, once", async () => {
-    const g = gate({ free: ["healthz", "/robots.txt?x", "/a/../b", "/healthz"] });
+    const g = gate({ free: ["healthz", "/robots.txt?x", "/a/../b", "/a#b", "/%68ealthz", "/healthz"] });
     expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
     await g.check(request("/healthz", GPTBOT));
-    expect(errors.filter((e) => /can never match/.test(e.message))).toHaveLength(1);
-    expect(errors[0]?.message).toContain('"healthz"');
+    const reports = errors.filter((e) => /can never match/.test(e.message));
+    expect(reports).toHaveLength(1);
+    for (const entry of ['"healthz"', '"/robots.txt?x"', '"/a/../b"', '"/a#b"', '"/%68ealthz"']) expect(reports[0]?.message).toContain(entry);
+    expect(reports[0]?.message.split(" can never match")[0]).not.toContain('"/healthz"'); // the usable entry isn't listed
+    expect(gate({ free: null as unknown as string[] })).toBeTruthy(); // null: no free paths, no report
+    expect(errors.filter((e) => /null/.test(e.message))).toHaveLength(0);
   });
 
   it("everywhere except the free paths you list, exactly", async () => {
     const g = gate({ free: ["/healthz", "/robots.txt"] });
     expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
     expect(await g.check(request("/robots.txt?x=1", GPTBOT))).toEqual({ action: "pass" });
-    for (const path of ["/listings/2", "/healthz/", "/HEALTHZ", "/healthz/../listings/2", "/x/../healthz", "//healthz"]) {
+    for (const path of ["/listings/2", "/healthz/", "/HEALTHZ", "/healthz/../listings/2", "/x/../healthz", "//healthz", "/%68ealthz"]) {
       expect((await g.check(request(path, GPTBOT))).action, path).toBe("respond");
     }
   });

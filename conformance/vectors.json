@@ -400,7 +400,7 @@
     ]
   },
   "free_paths": {
-    "about": "The `free` option (SPEC.md section 6): a request is free only when it's a GET or HEAD, its URL is http(s) with a plain host name, and every reading of its path, from the URL as the visitor sent it, is one of the free paths exactly. The readings: decoded as written; decoded with dot segments resolved (RFC 3986); decoded with runs of / collapsed and \\ read as /, then dot segments resolved. Letter case is kept. method defaults to GET; url, when given, is the request URL instead of https://<domain><path>. free_request: the request passes (an AI agent isn't asked to pay).",
+    "about": "The `free` option (SPEC.md section 6): a request is free only when it's a GET or HEAD and its URL is literal (http or https, a plain host name, then a path of letters, digits, - . _ ~ and / with no empty, . or .. segment; a query may follow) and the path is one of the free paths character for character. No decoding, no resolving: anything else is gated. method defaults to GET; url, when given, is the request URL instead of https://<domain><path>. free_request: the request passes (an AI agent isn't asked to pay).",
     "cases": [
       {
         "free": [
@@ -424,7 +424,7 @@
           "/robots.txt"
         ],
         "path": "/%68ealthz",
-        "free_request": true
+        "free_request": false
       },
       {
         "free": [
@@ -536,6 +536,56 @@
         ],
         "path": "/healthz",
         "url": "http://a@x/healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/",
+          "/healthz"
+        ],
+        "path": "/",
+        "url": "http://x?/premium/report",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/",
+          "/healthz"
+        ],
+        "path": "/",
+        "url": "http://x#/premium/report",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/docs/intro"
+        ],
+        "path": "/docs%2Fintro",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/docs/intro"
+        ],
+        "path": "/docs/intro",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "url": "https://shop.example.com/healthz?probe=1",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "url": "ftp://shop.example.com/healthz",
         "free_request": false
       }
     ]

@@ -109,9 +109,9 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   can verify without touching DNS.
 - **Your own health checks** are scripts too (curl, wget, urllib): keep them free with `free: ["/healthz"]`, a user
   agent of your own on the check, or `catchHttpClients: false`.
-- **Free paths are exact.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else: not
-  `/healthz/`, `/HEALTHZ`, a POST, or any path that only resolves to it. Free paths are full paths from the site's
-  root, even for a gate mounted under a path. Every other path is gated. (There's no option to gate only some sections:
+- **Free paths are exact and literal.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else:
+  not `/healthz/`, `/HEALTHZ`, `/%68ealthz`, a POST, or any path that only resolves to it. Use letters, digits,
+  `- . _ ~` and `/`; full paths from the site's root, even for a gate mounted under a path. Every other path is gated. (There's no option to gate only some sections:
   each way of predicting how routers and file servers read a path left some spelling of a gated page free.)
 
 The agent lists and checks come from Stilebase. The gate refreshes them every five minutes, so new agents are caught

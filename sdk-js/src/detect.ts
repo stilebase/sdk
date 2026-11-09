@@ -147,12 +147,6 @@ export class NetworkIndex {
 const HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
 const SCHEME_AND_AUTHORITY = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is;
 
-/** A URL that reads the same to every parser: http(s), a plain host name (no `%`, `@`, `;`...), then a path from `/`.
- * Only such a request can be free: anything else is read differently by some router, so it's gated. */
-export function isPlainUrl(url: string): boolean {
-  const parts = SCHEME_AND_AUTHORITY.exec(url);
-  return !!parts && /^https?$/i.test(parts[1]!) && HOST.test(parts[2]!) && (parts[3] === "" || /^[/?#]/.test(parts[3]!));
-}
 
 /** The URL a visitor asked for, from parts a framework gives: the Host header is the visitor's to write, so anything
  * that isn't a host name (a "?" or "#" would change the path the gate reads) becomes "localhost", and an absolute-form
@@ -195,53 +189,22 @@ function isNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-/** Every way a router or a file server may read the request's path, for the `free` option: decoded as written (routers
- * match it with dot segments unresolved), with dot segments resolved as RFC 3986 says (empty segments kept), and as file
- * servers resolve it (runs of `/` collapsed first, `\` read as `/`); each from the parsed path and from the raw path the
- * visitor sent. Letter case is kept. A request is free only when every reading is a free path exactly. */
-export function pathReadings(pathname: string, raw?: string): string[] {
-  const out = new Set<string>();
-  for (const path of raw === undefined || raw === pathname ? [pathname] : [pathname, raw]) {
-    const decoded = decodePath(path);
-    out.add(decoded);
-    out.add(withoutDotSegments(decoded));
-    out.add(withoutDotSegments(decoded.replaceAll("\\", "/").replace(/\/{2,}/g, "/")));
-  }
-  return [...out];
+/** A path every parser reads the same way: from `/`, only letters, digits and `-` `.` `_` `~` between slashes, no
+ * empty, `.` or `..` segment (a trailing slash is fine). No percent-encoding, so nothing to decode or resolve. */
+export function isLiteralPath(path: string): boolean {
+  if (!/^\/[A-Za-z0-9._~/-]*$/.test(path)) return false;
+  const segments = path.slice(1).split("/");
+  if (segments.at(-1) === "") segments.pop(); // a trailing slash
+  return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
-/** The path part of a request URL as the visitor sent it (no query, no fragment), before a URL parser resolves it. */
-export function rawPath(url: string): string {
-  const rest = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(url)?.[1] ?? url;
-  const path = rest.replace(/[?#].*$/s, "");
-  return path.startsWith("/") ? path : `/${path}`;
-}
-
-/** A path percent-decoded: each run of escapes on its own, so one malformed escape doesn't leave the rest encoded; an
- * ASCII escape always decodes (routers decode them, malformed neighbours or not). */
-export function decodePath(path: string): string {
-  return path.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
-    try {
-      return decodeURIComponent(run);
-    } catch {
-      return run.replace(/%([0-9a-f]{2})/gi, (escape, hex: string) => (parseInt(hex, 16) < 0x80 ? String.fromCharCode(parseInt(hex, 16)) : escape));
-    }
-  });
-}
-
-/** "/a/./b/../c" as "/a/c" (RFC 3986 5.2.4): what static file servers resolve, so `..` can't step around a prefix. */
-export function withoutDotSegments(path: string): string {
-  const out: string[] = [];
-  for (const segment of path.split("/")) {
-    if (segment === "..") {
-      if (out.length > 1) out.pop();
-    } else if (segment !== ".") {
-      out.push(segment);
-    }
-  }
-  const joined = out.join("/");
-  const trailing = /\/\.{1,2}$/.test(path) && !joined.endsWith("/") ? "/" : "";
-  return (joined.startsWith("/") ? joined : `/${joined}`) + trailing;
+/** The path of a request URL when the whole URL is literal: http(s), a plain host name, then a literal path (a query
+ * may follow). Null for anything else (a Host like "x?", percent-encoding, dot segments, an odd scheme): such a request
+ * is never free, since some router may read it differently. */
+export function literalPath(url: string): string | null {
+  const parts = /^https?:\/\/([^/?#]*)(\/[^?#]*)(?:[?#].*)?$/is.exec(url);
+  if (!parts || !HOST.test(parts[1]!) || !isLiteralPath(parts[2]!)) return null;
+  return parts[2]!;
 }
 
 /** The page as the gate names it to Stilebase and agents: the gateway's own domain over https, with the request's path

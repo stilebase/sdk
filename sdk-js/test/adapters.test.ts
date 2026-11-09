@@ -212,6 +212,14 @@ describe("fetch (Workers, Hono, Bun, Deno)", () => {
   // A Worker's handler: (request, env, ctx).
   const page = (_request: Request, _env?: unknown, _ctx?: unknown) => new Response("the listings", { headers: { "content-type": "text/plain" } });
 
+  it("a raw request URL with a forged Host (as Deno builds it) is never free", async () => {
+    const handler = withGate(page, { key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/", "/healthz"] });
+    for (const url of ["http://x?/premium/report", "http://x#/premium/report", `http://${DOMAIN}?/premium/report`]) {
+      const raw = { method: "GET", url, headers: new Headers(GPTBOT) } as unknown as Request; // not normalized, as Deno hands it over
+      expect([url, (await handler(raw)).status]).toEqual([url, 402]);
+    }
+  });
+
   it("a clientIp giving an object or a promise is no address, never an unhandled rejection; agents still pay", async () => {
     type Info = { remoteAddr: { hostname: string } };
     const deno = (_request: Request, _info: Info) => new Response("the listings");
