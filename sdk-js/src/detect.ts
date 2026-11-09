@@ -145,6 +145,14 @@ export class NetworkIndex {
 }
 
 const HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
+const SCHEME_AND_AUTHORITY = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is;
+
+/** A URL that reads the same to every parser: http(s), a plain host name (no `%`, `@`, `;`...), then a path from `/`.
+ * Only such a request can be free: anything else is read differently by some router, so it's gated. */
+export function isPlainUrl(url: string): boolean {
+  const parts = SCHEME_AND_AUTHORITY.exec(url);
+  return !!parts && /^https?$/i.test(parts[1]!) && HOST.test(parts[2]!) && (parts[3] === "" || /^[/?#]/.test(parts[3]!));
+}
 
 /** The URL a visitor asked for, from parts a framework gives: the Host header is the visitor's to write, so anything
  * that isn't a host name (a "?" or "#" would change the path the gate reads) becomes "localhost", and an absolute-form
@@ -153,7 +161,11 @@ export function requestUrl(scheme: string, host: string | null | undefined, targ
   const safeHost = host && HOST.test(host) ? host : "localhost";
   let path = target || "/";
   if (!path.startsWith("/")) {
-    path = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(path)?.[1] ?? `/${path}`;
+    // An absolute-form target keeps only its path, but only when its host part is a plain host name: Node's url.parse
+    // (Express) ends a host part at `%`, `;` or `'`, so `http://x%2Fpremium/...` is a different path there. Anything
+    // else stays whole, as a path no free path can match.
+    const parts = SCHEME_AND_AUTHORITY.exec(path);
+    path = parts && HOST.test(parts[2]!) ? parts[3] || "/" : `/${encodeURIComponent(path)}`;
     if (!path.startsWith("/")) path = `/${path}`;
   }
   return `${scheme === "https" ? "https" : "http"}://${safeHost}${path.replaceAll("#", "%23")}`;

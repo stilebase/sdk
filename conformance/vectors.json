@@ -400,7 +400,7 @@
     ]
   },
   "free_paths": {
-    "about": "The `free` option (SPEC.md section 6): a request is free only when every reading of its path, from the URL as the visitor sent it, is one of the free paths exactly. The readings: decoded as written; decoded with dot segments resolved (RFC 3986); decoded with runs of / collapsed and \\\\ read as /, then dot segments resolved. Letter case is kept. free: the request passes (an AI agent isn't asked to pay).",
+    "about": "The `free` option (SPEC.md section 6): a request is free only when it's a GET or HEAD, its URL is http(s) with a plain host name, and every reading of its path, from the URL as the visitor sent it, is one of the free paths exactly. The readings: decoded as written; decoded with dot segments resolved (RFC 3986); decoded with runs of / collapsed and \\ read as /, then dot segments resolved. Letter case is kept. method defaults to GET; url, when given, is the request URL instead of https://<domain><path>. free_request: the request passes (an AI agent isn't asked to pay).",
     "cases": [
       {
         "free": [
@@ -501,6 +501,41 @@
       {
         "free": [],
         "path": "/healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "method": "POST",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "method": "HEAD",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/"
+        ],
+        "path": "/",
+        "url": "http://x%2Fpremium%2Freport.html?",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "url": "http://a@x/healthz",
         "free_request": false
       }
     ]

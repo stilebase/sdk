@@ -17,6 +17,7 @@ import {
   isScript,
   normalizeIp,
   decodePath,
+  isPlainUrl,
   pathReadings,
   rawPath,
   siteUrl,
@@ -129,6 +130,7 @@ class SiteGate implements Gate {
   private readonly requirementsCache = new Map<string, Cached>();
   private readonly warned = new Map<string, number>();
   private readonly freePaths: ReadonlySet<string>;
+  private readonly unusableFree: unknown[];
   private pendingReports = 0;
   private lastRequired: Record<string, unknown> | null = null; // the last price Stilebase gave, for refused lookups
 
@@ -146,8 +148,10 @@ class SiteGate implements Gate {
     this.testMode = options.mode === "test";
     // Exact paths, decoded as the readings are (a single string counts as one path, never its characters).
     const free: unknown = options.free;
-    const listed = typeof free === "string" ? [free] : Array.isArray(free) ? free : [];
-    this.freePaths = new Set(listed.filter((p): p is string => typeof p === "string" && p.startsWith("/")).map(decodePath));
+    const listed: unknown[] = typeof free === "string" ? [free] : Array.isArray(free) ? free : free === undefined ? [] : [free];
+    const usable = listed.filter((p): p is string => typeof p === "string" && p.startsWith("/") && pathReadings(p).every((r) => r === decodePath(p)));
+    this.freePaths = new Set(usable.map(decodePath));
+    this.unusableFree = listed.filter((p) => !usable.includes(p as string));
     const key = options.key ?? env.STILEBASE_KEY ?? "";
     this.site = parseSiteKey(key);
     if (!this.site) {
@@ -178,13 +182,18 @@ class SiteGate implements Gate {
       httpProtocol: original.httpProtocol ?? null,
       asn: original.asn ?? null,
     };
+    if (this.unusableFree.length) {
+      const entries = this.unusableFree.map((p) => JSON.stringify(p)).join(", ");
+      this.unusableFree.length = 0;
+      this.report(new Error(`free: ${entries} can never match (use exact paths from the site's root, like "/healthz", with no query, "..", "//" or "\\")`));
+    }
     const config = await this.settings(waitUntil);
     if (!config) return PASS;
     const url = siteUrl(request.url, config.gateway.domain);
     if (config.verification && url.pathname === config.verification.path) {
       return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
-    if (!config.gateway.live || this.isFree(url.pathname, rawPath(request.url))) return PASS;
+    if (!config.gateway.live || this.isFree(request.method, request.url, url.pathname)) return PASS;
 
     const headers = request.headers;
     // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
@@ -270,9 +279,12 @@ class SiteGate implements Gate {
   }
 
   /** A free path: every reading of the request's path is one of the owner's free paths exactly. Any doubt means gated. */
-  private isFree(pathname: string, raw: string): boolean {
+  private isFree(method: string, requestUrl: string, pathname: string): boolean {
     if (this.freePaths.size === 0) return false;
-    return pathReadings(pathname, raw).every((reading) => this.freePaths.has(reading));
+    // Reading a page only (a POST can run code a free page shares with gated ones), and only from a URL every parser
+    // reads the same way.
+    if (!["GET", "HEAD"].includes(method.toUpperCase()) || !isPlainUrl(requestUrl)) return false;
+    return pathReadings(pathname, rawPath(requestUrl)).every((reading) => this.freePaths.has(reading));
   }
 
   /** An AI agent by its user agent; a script by its default user agent (or none); an agent hiding behind a browser's

@@ -98,6 +98,8 @@ describe("express", () => {
         "/x//../listings/1.html",
         "http://h/robots.txt/../listings/1.html",
         "http://h/x//../listings/1.html",
+        "http://x%2Flistings%2F1.html?",
+        "http://a@x/robots.txt/../listings/1.html",
       ];
       for (const path of spellings) expect([path, await get(path)]).not.toEqual([path, 200]); // never the listing, unpaid
     } finally {
@@ -163,6 +165,7 @@ describe("express: the review's cases (cycle 1)", () => {
   it("a Host header with ? or # doesn't change the path the gate reads", async () => {
     const app = express();
     app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/premium"] }));
+    // A forged Host ("a/premium?") must not make /premium/report read as the free /premium.
     app.get("/premium/report", (_req, res) => {
       res.send("the report");
     });
@@ -171,7 +174,7 @@ describe("express: the review's cases (cycle 1)", () => {
     const { request: raw } = await import("node:http");
     const port = (server.address() as AddressInfo).port;
     const status = await new Promise<number>((resolve, reject) => {
-      const req = raw({ host: "127.0.0.1", port, path: "/premium/report", headers: { host: "example.com?", ...GPTBOT } }, (res) => {
+      const req = raw({ host: "127.0.0.1", port, path: "/premium/report", headers: { host: "a/premium?", ...GPTBOT } }, (res) => {
         res.resume();
         resolve(res.statusCode ?? 0);
       });

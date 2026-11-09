@@ -22,6 +22,7 @@ interface CloudflareRequest extends Request {
 /** Wraps a fetch handler: AI agents pay per request with x402, settled through Stilebase; everyone else reaches it. */
 export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options: FetchGateOptions<Rest> = {}): Handler<Rest> {
   let siteGate: Gate | null = null;
+  let startFailed = false;
   return async (request: Request, ...rest: Rest): Promise<Response> => {
     // Workers have no process.env: the key and the API come from the Worker's env (the second argument) on first use.
     try {
@@ -29,8 +30,19 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
         { ...options, key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"), apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL") },
         "fetch",
       );
-    } catch {
-      return handler(request, ...rest); // the gate couldn't start (e.g. no permission to read the environment): never break the site
+    } catch (error) {
+      // The gate couldn't start (e.g. no permission to read the environment): never break the site, and say so once.
+      if (!startFailed) {
+        startFailed = true;
+        const message = `[@stilebase/sdk] the gate couldn't start, so every request passes: ${error instanceof Error ? error.message : String(error)}`;
+        try {
+          if (options.onError) options.onError(new Error(message));
+          else console.warn(message);
+        } catch {
+          // a failing error handler must not break the request
+        }
+      }
+      return handler(request, ...rest);
     }
     const cf = (request as CloudflareRequest).cf;
     let ip: string | null | undefined = null;

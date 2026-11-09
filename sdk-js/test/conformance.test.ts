@@ -77,7 +77,8 @@ describe("conformance vectors: the gate's decisions", () => {
   it.each(vectors.free_paths.cases)("free paths: $free, $path", async (v) => {
     const stilebase = new FakeStilebase();
     const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: v.free, onError: () => undefined });
-    const decision = await gate.check(request(v.path, GPTBOT, { url: `https://${DOMAIN}${v.path}` }));
+    const c = v as { method?: string; url?: string };
+    const decision = await gate.check(request(v.path, GPTBOT, { url: c.url ?? `https://${DOMAIN}${v.path}`, method: c.method ?? "GET" }));
     if (v.free_request) expect(decision).toEqual({ action: "pass" });
     else expect(decision.action === "respond" && decision.status).toBe(402);
   });

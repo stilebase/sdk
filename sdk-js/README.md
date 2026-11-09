@@ -64,14 +64,16 @@ export default { fetch: withGate(handler) }; // Workers: `npx wrangler secret pu
 ### Anything else
 
 ```ts
-import { createGate } from "@stilebase/sdk/gate";
+import { createGate, requestUrl } from "@stilebase/sdk/gate";
 
 const gate = createGate();
-// url: the full request URL; headers: a Fetch API Headers (or anything with get(name)). From Node's req.headers (a
-// plain object, not req.rawHeaders), build one: new Headers(Object.entries(req.headers).flatMap(([k, v]) =>
+// url: build it with requestUrl, never by joining the Host header yourself: a Host like "x/healthz?" would otherwise
+// move the path. headers: a Fetch API Headers (or anything with get(name)); from Node's req.headers (a plain object,
+// not req.rawHeaders): new Headers(Object.entries(req.headers).flatMap(([k, v]) =>
 // v === undefined ? [] : [[k, Array.isArray(v) ? v.join(", ") : v]])).
 // ip: the visitor's address (see "The visitor's address" below), or null.
-const decision = await gate.check({ method, url, headers, ip });
+const url = requestUrl(scheme, req.headers.host, req.url); // scheme: "https" when the visitor came over https
+const decision = await gate.check({ method: req.method, url, headers, ip });
 // decision.action === "respond": send decision.status, decision.headers, decision.body instead.
 // decision.action === "pass": serve the request; add PAYMENT-RESPONSE: decision.paymentResponse when it's set.
 ```
@@ -107,8 +109,9 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   can verify without touching DNS.
 - **Your own health checks** are scripts too (curl, wget, urllib): keep them free with `free: ["/healthz"]`, a user
   agent of your own on the check, or `catchHttpClients: false`.
-- **Free paths are exact.** `free: ["/healthz"]` keeps `/healthz` free and nothing else: not `/healthz/`, `/HEALTHZ`
-  or any path that only resolves to it. Every other path is gated. (There's no option to gate only some sections:
+- **Free paths are exact.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else: not
+  `/healthz/`, `/HEALTHZ`, a POST, or any path that only resolves to it. Free paths are full paths from the site's
+  root, even for a gate mounted under a path. Every other path is gated. (There's no option to gate only some sections:
   each way of predicting how routers and file servers read a path left some spelling of a gated page free.)
 
 The agent lists and checks come from Stilebase. The gate refreshes them every five minutes, so new agents are caught
@@ -145,7 +148,8 @@ last entry, the one your proxy added. Never use a header the visitor can set the
 Serving directly with no proxy in front (Bun, Deno), give the gate the connection's address with `clientIp`:
 
 ```ts
-// Bun
+// Bun: the handler takes the server too
+const handler = (request: Request, server: Server) => new Response("hello");
 Bun.serve({ fetch: withGate(handler, { clientIp: (request, server) => server.requestIP(request)?.address ?? null }) });
 // Deno
 Deno.serve(withGate(handler, { clientIp: (_request, info) => info.remoteAddr.hostname }));

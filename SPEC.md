@@ -212,12 +212,16 @@ the gate reads. An absolute-form request target (`GET http://host/path`) keeps i
 never resolved by a URL parser. A URL the adapter can't parse is still gated.
 
 **Free paths.** A gate covers every path. The owner may list exact paths that stay free for everyone (`free`, for
-example `/healthz` and `/robots.txt`). A request is free only when **every** reading of its path, from the URL as the
-visitor sent it, is one of them exactly:
+example `/healthz` and `/robots.txt`; full paths from the site's root). A request is free only when it's a GET or HEAD,
+its URL reads the same to every parser (`http` or `https`, a plain host name with no `%`, `@` or `;`, then a path from
+`/`; an absolute-form target whose host part isn't plain is kept whole, so it never matches), and **every** reading of
+its path, from the URL as the visitor sent it, is one of them exactly:
 
 - the path percent-decoded, as written (routers match it with dot segments unresolved);
 - percent-decoded, with dot segments resolved (RFC 3986, empty segments kept);
 - percent-decoded, with runs of `/` collapsed and `\` read as `/`, then dot segments resolved (as file servers do).
+
+A free entry that can never match (no leading `/`, a query, `..`, `//` or `\`) is reported once.
 
 Letter case and a trailing slash count. So `/healthz` and `/%68ealthz` are free, while `/HEALTHZ`, `/healthz/`,
 `//healthz`, `/x/../healthz` and `/healthz/../listings/1` are gated: any doubt means gated, so no spelling of another

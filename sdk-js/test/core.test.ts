@@ -139,6 +139,14 @@ describe("AI agents", () => {
     expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
   });
 
+  it("reports free entries that can never match, once", async () => {
+    const g = gate({ free: ["healthz", "/robots.txt?x", "/a/../b", "/healthz"] });
+    expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
+    await g.check(request("/healthz", GPTBOT));
+    expect(errors.filter((e) => /can never match/.test(e.message))).toHaveLength(1);
+    expect(errors[0]?.message).toContain('"healthz"');
+  });
+
   it("everywhere except the free paths you list, exactly", async () => {
     const g = gate({ free: ["/healthz", "/robots.txt"] });
     expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
