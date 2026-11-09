@@ -42,8 +42,12 @@ What's known and not yet done, each with why it waits. Findings from code review
   the Fetch API, Node and Python decode headers as Latin-1, so it can't happen there. Cut by code points anyway.
 - **The JS and Python SDKs name a `/a/../b` page differently** (JS resolves dot segments through `new URL`). Add a
   conformance case. *Waits:* only the page's name in statistics differs, not whether it's gated.
-- **Paths that resolve to the root become `//` for `paths` matching** (`/a/..`). A `paths` function checking
-  `p == "/"` would miss them. *Waits:* prefixes, the documented use, are unaffected.
+- **Gating only some sections.** 0.1.0 has no `paths` option: five review cycles each found a spelling of a gated
+  page that some router or file server serves but the prefix match missed (doubled or encoded slashes, `..` after an
+  empty segment, absolute-form targets, route parameters holding `%2F..`, Next.js locales and basePath, NTFS stream
+  names). Bring it back only as its own design, for example integrated with the framework's router (Express routes,
+  Next.js matchers) instead of matching paths in the gate. *Waits:* gating everything with exact free paths covers
+  the common need (health checks, robots.txt).
 - **Test mode is invisible on the gateway page.** A gate in `mode: "test"` passes Stilebase's **Test now**, and the
   page then says agents get a 402 while real ones read free. Report the mode in `Stilebase-Client`. *Waits:* it goes
   with the first release, together with Stilebase showing it.
@@ -76,8 +80,8 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **The default warning throttle's map is never pruned**, so error messages that vary grow it slowly. Cap it.
   *Waits:* default `onError` only, and slow.
 - **Cleanup:** `next.ts` and `express.ts` repeat small parts of core (the environment, the warning throttle);
-  `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy;
-  `paths` prefixes are normalized on every request rather than once. *Waits:* no behaviour changes.
+  `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy.
+  *Waits:* no behaviour changes.
 
 - **Next.js middleware on Vercel's Edge runtime must answer within 25 seconds**, and a settlement can take longer.
   The README should recommend the Node.js runtime for middleware (Next 15.5+), or the gate in a route handler.

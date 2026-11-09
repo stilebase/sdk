@@ -16,7 +16,8 @@ import {
   fitEncoded,
   isScript,
   normalizeIp,
-  pathsForMatching,
+  decodePath,
+  pathReadings,
   rawPath,
   siteUrl,
   parseConfig,
@@ -58,9 +59,10 @@ export interface GateOptions {
   apiUrl?: string;
   /** "test": only Stilebase's test agent (StilebaseCheck) is asked to pay, so you can try it with nobody affected. */
   mode?: "live" | "test";
-  /** Only these paths are gated: prefixes ("/listings/") or a test. Both see the path as routers do: percent-decoded,
-   * lowercased, dot segments resolved. Default: every path. */
-  paths?: string | readonly string[] | ((pathname: string) => boolean);
+  /** Exact paths that stay free for everyone, e.g. ["/healthz", "/robots.txt"]. Every other path is gated. A request
+   * is free only when every way its path can be read is one of these exactly (letter case and trailing slash
+   * included), so no spelling of another page gets through. Default: none. */
+  free?: readonly string[];
   /** Scripts with their default user agent (curl, python-requests…) pay too. Default true. */
   catchHttpClients?: boolean;
   /** Agents behind a browser's user agent (from their operators' published addresses, or Web Bot Auth) pay too. Default true. */
@@ -126,6 +128,7 @@ class SiteGate implements Gate {
   private rangesLoadingAt = 0;
   private readonly requirementsCache = new Map<string, Cached>();
   private readonly warned = new Map<string, number>();
+  private readonly freePaths: ReadonlySet<string>;
   private pendingReports = 0;
   private lastRequired: Record<string, unknown> | null = null; // the last price Stilebase gave, for refused lookups
 
@@ -141,6 +144,10 @@ class SiteGate implements Gate {
     this.fetch = given ? (input, init) => given(input, init) : (input, init) => globalThis.fetch(input, init);
     this.now = options.now ?? Date.now;
     this.testMode = options.mode === "test";
+    // Exact paths, decoded as the readings are (a single string counts as one path, never its characters).
+    const free: unknown = options.free;
+    const listed = typeof free === "string" ? [free] : Array.isArray(free) ? free : [];
+    this.freePaths = new Set(listed.filter((p): p is string => typeof p === "string" && p.startsWith("/")).map(decodePath));
     const key = options.key ?? env.STILEBASE_KEY ?? "";
     this.site = parseSiteKey(key);
     if (!this.site) {
@@ -177,7 +184,7 @@ class SiteGate implements Gate {
     if (config.verification && url.pathname === config.verification.path) {
       return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
-    if (!config.gateway.live || !this.gated(url.pathname, rawPath(request.url))) return PASS;
+    if (!config.gateway.live || this.isFree(url.pathname, rawPath(request.url))) return PASS;
 
     const headers = request.headers;
     // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
@@ -262,20 +269,10 @@ class SiteGate implements Gate {
     return header ? { action: "pass", paymentResponse: header } : PASS;
   }
 
-  private gated(pathname: string, raw: string): boolean {
-    const paths = this.options.paths;
-    if (paths === undefined) return true;
-    // As routers and as file servers see it (decoded, lowercased, dot segments resolved, and with `/` runs collapsed):
-    // a prefix matching any of them gates the request.
-    const candidates = pathsForMatching(pathname, raw);
-    if (typeof paths === "function") return candidates.some((path) => paths(path));
-    const prefixes = (typeof paths === "string" ? [paths] : paths).flatMap((prefix) => pathsForMatching(prefix));
-    return candidates.some((path) =>
-      prefixes.some(
-        // "/listings/" also covers "/listings": routers serve the same page with or without the trailing slash.
-        (prefix) => path.startsWith(prefix) || (prefix.length > 1 && prefix.endsWith("/") && path === prefix.slice(0, -1)),
-      ),
-    );
+  /** A free path: every reading of the request's path is one of the owner's free paths exactly. Any doubt means gated. */
+  private isFree(pathname: string, raw: string): boolean {
+    if (this.freePaths.size === 0) return false;
+    return pathReadings(pathname, raw).every((reading) => this.freePaths.has(reading));
   }
 
   /** An AI agent by its user agent; a script by its default user agent (or none); an agent hiding behind a browser's

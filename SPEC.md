@@ -132,7 +132,7 @@ the entries before it are the visitor's to write. An address over 45 characters 
    - it carries Web Bot Auth's `Signature-Agent` header.
 
    Scripts pay from anywhere, the machine itself included: a proxy on the same host makes every visitor look local.
-   Owners exempt their own health checks with `paths`, a user agent of their own, or by letting scripts through.
+   Owners exempt their own health checks with `free`, a user agent of their own, or by letting scripts through.
 5. **Scripts posing as browsers.** A GET or HEAD whose user agent starts with `Mozilla/` (case-sensitive) and doesn't
    match `known_bots` is scored on what a browser would send, with `browser_checks.weights`:
 
@@ -207,19 +207,22 @@ Every answer the gate makes itself (402, the browser check's page, 503, the veri
 
 The page is named to Stilebase and to agents by the gateway's domain over https, with the request's path and query:
 the Host header is the visitor's to write, and behind a proxy it's an internal name. The request URL is built from
-the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't move the path
-out of reach of the `paths` option. A URL the adapter can't parse is still gated.
+the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't change the path
+the gate reads. An absolute-form request target (`GET http://host/path`) keeps its path as written: it's cut as text,
+never resolved by a URL parser. A URL the adapter can't parse is still gated.
 
-`paths` (prefixes, or a function) sees the path, as the visitor sent it, both ways it can be served:
+**Free paths.** A gate covers every path. The owner may list exact paths that stay free for everyone (`free`, for
+example `/healthz` and `/robots.txt`). A request is free only when **every** reading of its path, from the URL as the
+visitor sent it, is one of them exactly:
 
-- as routers see it: percent-decoded, lowercased, dot segments resolved (RFC 3986, empty segments kept);
-- as static file servers see it: the same, with runs of `/` collapsed first and `\` read as `/`.
+- the path percent-decoded, as written (routers match it with dot segments unresolved);
+- percent-decoded, with dot segments resolved (RFC 3986, empty segments kept);
+- percent-decoded, with runs of `/` collapsed and `\` read as `/`, then dot segments resolved (as file servers do).
 
-A prefix that matches either gates the request (a function is asked about each): matching more spellings only ever
-gates more. So `/LISTINGS/2`, `/%6Cistings/2`, `/x/..%2Flistings/2`, `/%2F/listings/2` and `/x//../listings/2` are all
-gated like `/listings/2`. Gating everything (no `paths`) and exempting what should stay free is still the safer choice.
-A prefix that ends in `/` also covers the same path without it (`/listings/` gates `/listings`), since routers serve
-both as one page; it doesn't cover `/listingsfoo`.
+Letter case and a trailing slash count. So `/healthz` and `/%68ealthz` are free, while `/HEALTHZ`, `/healthz/`,
+`//healthz`, `/x/../healthz` and `/healthz/../listings/1` are gated: any doubt means gated, so no spelling of another
+page gets through. There is no option to gate only some paths: every attempt to predict how each router and file
+server reads a path left some spelling of a gated page free.
 
 ## 7. Options every gate offers
 
@@ -228,7 +231,7 @@ both as one page; it doesn't cover `/listingsfoo`.
 | key | `STILEBASE_KEY` | The site key |
 | API URL | `STILEBASE_API_URL`, else `https://stilebase.com` | Where Stilebase is |
 | mode | live | `test`: only `test_mode_agents` are asked to pay |
-| paths | everything | Gate only these prefixes, or the paths a function accepts |
+| free | none | Exact paths that stay free for everyone (section 6) |
 | client IP / IP header | per platform (section 4) | Where the visitor's real address is: a header the owner's proxy sets, or a function (each package's README lists what its adapters take) |
 | catch HTTP clients | on | Off lets scripts with default user agents through |
 | catch hidden agents | on | Off skips the address lists and `Signature-Agent` |

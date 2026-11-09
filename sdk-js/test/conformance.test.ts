@@ -74,12 +74,12 @@ describe("the review's cases (cycle 1)", () => {
 });
 
 describe("conformance vectors: the gate's decisions", () => {
-  it.each(vectors.paths.cases)("matches paths: $prefixes against $path", async (v) => {
+  it.each(vectors.free_paths.cases)("free paths: $free, $path", async (v) => {
     const stilebase = new FakeStilebase();
-    const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, paths: v.prefixes, onError: () => undefined });
+    const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: v.free, onError: () => undefined });
     const decision = await gate.check(request(v.path, GPTBOT, { url: `https://${DOMAIN}${v.path}` }));
-    expect(decision.action === "respond" && decision.status === 402).toBe(v.gated);
-    if (!v.gated) expect(decision).toEqual({ action: "pass" });
+    if (v.free_request) expect(decision).toEqual({ action: "pass" });
+    else expect(decision.action === "respond" && decision.status).toBe(402);
   });
 
   it.each(vectors.payment_headers.cases)("takes the payment from $headers", async (v) => {

@@ -362,144 +362,6 @@
       }
     ]
   },
-  "paths": {
-    "about": "`paths` prefixes, matched as SPEC.md section 6 says: against the path as routers see it and as file servers see it (decoded, lowercased, dot segments resolved; for file servers also runs of / collapsed and \\ read as /), from the URL as the visitor sent it; a prefix ending in / also covers the same path without it. gated: the request is asked to pay (for an AI agent).",
-    "cases": [
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/listings/2",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/listings",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/LISTINGS",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/%6Cistings/2",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/x/..%2Flistings/2",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/listingsfoo",
-        "gated": false
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/about",
-        "gated": false
-      },
-      {
-        "prefixes": [
-          "/listings"
-        ],
-        "path": "/listings-archive",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/"
-        ],
-        "path": "/",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/%2F/listings/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/.//listings/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/x/..//listings/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/x/..%2F%2Flistings/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/x//../listings/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/listings/"
-        ],
-        "path": "/listings%5C1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/premium/reports/"
-        ],
-        "path": "/premium//reports/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/premium/reports/"
-        ],
-        "path": "/premium///reports/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/premium/reports/"
-        ],
-        "path": "/premium%2F%2Freports/1.html",
-        "gated": true
-      },
-      {
-        "prefixes": [
-          "/premium/reports/"
-        ],
-        "path": "/premium/other/1.html",
-        "gated": false
-      }
-    ]
-  },
   "payment_headers": {
     "about": "Which header is the payment (SPEC.md section 5, step 3): PAYMENT-SIGNATURE, else X-PAYMENT; an empty header is no payment. payment: what's sent to /v1/x402/settle, or null for an unpaid request.",
     "cases": [
@@ -534,6 +396,112 @@
           "payment-signature": ""
         },
         "payment": null
+      }
+    ]
+  },
+  "free_paths": {
+    "about": "The `free` option (SPEC.md section 6): a request is free only when every reading of its path, from the URL as the visitor sent it, is one of the free paths exactly. The readings: decoded as written; decoded with dot segments resolved (RFC 3986); decoded with runs of / collapsed and \\\\ read as /, then dot segments resolved. Letter case is kept. free: the request passes (an AI agent isn't asked to pay).",
+    "cases": [
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/robots.txt",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/%68ealthz",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/listings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/HEALTHZ",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz/",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "//healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/x/../healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz/../listings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz%2F..%2Flistings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/robots.txt/..%2F..%2Flistings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz%5C..%5Clistings",
+        "free_request": false
+      },
+      {
+        "free": [],
+        "path": "/healthz",
+        "free_request": false
       }
     ]
   }

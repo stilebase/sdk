@@ -36,7 +36,7 @@ app.add_middleware(GateMiddleware)
 ```
 
 The gate fetches its settings (which agents to ask, which checks to run) from Stilebase, so new agents reach your
-site without a redeploy. Each package's README has every framework and option: test mode, gating only some paths, the
+site without a redeploy. Each package's README has every framework and option: test mode, paths that stay free, the
 visitor's address behind a proxy.
 
 ## In this repository

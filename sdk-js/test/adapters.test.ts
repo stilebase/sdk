@@ -67,28 +67,41 @@ describe("express", () => {
     expect(warnings.filter((w) => w.includes("trust proxy"))).toHaveLength(1);
   });
 
-  it("gates `paths` however the path is spelt, as express.static resolves it", async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  it("keeps only the exact free path free, however another page is spelt (express.static)", async () => {
+    const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const root = mkdtempSync(join(tmpdir(), "gate-static-"));
-    mkdirSync(join(root, "listings"));
-    writeFileSync(join(root, "listings", "1.html"), "the listing");
-    const app = express();
-    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, paths: ["/listings/"] }));
-    app.use(express.static(root));
-    server = app.listen(0);
-    await new Promise((resolve) => server!.once("listening", resolve));
-    const port = (server.address() as AddressInfo).port;
-    const { request: raw } = await import("node:http");
-    const get = (path: string) =>
-      new Promise<number>((resolve, reject) => {
-        const req = raw({ host: "127.0.0.1", port, path, headers: GPTBOT }, (res) => (res.resume(), resolve(res.statusCode ?? 0)));
-        req.on("error", reject);
-        req.end();
-      });
-    for (const path of ["/listings/1.html", "/%2F/listings/1.html", "/.//listings/1.html", "/x/..//listings/1.html", "/x/..%2F%2Flistings/1.html", "/x//../listings/1.html"]) {
-      expect([path, await get(path)]).not.toEqual([path, 200]); // never the file, unpaid
+    try {
+      mkdirSync(join(root, "listings"));
+      writeFileSync(join(root, "listings", "1.html"), "the listing");
+      writeFileSync(join(root, "robots.txt"), "the robots file");
+      const app = express();
+      app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/robots.txt"] }));
+      app.use(express.static(root));
+      server = app.listen(0);
+      await new Promise((resolve) => server!.once("listening", resolve));
+      const port = (server.address() as AddressInfo).port;
+      const { request: raw } = await import("node:http");
+      const get = (path: string) =>
+        new Promise<number>((resolve, reject) => {
+          const req = raw({ host: "127.0.0.1", port, path, headers: GPTBOT }, (res) => (res.resume(), resolve(res.statusCode ?? 0)));
+          req.on("error", reject);
+          req.end();
+        });
+      expect(await get("/robots.txt")).toBe(200);
+      const spellings = [
+        "/listings/1.html",
+        "/robots.txt/../listings/1.html",
+        "/robots.txt%2F..%2Flistings/1.html",
+        "/%2F/listings/1.html",
+        "/x//../listings/1.html",
+        "http://h/robots.txt/../listings/1.html",
+        "http://h/x//../listings/1.html",
+      ];
+      for (const path of spellings) expect([path, await get(path)]).not.toEqual([path, 200]); // never the listing, unpaid
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -147,9 +160,9 @@ describe("express: the review's cases (cycle 1)", () => {
   let server: ReturnType<ReturnType<typeof express>["listen"]> | undefined;
   afterEach(() => server?.close());
 
-  it("a Host header with ? or # doesn't move the path out of reach of `paths`", async () => {
+  it("a Host header with ? or # doesn't change the path the gate reads", async () => {
     const app = express();
-    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, paths: ["/premium/"] }));
+    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/premium"] }));
     app.get("/premium/report", (_req, res) => {
       res.send("the report");
     });

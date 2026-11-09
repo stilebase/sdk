@@ -139,17 +139,13 @@ describe("AI agents", () => {
     expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
   });
 
-  it("only on the paths you choose", async () => {
-    const g = gate({ paths: ["/listings/"] });
-    expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
-    expect((await g.check(request("/listings/2", GPTBOT))).action).toBe("respond");
-    // "/listings/" covers "/listings" too, which routers serve as the same page; but not "/listingsfoo".
-    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
-    expect((await g.check(request("/LISTINGS", GPTBOT))).action).toBe("respond");
-    expect(await g.check(request("/listingsfoo", GPTBOT))).toEqual({ action: "pass" });
-    expect(await gate({ paths: ["/"] }).check(request("/", GPTBOT))).not.toEqual({ action: "pass" });
-    const byTest = gate({ paths: (p) => p.endsWith(".json") });
-    expect((await byTest.check(request("/feed.json", GPTBOT))).action).toBe("respond");
+  it("everywhere except the free paths you list, exactly", async () => {
+    const g = gate({ free: ["/healthz", "/robots.txt"] });
+    expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
+    expect(await g.check(request("/robots.txt?x=1", GPTBOT))).toEqual({ action: "pass" });
+    for (const path of ["/listings/2", "/healthz/", "/HEALTHZ", "/healthz/../listings/2", "/x/../healthz", "//healthz"]) {
+      expect((await g.check(request(path, GPTBOT))).action, path).toBe("respond");
+    }
   });
 
   it("in test mode, only Stilebase's test agent is asked", async () => {
@@ -305,12 +301,6 @@ describe("the review's cases (cycle 1)", () => {
     expect([visit.request.path.length, visit.agent.user_agent.length]).toEqual([2048, 512]);
   });
 
-  it("takes one path prefix as a string", async () => {
-    const g = gate({ paths: "/premium/" });
-    expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
-    expect((await g.check(request("/premium/x", GPTBOT))).action).toBe("respond");
-  });
-
   it("doesn't run on settings of a version it can't read", async () => {
     stilebase.config = { status: 200, body: liveConfig({ config_version: 2 }) };
     expect(await gate().check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
@@ -319,15 +309,9 @@ describe("the review's cases (cycle 1)", () => {
 });
 
 describe("the review's cases (cycle 2)", () => {
-  it("matches `paths` as routers do: any letter case, percent-decoded", async () => {
-    const g = gate({ paths: ["/listings/"] });
-    for (const path of ["/LISTINGS/2", "/%6Cistings/2", "/Listings/2"]) expect((await g.check(request(path, GPTBOT))).action, path).toBe("respond");
-    expect(await g.check(request("/about", GPTBOT))).toEqual({ action: "pass" });
-  });
-
   it("asks scripts to pay from loopback too (a same-host proxy makes every visitor look local); owners exempt health checks", async () => {
     expect((await gate().check(request("/", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).action).toBe("respond");
-    expect(await gate({ paths: ["/listings/"] }).check(request("/healthz", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).toEqual({ action: "pass" });
+    expect(await gate({ free: ["/healthz"] }).check(request("/healthz", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).toEqual({ action: "pass" });
     expect(await gate({ catchHttpClients: false }).check(request("/", { "user-agent": "curl/8.4.0" }, { ip: "127.0.0.1" }))).toEqual({ action: "pass" });
   });
 
@@ -407,10 +391,6 @@ describe("the review's cases (cycle 3)", () => {
     expect(decision.action === "respond" && decision.status).toBe(402); // the last real price, not null
   });
 
-  it("decodes each run of escapes, so a malformed one doesn't hide the rest from `paths`", async () => {
-    expect((await gate({ paths: ["/listings/"] }).check(request("/%6Cistings/1%E0", GPTBOT))).action).toBe("respond");
-  });
-
   it("rejects an address range with an empty length instead of matching everyone", async () => {
     const { parseNetwork } = await import("../src/detect.js");
     expect(parseNetwork("20.15.240.64/")).toBeNull();
@@ -419,21 +399,6 @@ describe("the review's cases (cycle 3)", () => {
 });
 
 describe("the review's cases (cycle 4)", () => {
-  it("resolves dot segments, so `..` (or ..%2F) can't step around a prefix", async () => {
-    const g = gate({ paths: ["/listings/"] });
-    for (const path of ["/public/..%2Flistings/1.html", "/x/%2e%2e/listings/1", "/public/..%2F..%2Flistings/1"]) {
-      expect((await g.check(request(path, GPTBOT))).action, path).toBe("respond");
-    }
-    expect(await g.check(request("/listings/../about", GPTBOT))).toEqual({ action: "pass" });
-  });
-
-  it("hands a `paths` function the path as routers see it", async () => {
-    const seen: string[] = [];
-    const g = gate({ paths: (p) => (seen.push(p), p.endsWith(".json")) });
-    expect((await g.check(request("/data.js%6Fn", GPTBOT))).action).toBe("respond");
-    expect(seen).toEqual(["/data.json"]);
-  });
-
   it("measures the lookup as it's sent (form encoding), so parentheses can't blow the budget", async () => {
     await gate().check(request(`/a?${"(".repeat(2040)}`, { "user-agent": `GPTBot/1.2 ${"(".repeat(500)}` }));
     const [asked] = stilebase.to("/v1/x402/requirements");

@@ -105,10 +105,11 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   detection** on, they get the 402 as a page that lets real browsers straight through.
 - **Domain verification.** Until you prove your domain, the gate serves `/.well-known/stilebase-verify.txt`, so you
   can verify without touching DNS.
-- **Your own health checks** are scripts too (curl, wget, urllib): exempt them with `paths` (gate only your content), a
-  user agent of your own on the check, or `catchHttpClients: false`.
-- **`paths`** match ignoring letter case and percent-encoding, as routers do. A prefix ending in `/` also covers the
-  same path without it: `"/listings/"` gates `/listings` too.
+- **Your own health checks** are scripts too (curl, wget, urllib): keep them free with `free: ["/healthz"]`, a user
+  agent of your own on the check, or `catchHttpClients: false`.
+- **Free paths are exact.** `free: ["/healthz"]` keeps `/healthz` free and nothing else: not `/healthz/`, `/HEALTHZ`
+  or any path that only resolves to it. Every other path is gated. (There's no option to gate only some sections:
+  each way of predicting how routers and file servers read a path left some spelling of a gated page free.)
 
 The agent lists and checks come from Stilebase. The gate refreshes them every five minutes, so new agents are caught
 without a redeploy. Price changes and free passes on the gateway page apply within five minutes too.
@@ -119,8 +120,7 @@ without a redeploy. Price changes and free passes on the gateway page apply with
 gate({
   key: "sbk_…", // default: STILEBASE_KEY
   mode: "test", // only Stilebase's test agent is asked to pay: try it with nobody affected
-  paths: ["/listings/"], // gate only these path prefixes (or a function of the path); both see it as routers do:
-  //                        percent-decoded, lowercased, dot segments resolved
+  free: ["/healthz", "/robots.txt"], // exact paths that stay free for everyone; every other path is gated
   ipHeader: "cf-connecting-ip", // the visitor's address from a header your proxy sets
   catchHttpClients: false, // let curl & co. through (e.g. your own monitoring)
   catchHiddenAgents: false, // only ask agents that name themselves

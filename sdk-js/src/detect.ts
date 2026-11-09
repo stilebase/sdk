@@ -147,18 +147,14 @@ export class NetworkIndex {
 const HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
 
 /** The URL a visitor asked for, from parts a framework gives: the Host header is the visitor's to write, so anything
- * that isn't a host name (a "?" or "#" would move the path out of reach of the `paths` option) becomes "localhost", and
- * an absolute-form request target keeps only its path and query. */
+ * that isn't a host name (a "?" or "#" would change the path the gate reads) becomes "localhost", and an absolute-form
+ * request target keeps only its path and query, as written (cut as text, never resolved by a URL parser). */
 export function requestUrl(scheme: string, host: string | null | undefined, target: string): string {
   const safeHost = host && HOST.test(host) ? host : "localhost";
   let path = target || "/";
   if (!path.startsWith("/")) {
-    try {
-      const absolute = new URL(path);
-      path = absolute.pathname + absolute.search;
-    } catch {
-      path = `/${path}`;
-    }
+    path = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(path)?.[1] ?? `/${path}`;
+    if (!path.startsWith("/")) path = `/${path}`;
   }
   return `${scheme === "https" ? "https" : "http"}://${safeHost}${path.replaceAll("#", "%23")}`;
 }
@@ -187,21 +183,15 @@ function isNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-/** The path as routers see it, for the `paths` option: percent-decoded and lowercased (Express matches routes
- * case-insensitively, Hono and Starlette decode), so a request can't reach a gated route under another spelling.
- * Matching more spellings only ever gates more. */
-export function pathForMatching(pathname: string): string {
-  return withoutDotSegments(decodePath(pathname).toLowerCase());
-}
-
-/** Every way a router or a static file server may resolve `pathname` (and the raw path the visitor sent, before any URL
- * parser touched it), for the `paths` option. Routers resolve dot segments as RFC 3986 says, keeping empty segments;
- * file servers (Node's path.normalize, express.static) collapse runs of `/` first, and on Windows a `\` is a `/` too.
- * A prefix matching any of them gates the request: matching more spellings only ever gates more. */
-export function pathsForMatching(pathname: string, raw?: string): string[] {
+/** Every way a router or a file server may read the request's path, for the `free` option: decoded as written (routers
+ * match it with dot segments unresolved), with dot segments resolved as RFC 3986 says (empty segments kept), and as file
+ * servers resolve it (runs of `/` collapsed first, `\` read as `/`); each from the parsed path and from the raw path the
+ * visitor sent. Letter case is kept. A request is free only when every reading is a free path exactly. */
+export function pathReadings(pathname: string, raw?: string): string[] {
   const out = new Set<string>();
   for (const path of raw === undefined || raw === pathname ? [pathname] : [pathname, raw]) {
-    const decoded = decodePath(path).toLowerCase();
+    const decoded = decodePath(path);
+    out.add(decoded);
     out.add(withoutDotSegments(decoded));
     out.add(withoutDotSegments(decoded.replaceAll("\\", "/").replace(/\/{2,}/g, "/")));
   }
@@ -215,9 +205,9 @@ export function rawPath(url: string): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
-function decodePath(path: string): string {
-  // Each run of escapes on its own, so one malformed escape doesn't leave the rest encoded; an ASCII escape always
-  // decodes (routers decode them, malformed neighbours or not).
+/** A path percent-decoded: each run of escapes on its own, so one malformed escape doesn't leave the rest encoded; an
+ * ASCII escape always decodes (routers decode them, malformed neighbours or not). */
+export function decodePath(path: string): string {
   return path.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
     try {
       return decodeURIComponent(run);
