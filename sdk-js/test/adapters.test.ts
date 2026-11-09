@@ -67,6 +67,31 @@ describe("express", () => {
     expect(warnings.filter((w) => w.includes("trust proxy"))).toHaveLength(1);
   });
 
+  it("gates `paths` however the path is spelt, as express.static resolves it", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = mkdtempSync(join(tmpdir(), "gate-static-"));
+    mkdirSync(join(root, "listings"));
+    writeFileSync(join(root, "listings", "1.html"), "the listing");
+    const app = express();
+    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, paths: ["/listings/"] }));
+    app.use(express.static(root));
+    server = app.listen(0);
+    await new Promise((resolve) => server!.once("listening", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const { request: raw } = await import("node:http");
+    const get = (path: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = raw({ host: "127.0.0.1", port, path, headers: GPTBOT }, (res) => (res.resume(), resolve(res.statusCode ?? 0)));
+        req.on("error", reject);
+        req.end();
+      });
+    for (const path of ["/listings/1.html", "/%2F/listings/1.html", "/.//listings/1.html", "/x/..//listings/1.html", "/x/..%2F%2Flistings/1.html", "/x//../listings/1.html"]) {
+      expect([path, await get(path)]).not.toEqual([path, 200]); // never the file, unpaid
+    }
+  });
+
   it("never hands the request to the routes when the gate's own answer can't be sent", async () => {
     const { gate } = await import("../src/express.js");
     const handler = gate({ key: KEY, apiUrl: API, fetch: stilebase.fetch });
@@ -170,6 +195,30 @@ describe("next", () => {
 describe("fetch (Workers, Hono, Bun, Deno)", () => {
   // A Worker's handler: (request, env, ctx).
   const page = (_request: Request, _env?: unknown, _ctx?: unknown) => new Response("the listings", { headers: { "content-type": "text/plain" } });
+
+  it("a clientIp giving an object or a promise is no address, never an unhandled rejection; agents still pay", async () => {
+    type Info = { remoteAddr: { hostname: string } };
+    const deno = (_request: Request, _info: Info) => new Response("the listings");
+    const info: Info = { remoteAddr: { hostname: "198.51.100.9" } };
+    // The documented Deno form type-checks: clientIp gets the handler's own arguments.
+    const typed = withGate(deno, { key: KEY, apiUrl: API, fetch: stilebase.fetch, clientIp: (_request, i) => i.remoteAddr.hostname });
+    expect((await typed(new Request(`https://${DOMAIN}/listings`, { headers: GPTBOT }), info)).status).toBe(402);
+    expect(stilebase.to("/v1/x402/requirements").at(-1)?.query.get("ip")).toBe("198.51.100.9");
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      for (const clientIp of [() => info.remoteAddr, () => Promise.reject(new Error("boom")), () => Promise.resolve("1.2.3.4")]) {
+        const handler = withGate(deno, { key: KEY, apiUrl: API, fetch: stilebase.fetch, clientIp: clientIp as unknown as () => string });
+        expect((await handler(new Request(`https://${DOMAIN}/listings`, { headers: GPTBOT }), info)).status).toBe(402);
+        expect((await handler(new Request(`https://${DOMAIN}/listings`, { headers: BROWSER }), info)).status).toBe(200);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 
   it("takes the key from the Worker's env, and adds PAYMENT-RESPONSE to a paid response", async () => {
     const handler = withGate(page, { apiUrl: API, fetch: stilebase.fetch });

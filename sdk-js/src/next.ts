@@ -2,7 +2,7 @@
 
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server.js"; // with the extension: Next has no "exports" map, so plain Node ESM needs it
 
-import { type GateOptions, addressFrom, createGate } from "./core.js";
+import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 
 export interface NextGateOptions extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets, e.g. "cf-connecting-ip"). Default: on
@@ -20,7 +20,7 @@ export function gate(options: NextGateOptions = {}) {
   return async function stilebaseGate(request: NextRequest, event?: NextFetchEvent): Promise<NextResponse> {
     let ip: string | null | undefined = null;
     try {
-      ip = options.clientIp ? options.clientIp(request) : addressFrom(request.headers, options.ipHeader ?? (onVercel ? "x-real-ip" : undefined), null);
+      ip = options.clientIp ? addressOf(options.clientIp(request)) : addressFrom(request.headers, options.ipHeader ?? (onVercel ? "x-real-ip" : undefined), null);
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }

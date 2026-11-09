@@ -16,7 +16,8 @@ import {
   fitEncoded,
   isScript,
   normalizeIp,
-  pathForMatching,
+  pathsForMatching,
+  rawPath,
   siteUrl,
   parseConfig,
   parseNetwork,
@@ -176,7 +177,7 @@ class SiteGate implements Gate {
     if (config.verification && url.pathname === config.verification.path) {
       return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
-    if (!config.gateway.live || !this.gated(url.pathname)) return PASS;
+    if (!config.gateway.live || !this.gated(url.pathname, rawPath(request.url))) return PASS;
 
     const headers = request.headers;
     // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
@@ -261,16 +262,20 @@ class SiteGate implements Gate {
     return header ? { action: "pass", paymentResponse: header } : PASS;
   }
 
-  private gated(pathname: string): boolean {
+  private gated(pathname: string, raw: string): boolean {
     const paths = this.options.paths;
     if (paths === undefined) return true;
-    const path = pathForMatching(pathname); // decoded, lowercased, dot segments resolved: as routers see it
-    if (typeof paths === "function") return paths(path);
-    return (typeof paths === "string" ? [paths] : paths).some((raw) => {
-      const prefix = pathForMatching(raw);
-      // "/listings/" also covers "/listings": routers serve the same page with or without the trailing slash.
-      return path.startsWith(prefix) || (prefix.length > 1 && prefix.endsWith("/") && path === prefix.slice(0, -1));
-    });
+    // As routers and as file servers see it (decoded, lowercased, dot segments resolved, and with `/` runs collapsed):
+    // a prefix matching any of them gates the request.
+    const candidates = pathsForMatching(pathname, raw);
+    if (typeof paths === "function") return candidates.some((path) => paths(path));
+    const prefixes = (typeof paths === "string" ? [paths] : paths).flatMap((prefix) => pathsForMatching(prefix));
+    return candidates.some((path) =>
+      prefixes.some(
+        // "/listings/" also covers "/listings": routers serve the same page with or without the trailing slash.
+        (prefix) => path.startsWith(prefix) || (prefix.length > 1 && prefix.endsWith("/") && path === prefix.slice(0, -1)),
+      ),
+    );
   }
 
   /** An AI agent by its user agent; a script by its default user agent (or none); an agent hiding behind a browser's
@@ -319,11 +324,8 @@ class SiteGate implements Gate {
     try {
       const headers = { ...(await signedHeaders(site.secret, "GET", path, EMPTY, this.now())), "Stilebase-Client": this.client };
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) });
-      if (answer.status !== 200) discard(answer);
-      if (!current()) {
-        discard(answer); // superseded: release the connection, apply nothing
-        return;
-      }
+      if (answer.status !== 200 || !current()) discard(answer);
+      if (!current()) return; // superseded: apply nothing
       if (answer.status === 404) {
         this.config = null; // the gateway was removed: stop asking agents to pay
         throw new Error("Stilebase has no gateway for this site key (404): every request passes");
@@ -523,4 +525,14 @@ async function bounded(promise: Promise<unknown>, ms: number): Promise<void> {
  * runtime never rejects the gate's answer over it. */
 function receipt(value: unknown): string | undefined {
   return typeof value === "string" && /^[A-Za-z0-9+/=_-]{1,8192}$/.test(value) ? value : undefined;
+}
+
+/** What a custom clientIp gave: an address only when it's a string. A promise (an async clientIp) is no address, and
+ * its rejection is caught here, never left unhandled (which can stop a Node process). */
+export function addressOf(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (value !== null && typeof value === "object" && typeof (value as { then?: unknown }).then === "function") {
+    (value as Promise<unknown>).then(undefined, () => undefined);
+  }
+  return null;
 }

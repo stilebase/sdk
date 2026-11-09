@@ -1,6 +1,6 @@
 // Express (4 and 5) middleware: `app.use(gate())`, before your routes.
 
-import { type GateOptions, addressFrom, createGate } from "./core.js";
+import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 import { requestUrl } from "./detect.js";
 
 /** The parts of Express's request and response the gate uses (no dependency on Express's types). */
@@ -97,7 +97,7 @@ function visitorAddress(
   options: ExpressGateOptions,
   warnTrustAll: () => void,
 ): string | null | undefined {
-  if (options.clientIp) return options.clientIp(req);
+  if (options.clientIp) return addressOf(options.clientIp(req));
   if (options.ipHeader) return addressFrom(headers, options.ipHeader, null);
   if (req.app?.get("trust proxy") === true) {
     warnTrustAll();

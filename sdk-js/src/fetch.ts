@@ -2,15 +2,15 @@
 //   export default { fetch: withGate(handler) }       (Workers: STILEBASE_KEY as a secret, read from env)
 //   Deno.serve(withGate(handler))
 
-import { type Gate, type GateOptions, addressFrom, createGate } from "./core.js";
+import { type Gate, type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 
-export interface FetchGateOptions extends GateOptions {
+export interface FetchGateOptions<Rest extends unknown[] = unknown[]> extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets). Default: on Cloudflare,
    * CF-Connecting-IP; elsewhere none. Never a header anyone can set. */
   ipHeader?: string;
-  /** Or work it out yourself (Bun: `server.requestIP(request)?.address`; Deno: the handler's info.remoteAddr.hostname). It must
-   * return a string (or null): anything else counts as no address. */
-  clientIp?: (request: Request, ...rest: unknown[]) => string | null | undefined;
+  /** Or work it out yourself, from the request and the handler's other arguments (Bun: `server.requestIP(request)?.address`;
+   * Deno: `info.remoteAddr.hostname`). It must return a string, synchronously (or null): anything else is no address. */
+  clientIp?: (request: Request, ...rest: Rest) => string | null | undefined;
 }
 
 type Handler<Rest extends unknown[]> = (request: Request, ...rest: Rest) => Response | Promise<Response>;
@@ -20,19 +20,23 @@ interface CloudflareRequest extends Request {
 }
 
 /** Wraps a fetch handler: AI agents pay per request with x402, settled through Stilebase; everyone else reaches it. */
-export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options: FetchGateOptions = {}): Handler<Rest> {
+export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options: FetchGateOptions<Rest> = {}): Handler<Rest> {
   let siteGate: Gate | null = null;
   return async (request: Request, ...rest: Rest): Promise<Response> => {
     // Workers have no process.env: the key and the API come from the Worker's env (the second argument) on first use.
-    siteGate ??= createGate(
-      { ...options, key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"), apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL") },
-      "fetch",
-    );
+    try {
+      siteGate ??= createGate(
+        { ...options, key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"), apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL") },
+        "fetch",
+      );
+    } catch {
+      return handler(request, ...rest); // the gate couldn't start (e.g. no permission to read the environment): never break the site
+    }
     const cf = (request as CloudflareRequest).cf;
     let ip: string | null | undefined = null;
     try {
       ip = options.clientIp
-        ? options.clientIp(request, ...rest)
+        ? addressOf(options.clientIp(request, ...rest))
         : addressFrom(request.headers, options.ipHeader ?? (cf ? "cf-connecting-ip" : undefined), null);
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)

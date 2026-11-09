@@ -142,6 +142,18 @@ gate({
 Elsewhere, name the header your proxy sets with `ipHeader`. For a list such as `X-Forwarded-For` the gate takes the
 last entry, the one your proxy added. Never use a header the visitor can set themselves.
 
+Serving directly with no proxy in front (Bun, Deno), give the gate the connection's address with `clientIp`:
+
+```ts
+// Bun
+Bun.serve({ fetch: withGate(handler, { clientIp: (request, server) => server.requestIP(request)?.address ?? null }) });
+// Deno
+Deno.serve(withGate(handler, { clientIp: (_request, info) => info.remoteAddr.hostname }));
+```
+
+`clientIp` must return a string (or `null`), not a promise. Without an address, free passes can't verify, per-agent
+prices don't apply, and agents hiding behind a browser's user agent aren't caught by their address.
+
 ## Undo
 
 Remove the middleware. Your site is exactly as before. Or press **Pause** on the gateway page: the gate then lets

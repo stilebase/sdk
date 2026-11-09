@@ -363,7 +363,7 @@
     ]
   },
   "paths": {
-    "about": "`paths` prefixes, matched as SPEC.md section 6 says: against the path as routers see it (decoded, lowercased, dot segments resolved); a prefix ending in / also covers the same path without it. gated: the request is asked to pay (for an AI agent).",
+    "about": "`paths` prefixes, matched as SPEC.md section 6 says: against the path as routers see it and as file servers see it (decoded, lowercased, dot segments resolved; for file servers also runs of / collapsed and \\ read as /), from the URL as the visitor sent it; a prefix ending in / also covers the same path without it. gated: the request is asked to pay (for an AI agent).",
     "cases": [
       {
         "prefixes": [
@@ -427,6 +427,76 @@
         ],
         "path": "/",
         "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/%2F/listings/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/.//listings/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/x/..//listings/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/x/..%2F%2Flistings/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/x//../listings/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/listings/"
+        ],
+        "path": "/listings%5C1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/premium/reports/"
+        ],
+        "path": "/premium//reports/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/premium/reports/"
+        ],
+        "path": "/premium///reports/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/premium/reports/"
+        ],
+        "path": "/premium%2F%2Freports/1.html",
+        "gated": true
+      },
+      {
+        "prefixes": [
+          "/premium/reports/"
+        ],
+        "path": "/premium/other/1.html",
+        "gated": false
       }
     ]
   },

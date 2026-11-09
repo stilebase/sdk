@@ -191,16 +191,40 @@ function isNumber(value: unknown): value is number {
  * case-insensitively, Hono and Starlette decode), so a request can't reach a gated route under another spelling.
  * Matching more spellings only ever gates more. */
 export function pathForMatching(pathname: string): string {
+  return withoutDotSegments(decodePath(pathname).toLowerCase());
+}
+
+/** Every way a router or a static file server may resolve `pathname` (and the raw path the visitor sent, before any URL
+ * parser touched it), for the `paths` option. Routers resolve dot segments as RFC 3986 says, keeping empty segments;
+ * file servers (Node's path.normalize, express.static) collapse runs of `/` first, and on Windows a `\` is a `/` too.
+ * A prefix matching any of them gates the request: matching more spellings only ever gates more. */
+export function pathsForMatching(pathname: string, raw?: string): string[] {
+  const out = new Set<string>();
+  for (const path of raw === undefined || raw === pathname ? [pathname] : [pathname, raw]) {
+    const decoded = decodePath(path).toLowerCase();
+    out.add(withoutDotSegments(decoded));
+    out.add(withoutDotSegments(decoded.replaceAll("\\", "/").replace(/\/{2,}/g, "/")));
+  }
+  return [...out];
+}
+
+/** The path part of a request URL as the visitor sent it (no query, no fragment), before a URL parser resolves it. */
+export function rawPath(url: string): string {
+  const rest = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(url)?.[1] ?? url;
+  const path = rest.replace(/[?#].*$/s, "");
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+function decodePath(path: string): string {
   // Each run of escapes on its own, so one malformed escape doesn't leave the rest encoded; an ASCII escape always
   // decodes (routers decode them, malformed neighbours or not).
-  const decoded = pathname.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+  return path.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
     try {
       return decodeURIComponent(run);
     } catch {
       return run.replace(/%([0-9a-f]{2})/gi, (escape, hex: string) => (parseInt(hex, 16) < 0x80 ? String.fromCharCode(parseInt(hex, 16)) : escape));
     }
   });
-  return withoutDotSegments(decoded.toLowerCase());
 }
 
 /** "/a/./b/../c" as "/a/c" (RFC 3986 5.2.4): what static file servers resolve, so `..` can't step around a prefix. */

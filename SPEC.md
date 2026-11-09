@@ -187,6 +187,9 @@ the entries before it are the visitor's to write. An address over 45 characters 
    `agent.headers` carries only the Web Bot Auth headers that are present. The answer is the x402
    `SettlementResponse` plus `header`, read only when it's a 200 with a JSON object whose `success` is a boolean:
    - `"success": true`: the request goes to the site, and the response gets `PAYMENT-RESPONSE: <header>`.
+
+   `header` is used only when it can be a header: a base64 string (`A-Z a-z 0-9 + / = _ -`) of at most 8,192
+   characters. Otherwise the gate leaves `PAYMENT-RESPONSE` out (and still serves a paid request, or answers the 402).
    - `"success": false`: answer 402 again, with `error` set to the `errorReason` and `PAYMENT-RESPONSE`.
    - No answer, or any other answer (Stilebase down, a timeout, a body that isn't a JSON object, a `success` that isn't
      a boolean): 503 with
@@ -207,8 +210,14 @@ the Host header is the visitor's to write, and behind a proxy it's an internal n
 the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't move the path
 out of reach of the `paths` option. A URL the adapter can't parse is still gated.
 
-`paths` (prefixes, or a function) sees the path as routers and static file servers do: percent-decoded, lowercased,
-dot segments resolved. So `/LISTINGS/2`, `/%6Cistings/2` and `/x/..%2Flistings/2` are all gated like `/listings/2`.
+`paths` (prefixes, or a function) sees the path, as the visitor sent it, both ways it can be served:
+
+- as routers see it: percent-decoded, lowercased, dot segments resolved (RFC 3986, empty segments kept);
+- as static file servers see it: the same, with runs of `/` collapsed first and `\` read as `/`.
+
+A prefix that matches either gates the request (a function is asked about each): matching more spellings only ever
+gates more. So `/LISTINGS/2`, `/%6Cistings/2`, `/x/..%2Flistings/2`, `/%2F/listings/2` and `/x//../listings/2` are all
+gated like `/listings/2`. Gating everything (no `paths`) and exempting what should stay free is still the safer choice.
 A prefix that ends in `/` also covers the same path without it (`/listings/` gates `/listings`), since routers serve
 both as one page; it doesn't cover `/listingsfoo`.
 
