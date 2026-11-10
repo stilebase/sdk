@@ -188,6 +188,14 @@ describe("express: the review's cases (cycle 1)", () => {
 describe("next", () => {
   const middleware = () => nextGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch });
 
+  it("ignores free paths (Next routes a different path than it shows middleware), warning once", async () => {
+    const warnings: string[] = [];
+    const gated = nextGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/"], onError: (e) => warnings.push(e.message) });
+    const answer = await gated(new NextRequest(`https://${DOMAIN}/`, { headers: GPTBOT }));
+    expect(answer.status).toBe(402);
+    expect(warnings.filter((w) => /config\.matcher/.test(w))).toHaveLength(1);
+  });
+
   it("answers agents 402 and lets people through to the page", async () => {
     const asked = await middleware()(new NextRequest(`https://${DOMAIN}/listings`, { headers: GPTBOT }));
     expect(asked.status).toBe(402);

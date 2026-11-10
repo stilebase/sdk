@@ -58,9 +58,9 @@ export interface GateOptions {
   apiUrl?: string;
   /** "test": only Stilebase's test agent (StilebaseCheck) is asked to pay, so you can try it with nobody affected. */
   mode?: "live" | "test";
-  /** Exact paths that stay free for everyone, e.g. ["/healthz", "/robots.txt"]. Every other path is gated. A request
-   * is free only when every way its path can be read is one of these exactly (letter case and trailing slash
-   * included), so no spelling of another page gets through. Default: none. */
+  /** Exact paths that stay free for everyone, e.g. ["/healthz", "/robots.txt"]. Every other path is gated. Literal
+   * paths only (letters, digits, `- . _ ~` and `/`, no `%`, query, `..` or `//`); a GET or HEAD whose URL has that
+   * path, character for character, is free. Not used by the Next.js adapter (use `config.matcher`). Default: none. */
   free?: readonly string[];
   /** Scripts with their default user agent (curl, python-requests…) pay too. Default true. */
   catchHttpClients?: boolean;
@@ -144,7 +144,7 @@ class SiteGate implements Gate {
     this.fetch = given ? (input, init) => given(input, init) : (input, init) => globalThis.fetch(input, init);
     this.now = options.now ?? Date.now;
     this.testMode = options.mode === "test";
-    // Exact paths, decoded as the readings are (a single string counts as one path, never its characters).
+    // Literal paths, kept as given (a single string counts as one path, never its characters).
     const free: unknown = options.free;
     const listed: unknown[] = typeof free === "string" ? [free] : Array.isArray(free) ? free : free == null ? [] : [free];
     const usable = listed.filter((p): p is string => typeof p === "string" && isLiteralPath(p));
@@ -181,8 +181,8 @@ class SiteGate implements Gate {
       asn: original.asn ?? null,
     };
     if (this.unusableFree.length) {
-      const entries = this.unusableFree.map((p) => JSON.stringify(p)).join(", ");
-      this.unusableFree.length = 0;
+      const unusable = this.unusableFree.splice(0); // cleared first: reporting can never fail the same way twice
+      const entries = unusable.map(describe).join(", ");
       this.report(new Error(`free: ${entries} can never match (use literal paths from the site's root, like "/healthz": letters, digits, - . _ ~ and /, no query, %, "..", "//")`));
     }
     const config = await this.settings(waitUntil);
@@ -551,4 +551,13 @@ export function addressOf(value: unknown): string | null {
     (value as Promise<unknown>).then(undefined, () => undefined);
   }
   return null;
+}
+
+/** A value for a warning: JSON when it can be, else its type (a BigInt or a circular object never throws here). */
+function describe(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(typeof value);
+  } catch {
+    return typeof value;
+  }
 }

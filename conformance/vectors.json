@@ -587,6 +587,41 @@
         "path": "/healthz",
         "url": "ftp://shop.example.com/healthz",
         "free_request": false
+      },
+      {
+        "free": [
+          "/%68ealthz"
+        ],
+        "path": "/%68ealthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/docs/"
+        ],
+        "path": "/docs/",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/docs/"
+        ],
+        "path": "/docs",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/~me/page"
+        ],
+        "path": "/~me/page",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/a/./b"
+        ],
+        "path": "/a/./b",
+        "free_request": false
       }
     ]
   }

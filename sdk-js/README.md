@@ -48,8 +48,12 @@ Next.js 13.5.9, 14.2.25, 15.2.3 or later: earlier versions let a request skip mi
 import { gate } from "@stilebase/sdk/gate/next";
 
 export default gate();
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+// Paths that stay free (health checks, robots.txt) go in the matcher's exclusions: Next applies it with its own routing.
+export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz|robots.txt).*)"] };
 ```
+
+The Next.js adapter has no `free` option: Next rewrites the URL middleware sees (a trailing `.rsc` stripped, `..`
+resolved) while it routes the original path, so the gate can't safely decide a path is free there. The matcher can.
 
 ### Cloudflare Workers, Hono, Bun, Deno
 
@@ -110,8 +114,10 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
 - **Your own health checks** are scripts too (curl, wget, urllib): keep them free with `free: ["/healthz"]`, a user
   agent of your own on the check, or `catchHttpClients: false`.
 - **Free paths are exact and literal.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else:
-  not `/healthz/`, `/HEALTHZ`, `/%68ealthz`, a POST, or any path that only resolves to it. Use letters, digits,
-  `- . _ ~` and `/`; full paths from the site's root, even for a gate mounted under a path. Every other path is gated. (There's no option to gate only some sections:
+  not `/healthz/`, `/HEALTHZ`, `/%68ealthz` or a POST. Use letters, digits, `- . _ ~` and `/`; full paths from the
+  site's root, even for a gate mounted under a path. Every other path is gated. (Where the runtime normalizes the URL
+  before the gate sees it, as Bun and Workers do, the gate and your router read the same normalized path.) On Next.js,
+  use the middleware matcher instead (above). (There's no option to gate only some sections:
   each way of predicting how routers and file servers read a path left some spelling of a gated page free.)
 
 The agent lists and checks come from Stilebase. The gate refreshes them every five minutes, so new agents are caught

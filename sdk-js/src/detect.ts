@@ -147,7 +147,6 @@ export class NetworkIndex {
 const HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
 const SCHEME_AND_AUTHORITY = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is;
 
-
 /** The URL a visitor asked for, from parts a framework gives: the Host header is the visitor's to write, so anything
  * that isn't a host name (a "?" or "#" would change the path the gate reads) becomes "localhost", and an absolute-form
  * request target keeps only its path and query, as written (cut as text, never resolved by a URL parser). */

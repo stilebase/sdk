@@ -163,8 +163,13 @@ describe("AI agents", () => {
     expect(reports).toHaveLength(1);
     for (const entry of ['"healthz"', '"/robots.txt?x"', '"/a/../b"', '"/a#b"', '"/%68ealthz"']) expect(reports[0]?.message).toContain(entry);
     expect(reports[0]?.message.split(" can never match")[0]).not.toContain('"/healthz"'); // the usable entry isn't listed
-    expect(gate({ free: null as unknown as string[] })).toBeTruthy(); // null: no free paths, no report
-    expect(errors.filter((e) => /null/.test(e.message))).toHaveLength(0);
+    errors.length = 0;
+    await gate({ free: null as unknown as string[] }).check(request("/healthz", GPTBOT)); // null: no free paths, no report
+    expect(errors.filter((e) => /can never match/.test(e.message))).toHaveLength(0);
+    // An entry JSON can't write (a BigInt) is reported by its type, and never makes the gate fail open.
+    const odd = gate({ free: ["/healthz", 1n as unknown as string] });
+    for (let i = 0; i < 2; i++) expect((await odd.check(request("/premium/report", GPTBOT))).action).toBe("respond");
+    expect(errors.filter((e) => /bigint can never match/.test(e.message))).toHaveLength(1);
   });
 
   it("everywhere except the free paths you list, exactly", async () => {

@@ -4,7 +4,12 @@ import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server
 
 import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 
-export interface NextGateOptions extends GateOptions {
+export interface NextGateOptions extends Omit<GateOptions, "free"> {
+  /** Not used on Next.js: Next rewrites the URL middleware sees (a trailing ".rsc" stripped, ".." resolved) while it
+   * routes the original path, so no path the gate sees can safely be free. Keep paths out of the gate with your
+   * middleware's `config.matcher` instead, which Next applies with its own routing. Given anyway, it's ignored (once
+   * with a warning). */
+  free?: readonly string[];
   /** Read the visitor's address from this header (one your proxy or CDN sets, e.g. "cf-connecting-ip"). Default: on
    * Vercel, the x-real-ip it sets; elsewhere none (agents hiding behind a browser's user agent aren't caught by
    * address then). Never a header anyone can set. */
@@ -15,7 +20,19 @@ export interface NextGateOptions extends GateOptions {
 
 /** Next.js middleware: AI agents pay per request with x402, settled through Stilebase; everyone else passes. */
 export function gate(options: NextGateOptions = {}) {
-  const siteGate = createGate(options, "next");
+  const { free, ...rest } = options;
+  const siteGate = createGate(rest, "next");
+  if (free !== undefined && free !== null && (typeof free === "string" || (Array.isArray(free) && free.length > 0))) {
+    const message =
+      "free isn't used on Next.js (Next routes a different path than middleware sees): every path is gated. Keep " +
+      "paths such as /healthz out of the gate with your middleware's config.matcher instead.";
+    try {
+      if (options.onError) options.onError(new Error(message));
+      else console.warn(`[@stilebase/sdk] ${message}`);
+    } catch {
+      // a failing error handler must not break the site
+    }
+  }
   const onVercel = Boolean((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.VERCEL);
   return async function stilebaseGate(request: NextRequest, event?: NextFetchEvent): Promise<NextResponse> {
     let ip: string | null | undefined = null;

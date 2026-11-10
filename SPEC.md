@@ -219,8 +219,12 @@ and its URL is **literal**:
 - a path of letters, digits, `-` `.` `_` `~` and `/` only, with no empty, `.` or `..` segment (a trailing slash is
   fine); a query may follow;
 
-and that path is one of the free paths **character for character**. There's no decoding and no resolving: `/HEALTHZ`,
-`/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?` are all gated. Some router or
+and that path is one of the free paths **character for character**, as the URL reaches the gate. There's no decoding
+and no resolving: `/HEALTHZ`, `/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?`
+are all gated. (A runtime that normalizes the URL before the gate sees it, as Bun and Workers do, hands the app the
+same normalized URL, so the two still agree.) A framework that routes a different path than the one it shows the gate
+(Next.js middleware: a trailing `.rsc` stripped, `..` resolved, while the original path is routed) can't use free
+paths at all: it keeps paths out of the gate with its own routing (Next's `config.matcher`). Some router or
 file server reads each unusual spelling differently, so only spellings every parser reads the same way can be free. A
 free entry that isn't literal is reported once and never matches. There's no option to gate only some paths: every way
 of predicting how routers and file servers read a path left some spelling of a gated page free.
