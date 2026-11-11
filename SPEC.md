@@ -105,11 +105,10 @@ default it uses:
   `req.ip`, an ASGI server's client address, WSGI's `REMOTE_ADDR`). Owners configure their actual proxies, never
   "trust every hop": then the first `X-Forwarded-For` entry wins, and the visitor wrote it. Where the gate can tell
   that every hop is trusted (Express's `trust proxy: true`), it takes the last entry instead and warns;
-- on platforms that set a header themselves and overwrite the visitor's: `CF-Connecting-IP` on Cloudflare Workers,
-  `x-real-ip` on Vercel;
-- elsewhere (Bun, Deno, Hono on Node) no address, unless the owner names the header their proxy
-  sets. Without an address, free passes can't verify, per-agent prices don't apply, and hidden agents aren't caught by
-  address, so the packages' READMEs tell owners to name one.
+- on Cloudflare Workers, which sets `CF-Connecting-IP` itself and overwrites the visitor's: that header;
+- elsewhere (Vercel, Bun, Deno, Hono on Node) no address, unless the owner names the header their platform or proxy
+  sets (`x-real-ip` on Vercel). Without an address, free passes can't verify, per-agent prices don't apply, and hidden
+  agents aren't caught by address, so the packages' READMEs tell owners to name one.
 
 From a header holding a list, such as `X-Forwarded-For`, it takes the **last** entry, the one the owner's proxy added:
 the entries before it are the visitor's to write. An address over 45 characters counts as none.

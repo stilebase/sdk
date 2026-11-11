@@ -98,9 +98,10 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   agent of your own on the check, or `catchHttpClients: false`.
 - **Free paths are exact and literal.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else:
   not `/healthz/`, `/HEALTHZ`, `/%68ealthz` or a POST. Use letters, digits, `- . _ ~` and `/`; full paths from the
-  site's root, even for a gate mounted under a path. Every other path is gated. (Where the runtime normalizes the URL
-  before the gate sees it, as Bun and Workers do, the gate and your router read the same normalized path.) (There's no option to gate only some sections:
-  each way of predicting how routers and file servers read a path left some spelling of a gated page free.)
+  site's root, even for a gate mounted under a path. Every other path is gated. Where the runtime normalizes the URL
+  before the gate sees it, as Bun and Workers do, the gate and your router read the same normalized path. There's
+  no option to gate only some sections: each way of predicting how routers and file servers read a path left some
+  spelling of a gated page free.
 
 The agent lists and checks come from Stilebase. The gate refreshes them every five minutes, so new agents are caught
 without a redeploy. Price changes and free passes on the gateway page apply within five minutes too.
@@ -128,7 +129,7 @@ gate({
   or their addresses), not `true`: with `true`, `req.ip` is the first `X-Forwarded-For` entry, which visitors write,
   so the gate then takes the last entry instead and warns.
 - Cloudflare: `CF-Connecting-IP`.
-- Vercel: `x-real-ip`.
+- Vercel: set `ipHeader: "x-real-ip"` (the header Vercel sets); it isn't read by default.
 
 Elsewhere, name the header your proxy sets with `ipHeader`. For a list such as `X-Forwarded-For` the gate takes the
 last entry, the one your proxy added. Never use a header the visitor can set themselves.

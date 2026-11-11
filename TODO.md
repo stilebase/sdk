@@ -20,9 +20,9 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **The browser check's pass token is in the 402 page**, so a script that reads the page can lift it. A stronger
   challenge is a design change to strict detection. *Waits:* strict detection is off by default.
 
-- **Warn once when the gate has no visitor address** (the fetch adapter outside Cloudflare,
-  without `ipHeader`). Free passes then never verify and hidden agents aren't caught by address, silently. *Waits:* the
-  READMEs say to set it; agents are still asked to pay by user agent.
+- **Warn once when the gate has no visitor address** (the fetch adapter outside Cloudflare, without `ipHeader`). Free
+  passes then never verify and hidden agents aren't caught by address, silently. *Waits:* the READMEs say to set it;
+  agents are still asked to pay by user agent.
 - **Python: the timeouts are per network step, not a total deadline.** httpx applies 3, 5 and 65 seconds to each of
   connect, write and read, so a slow or trickling answer can hold a request longer (the JS SDK's are total). Wrap each
   call in an overall deadline. *Waits:* the far end is Stilebase's own API, which answers or fails fast.
@@ -79,7 +79,7 @@ What's known and not yet done, each with why it waits. Findings from code review
   (a generation counter). *Waits:* the built-in fetch aborts loads well before they're superseded.
 - **The default warning throttle's map is never pruned**, so error messages that vary grow it slowly. Cap it.
   *Waits:* default `onError` only, and slow.
-- **Cleanup:** `express.ts` repeats small parts of core (the environment, the warning throttle);
+- **Cleanup:** `express.ts` repeats the warning throttle from core;
   `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy.
   *Waits:* no behaviour changes.
 
