@@ -14,7 +14,7 @@ If Stilebase can't be reached, everyone gets the site as usual: the gate never b
 
 | Package | Install | Works with |
 | --- | --- | --- |
-| [`@stilebase/sdk`](sdk-js) | `npm i @stilebase/sdk` | Express, Next.js, Cloudflare Workers, Hono, Bun, Deno (Node 20+, no dependencies) |
+| [`@stilebase/sdk`](sdk-js) | `npm i @stilebase/sdk` | Express, Cloudflare Workers, Hono, Bun, Deno (Node 20+, no dependencies) |
 | [`stilebase-sdk`](sdk-python) | `pip install stilebase-sdk` | FastAPI, Starlette, Litestar, Django, Flask, any ASGI or WSGI app (Python 3.10+) |
 
 ## Quick start

@@ -1,5 +1,5 @@
 // @stilebase/sdk/gate: AI agents pay per request with x402 (USDC on Base), settled through Stilebase; people pass.
-// Adapters: "@stilebase/sdk/gate/express", "@stilebase/sdk/gate/next", "@stilebase/sdk/gate/fetch". This entry is the
+// Adapters: "@stilebase/sdk/gate/express", "@stilebase/sdk/gate/fetch". This entry is the
 // framework-neutral gate, for anything else.
 
 export { DEFAULT_API_URL, addressFrom, createGate } from "./core.js";

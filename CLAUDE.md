@@ -16,7 +16,7 @@ customers. The SDKs talk only to Stilebase's public API.
 
 - `sdk-js/`: `@stilebase/sdk`, TypeScript, tsup, vitest, Node 20+, **no runtime dependencies** (WebCrypto, `fetch`).
   Entries `.` (the `gate` namespace, `VERSION`), `/gate` (`createGate`, framework-neutral), `/gate/express`,
-  `/gate/next`, `/gate/fetch` (Workers, Hono, Bun, Deno).
+  `/gate/fetch` (Workers, Hono, Bun, Deno). No Next.js adapter yet (TODO.md).
 - `sdk-python/`: `stilebase-sdk`, Python 3.10+, depends only on `httpx`, hatchling, typed (`py.typed`, mypy strict).
   `stilebase_sdk.gate`: `_core.decide` is one sans-IO decision generator that yields effects; `AsyncGate` and
   `SyncGate` drive it. Adapters `asgi`, `wsgi`, `django`.

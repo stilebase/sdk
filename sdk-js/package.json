@@ -1,7 +1,7 @@
 {
   "name": "@stilebase/sdk",
   "version": "0.1.0",
-  "description": "Charge AI agents per request with x402 (USDC on Base), settled through Stilebase. People pass straight through. Express, Next.js, Cloudflare Workers, Hono, Bun, Deno.",
+  "description": "Charge AI agents per request with x402 (USDC on Base), settled through Stilebase. People pass straight through. Express, Cloudflare Workers, Hono, Bun, Deno.",
   "keywords": [
     "x402",
     "ai-agents",
@@ -11,7 +11,6 @@
     "usdc",
     "base",
     "express",
-    "nextjs",
     "middleware"
   ],
   "homepage": "https://github.com/stilebase/sdk/tree/main/sdk-js#readme",
@@ -69,16 +68,6 @@
         "default": "./dist/gate/express.cjs"
       }
     },
-    "./gate/next": {
-      "import": {
-        "types": "./dist/gate/next.d.ts",
-        "default": "./dist/gate/next.js"
-      },
-      "require": {
-        "types": "./dist/gate/next.d.cts",
-        "default": "./dist/gate/next.cjs"
-      }
-    },
     "./gate/fetch": {
       "import": {
         "types": "./dist/gate/fetch.d.ts",
@@ -98,14 +87,6 @@
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs"
   },
-  "peerDependencies": {
-    "next": "^13.5.9 || ^14.2.25 || >=15.2.3"
-  },
-  "peerDependenciesMeta": {
-    "next": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@eslint/js": "9.16.0",
     "@types/express": "5.0.6",
@@ -113,7 +94,6 @@
     "eslint": "9.16.0",
     "express": "5.1.0",
     "globals": "15.12.0",
-    "next": "15.5.29",
     "tsup": "8.5.1",
     "typescript": "5.6.3",
     "typescript-eslint": "8.17.0",

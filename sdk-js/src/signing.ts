@@ -1,6 +1,6 @@
 // How a gate proves its calls come from the site (SPEC.md, "Signing calls to Stilebase"):
 // HMAC-SHA256 with the gateway's secret, over "v2\n<timestamp>\n<METHOD>\n<path>\n<hex SHA-256 of the body>". WebCrypto
-// only, so it runs on Node 20+, Workers, Deno, Bun and Next's edge runtime alike.
+// only, so it runs on Node 20+, Workers, Deno and Bun alike.
 
 const encoder = new TextEncoder();
 const keys = new Map<string, Promise<CryptoKey>>();

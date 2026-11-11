@@ -60,7 +60,7 @@ export interface GateOptions {
   mode?: "live" | "test";
   /** Exact paths that stay free for everyone, e.g. ["/healthz", "/robots.txt"]. Every other path is gated. Literal
    * paths only (letters, digits, `- . _ ~` and `/`, no `%`, query, `..` or `//`); a GET or HEAD whose URL has that
-   * path, character for character, is free. Not used by the Next.js adapter (use `config.matcher`). Default: none. */
+   * path, character for character, is free. Default: none. */
   free?: readonly string[];
   /** Scripts with their default user agent (curl, python-requests…) pay too. Default true. */
   catchHttpClients?: boolean;
@@ -86,7 +86,7 @@ export type GateDecision =
   /** Answer with this instead (the 402, the browser check, the verification file, or 503). */
   | { action: "respond"; status: number; headers: Record<string, string>; body: string };
 
-/** Keeps a background task alive after the response (Workers' ctx.waitUntil, Next's event.waitUntil). */
+/** Keeps a background task alive after the response (Workers' ctx.waitUntil). */
 export type WaitUntil = (task: Promise<unknown>) => void;
 
 export interface Gate {
@@ -104,7 +104,7 @@ interface Cached {
 
 const PASS: GateDecision = { action: "pass" };
 
-/** A gate for your site. Adapters (express, next, fetch) wrap it; use it directly for anything else. */
+/** A gate for your site. Adapters (express, fetch) wrap it; use it directly for anything else. */
 export function createGate(options: GateOptions = {}, adapter = "core"): Gate {
   return new SiteGate(options, adapter);
 }

@@ -17,7 +17,7 @@ try {
     : join(work, JSON.parse(npm(["pack", "--json", "--pack-destination", work], root))[0].filename);
   writeFileSync(join(work, "package.json"), JSON.stringify({ name: "smoke", private: true, type: "module" }));
   // --ignore-scripts: the smoke test's own third-party installs run no scripts.
-  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5", "next@15", "react@19", "react-dom@19", "typescript@5.6", "@types/express@5", "@types/node@20"], work);
+  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5", "typescript@5.6", "@types/express@5", "@types/node@20"], work);
 
   writeFileSync(
     join(work, "esm.mjs"),
@@ -25,9 +25,8 @@ try {
 import * as sdk from "@stilebase/sdk";
 if (sdk.gate.createGate !== createGate || sdk.VERSION !== VERSION) throw new Error("sdk.gate isn't the gate");
 import { gate as express } from "@stilebase/sdk/gate/express";
-import { gate as next } from "@stilebase/sdk/gate/next";
 import { withGate } from "@stilebase/sdk/gate/fetch";
-for (const f of [createGate, express, next, withGate]) if (typeof f !== "function") throw new Error("missing export");
+for (const f of [createGate, express, withGate]) if (typeof f !== "function") throw new Error("missing export");
 if (!/^\\d+\\.\\d+\\.\\d+/.test(VERSION)) throw new Error("no version");
 const decision = await createGate({ key: "" , onError() {} }).check({ method: "GET", url: "https://a.example/", headers: new Headers() });
 if (decision.action !== "pass") throw new Error("a keyless gate must pass");
@@ -45,12 +44,10 @@ console.log("cjs ok");`,
     join(work, "types.ts"),
     `import express from "express";
 import { gate } from "@stilebase/sdk/gate/express";
-import { gate as nextGate } from "@stilebase/sdk/gate/next";
 import { withGate } from "@stilebase/sdk/gate/fetch";
 import { createGate, type GateDecision } from "@stilebase/sdk/gate";
 const app = express();
 app.use(gate({ free: ["/healthz"], ipHeader: "cf-connecting-ip" }));
-export const middleware = nextGate({ mode: "test" });
 export default { fetch: withGate((request: Request) => new Response(request.url)) };
 export const decided: Promise<GateDecision> = createGate().check({ method: "GET", url: "https://a.example/", headers: new Headers() });`,
   );

@@ -107,7 +107,7 @@ default it uses:
   that every hop is trusted (Express's `trust proxy: true`), it takes the last entry instead and warns;
 - on platforms that set a header themselves and overwrite the visitor's: `CF-Connecting-IP` on Cloudflare Workers,
   `x-real-ip` on Vercel;
-- elsewhere (Bun, Deno, self-hosted Next.js, Hono on Node) no address, unless the owner names the header their proxy
+- elsewhere (Bun, Deno, Hono on Node) no address, unless the owner names the header their proxy
   sets. Without an address, free passes can't verify, per-agent prices don't apply, and hidden agents aren't caught by
   address, so the packages' READMEs tell owners to name one.
 
@@ -221,13 +221,16 @@ and its URL is **literal**:
 
 and that path is one of the free paths **character for character**, as the URL reaches the gate. There's no decoding
 and no resolving: `/HEALTHZ`, `/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?`
-are all gated. (A runtime that normalizes the URL before the gate sees it, as Bun and Workers do, hands the app the
-same normalized URL, so the two still agree.) A framework that routes a different path than the one it shows the gate
-(Next.js middleware: a trailing `.rsc` stripped, `..` resolved, while the original path is routed) can't use free
-paths at all: it keeps paths out of the gate with its own routing (Next's `config.matcher`). Some router or
-file server reads each unusual spelling differently, so only spellings every parser reads the same way can be free. A
-free entry that isn't literal is reported once and never matches. There's no option to gate only some paths: every way
-of predicting how routers and file servers read a path left some spelling of a gated page free.
+are all gated. Some router or file server reads each unusual spelling differently, so only spellings every parser
+reads the same way can be free. A free entry that isn't literal is reported once and never matches.
+
+A runtime that normalizes the URL before the gate sees it (Bun, Workers) hands the app the same normalized URL, so
+the two still agree. A framework that routes a different path than the one it shows the gate can't be gated safely by
+path at all: Next.js middleware sees a URL with a trailing `.rsc` stripped and `..` resolved while Next routes the
+original path, so the SDKs have no Next.js adapter yet.
+
+There's no option to gate only some paths: every way of predicting how routers and file servers read a path left some
+spelling of a gated page free.
 
 ## 7. Options every gate offers
 

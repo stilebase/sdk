@@ -10,15 +10,13 @@ export default defineConfig({
     index: "src/index.ts",
     "gate/index": "src/gate.ts",
     "gate/express": "src/express.ts",
-    "gate/next": "src/next.ts",
     "gate/fetch": "src/fetch.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
   clean: true,
   target: "es2022",
-  platform: "neutral", // runs on Node, Workers, Deno, Bun and Next's edge runtime: no Node built-ins
-  external: ["next", "next/server.js"],
+  platform: "neutral", // runs on Node, Workers, Deno and Bun: no Node built-ins
   define: { __GATE_VERSION__: JSON.stringify(version) },
   sourcemap: true,
 });

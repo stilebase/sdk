@@ -20,7 +20,7 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **The browser check's pass token is in the 402 page**, so a script that reads the page can lift it. A stronger
   challenge is a design change to strict detection. *Waits:* strict detection is off by default.
 
-- **Warn once when the gate has no visitor address** (the fetch adapter outside Cloudflare, Next.js outside Vercel,
+- **Warn once when the gate has no visitor address** (the fetch adapter outside Cloudflare,
   without `ipHeader`). Free passes then never verify and hidden agents aren't caught by address, silently. *Waits:* the
   READMEs say to set it; agents are still asked to pay by user agent.
 - **Python: the timeouts are per network step, not a total deadline.** httpx applies 3, 5 and 65 seconds to each of
@@ -55,7 +55,7 @@ What's known and not yet done, each with why it waits. Findings from code review
 ## @stilebase/sdk
 
 - **Types under `moduleResolution: node`** (`"module": "commonjs"` projects): subpath types resolve only through
-  `exports`. Add `typesVersions` for `gate`, `gate/express`, `gate/next`, `gate/fetch`. *Waits:* NodeNext and bundler
+  `exports`. Add `typesVersions` for `gate`, `gate/express`, `gate/fetch`. *Waits:* NodeNext and bundler
   resolution, the defaults for new projects, work.
 - **The fetch adapter finds `waitUntil` only on the third argument** (Workers' `ctx`). Vercel and Netlify Edge pass a
   `context` second, so background reports and refreshes may be cut off there. *Waits:* the settings are still fetched
@@ -64,7 +64,7 @@ What's known and not yet done, each with why it waits. Findings from code review
   only the statistics' page name differs.
 - **Identical concurrent price lookups aren't combined**, and a refused lookup's 402 names the uncut URL. *Waits:*
   performance and cosmetics only.
-- **A first load another request started, and the runtime cancelled** (Workers, Next edge): each request waits on it
+- **A first load another request started, and the runtime cancelled** (Workers): each request waits on it
   at most its own deadline (3.5 s settings, 5.5 s address lists) until it's replaced after 10 seconds, so for those 10
   seconds every request waits the full bound. Hand the first load to `waitUntil` as well, so it survives the
   disconnect. *Waits:* it needs a cold isolate whose first visitor disconnects mid-fetch.
@@ -79,12 +79,17 @@ What's known and not yet done, each with why it waits. Findings from code review
   (a generation counter). *Waits:* the built-in fetch aborts loads well before they're superseded.
 - **The default warning throttle's map is never pruned**, so error messages that vary grow it slowly. Cap it.
   *Waits:* default `onError` only, and slow.
-- **Cleanup:** `next.ts` and `express.ts` repeat small parts of core (the environment, the warning throttle);
+- **Cleanup:** `express.ts` repeats small parts of core (the environment, the warning throttle);
   `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy.
   *Waits:* no behaviour changes.
 
-- **Next.js middleware on Vercel's Edge runtime must answer within 25 seconds**, and a settlement can take longer.
-  The README should recommend the Node.js runtime for middleware (Next 15.5+), or the gate in a route handler.
-  *Waits:* the README change goes with the first release.
+- **A Next.js adapter.** 0.1.0 has none: nine review cycles found Next-specific ways past a middleware gate. Next
+  rewrites the URL middleware sees (a trailing `.rsc` stripped, `..` resolved) while it routes the original path;
+  `config.matcher` exclusions match prefixes of the raw path (`/healthz/x`, `/healthz/../premium/x`); and Next's image
+  optimizer fetches local images through middleware with no user agent, so a gate asks it to pay and breaks every
+  optimized image on a gated page, while it can't be told apart safely from an outside request. A Next gate needs
+  its own design (inside route handlers and pages, or integrated with Next's routing), and on Vercel's Edge runtime a
+  middleware must answer within 25 seconds, less than a settlement can take. *Waits:* Next.js sites can use Stilebase's
+  Cloudflare Worker meanwhile.
 - **An end-to-end test against a running Stilebase API.** *Waits:* the Python SDK has one in Stilebase's server
   suite, and both SDKs pass the same conformance cases.

@@ -1,12 +1,10 @@
 import type { AddressInfo } from "node:net";
 
 import express from "express";
-import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { gate as expressGate } from "../src/express.js";
 import { withGate } from "../src/fetch.js";
-import { gate as nextGate } from "../src/next.js";
 import { API, BROWSER, DOMAIN, FakeStilebase, GPTBOT, KEY, REQUIRED } from "./fake-stilebase.js";
 
 const PAID = { ...GPTBOT, "payment-signature": "eyJ4NDAyVmVyc2lvbiI6Mn0=" };
@@ -182,37 +180,6 @@ describe("express: the review's cases (cycle 1)", () => {
       req.end();
     });
     expect(status).toBe(402);
-  });
-});
-
-describe("next", () => {
-  const middleware = () => nextGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch });
-
-  it("ignores free paths (Next routes a different path than it shows middleware), warning once", async () => {
-    const warnings: string[] = [];
-    const gated = nextGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/"], onError: (e) => warnings.push(e.message) });
-    const answer = await gated(new NextRequest(`https://${DOMAIN}/`, { headers: GPTBOT }));
-    expect(answer.status).toBe(402);
-    expect(warnings.filter((w) => /config\.matcher/.test(w))).toHaveLength(1);
-  });
-
-  it("answers agents 402 and lets people through to the page", async () => {
-    const asked = await middleware()(new NextRequest(`https://${DOMAIN}/listings`, { headers: GPTBOT }));
-    expect(asked.status).toBe(402);
-    expect(asked.headers.get("payment-required")).toBeTruthy();
-    const person = await middleware()(new NextRequest(`https://${DOMAIN}/listings`, { headers: BROWSER }));
-    expect(person.headers.get("x-middleware-next")).toBe("1"); // NextResponse.next(): on to the page
-  });
-
-  it("passes a paid request on with PAYMENT-RESPONSE, and keeps reports alive with waitUntil", async () => {
-    const tasks: Promise<unknown>[] = [];
-    const event = { waitUntil: (task: Promise<unknown>) => tasks.push(task) } as unknown as Parameters<ReturnType<typeof nextGate>>[1];
-    const paid = await middleware()(new NextRequest(`https://${DOMAIN}/listings`, { headers: PAID }), event);
-    expect([paid.headers.get("x-middleware-next"), paid.headers.get("payment-response")]).toEqual(["1", "eyJzdWNjZXNzIjp0cnVlfQ=="]);
-    await middleware()(new NextRequest(`https://${DOMAIN}/listings`, { headers: GPTBOT }), event);
-    expect(tasks.length).toBeGreaterThan(0);
-    await Promise.all(tasks);
-    expect(stilebase.to("/v1/x402/visits")).toHaveLength(1);
   });
 });
 
