@@ -622,6 +622,22 @@
         ],
         "path": "/a/./b",
         "free_request": false
+      },
+      {
+        "free": [
+          "/healthz"
+        ],
+        "path": "/healthz",
+        "url": "http://web_app:3000/healthz",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz"
+        ],
+        "path": "/healthz",
+        "url": "http://[::1]:8000/healthz",
+        "free_request": true
       }
     ]
   }

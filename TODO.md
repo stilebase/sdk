@@ -79,7 +79,7 @@ What's known and not yet done, each with why it waits. Findings from code review
   (a generation counter). *Waits:* the built-in fetch aborts loads well before they're superseded.
 - **The default warning throttle's map is never pruned**, so error messages that vary grow it slowly. Cap it.
   *Waits:* default `onError` only, and slow.
-- **Cleanup:** `express.ts` repeats the warning throttle from core;
+- **Cleanup:** `express.ts` and `fetch.ts` each repeat the warn-once logic from core;
   `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy.
   *Waits:* no behaviour changes.
 

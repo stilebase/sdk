@@ -72,7 +72,9 @@ export interface GateOptions {
    * browser checks rely on it: browsers send their tell-tale headers only over HTTPS. Default true; false for a site
    * really served over plain http. */
   assumeHttps?: boolean;
-  /** Told about anything that went wrong (the gate let the request through). Default: a console warning, once in a while. */
+  /** Told about anything that went wrong: Stilebase unreachable or refusing (the request was let through, or answered
+   * 503 for a settlement it couldn't confirm), free entries that can never match, a gate that can't start. Default: a
+   * console warning, once in a while. */
   onError?: (error: Error) => void;
   /** For tests, or a custom HTTP client. */
   fetch?: typeof fetch;

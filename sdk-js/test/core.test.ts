@@ -312,14 +312,17 @@ describe("never breaking the site", () => {
 
   it("warns on the console once in a while by default", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    stilebase.config = { status: 401 };
-    const g = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, now: () => clock });
-    await g.check(request("/", GPTBOT));
-    clock += 31_000;
-    await g.check(request("/", GPTBOT));
-    await settled();
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    try {
+      stilebase.config = { status: 401 };
+      const g = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, now: () => clock });
+      await g.check(request("/", GPTBOT));
+      clock += 31_000;
+      await g.check(request("/", GPTBOT));
+      await settled();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

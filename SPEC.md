@@ -186,15 +186,15 @@ the entries before it are the visitor's to write. An address over 45 characters 
    `agent.headers` carries only the Web Bot Auth headers that are present. The answer is the x402
    `SettlementResponse` plus `header`, read only when it's a 200 with a JSON object whose `success` is a boolean:
    - `"success": true`: the request goes to the site, and the response gets `PAYMENT-RESPONSE: <header>`.
-
-   `header` is used only when it can be a header: a base64 string (`A-Z a-z 0-9 + / = _ -`) of at most 8,192
-   characters. Otherwise the gate leaves `PAYMENT-RESPONSE` out (and still serves a paid request, or answers the 402).
    - `"success": false`: answer 402 again, with `error` set to the `errorReason` and `PAYMENT-RESPONSE`.
    - No answer, or any other answer (Stilebase down, a timeout, a body that isn't a JSON object, a `success` that isn't
-     a boolean): 503 with
-     `Retry-After: 5`, and the page isn't served. **The outcome is unknown**: the payment may have settled after all
+     a boolean): 503 with `Retry-After: 5`, and the page isn't served. **The outcome is unknown**: the payment may have settled after all
      (an answer lost on the way), so a gate never tells the agent it wasn't charged. Sending the same payment again
      can never charge twice: each authorization is spent once, on-chain.
+
+   On both a paid and a refused answer, `header` is used only when it can be a header: a base64 string
+   (`A-Z a-z 0-9 + / = _ -`) of at most 8,192 characters. Otherwise the gate leaves `PAYMENT-RESPONSE` out (and still
+   serves a paid request, or answers the 402).
 9. **Visits** are reported with a signed `POST <stilebase>/v1/x402/visits`, the same body as settle without
    `payment` (plus `free_pass` or `signals`), in the background: a request never waits on it. A gate keeps a bounded
    number of reports in flight and drops the rest.
@@ -214,7 +214,8 @@ never resolved by a URL parser. A URL the adapter can't parse is still gated.
 example `/healthz` and `/robots.txt`; full paths from the site's root). A request is free only when it's a GET or HEAD
 and its URL is **literal**:
 
-- `http` or `https`, a plain host name (letters, digits, `-`, `.`, an optional port), then `/`;
+- `http` or `https`, a plain host (a name of letters, digits, `-`, `_` and `.`, or a bracketed IPv6 address), an
+  optional port, then `/`;
 - a path of letters, digits, `-` `.` `_` `~` and `/` only, with no empty, `.` or `..` segment (a trailing slash is
   fine); a query may follow;
 

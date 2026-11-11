@@ -16,8 +16,8 @@ try {
     ? resolve(process.env.SMOKE_TARBALL)
     : join(work, JSON.parse(npm(["pack", "--json", "--pack-destination", work], root))[0].filename);
   writeFileSync(join(work, "package.json"), JSON.stringify({ name: "smoke", private: true, type: "module" }));
-  // --ignore-scripts: the smoke test's own third-party installs run no scripts.
-  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5", "typescript@5.6", "@types/express@5", "@types/node@20"], work);
+  // --ignore-scripts, exact versions: the smoke test's third-party installs run no scripts and never change unseen.
+  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5.1.0", "typescript@5.6.3", "@types/express@5.0.6", "@types/node@20.17.9"], work);
 
   writeFileSync(
     join(work, "esm.mjs"),

@@ -48,6 +48,14 @@ export default { fetch: withGate(handler) }; // Workers: `npx wrangler secret pu
 // Deno:  Deno.serve(withGate(handler))
 ```
 
+The gate only sees requests that reach the handler it wraps. Anything the platform answers by itself skips it:
+
+- **Cloudflare Workers with static assets** serve matching files without running the Worker. Set
+  `assets.run_worker_first = true` in your Wrangler config (or list your paid paths there), so every request goes
+  through the gate first.
+- **Bun's `routes` and `static`** are matched before `fetch`. Send everything through `fetch: withGate(...)`, or wrap
+  each route's handler with `withGate` too.
+
 ### Anything else
 
 ```ts
@@ -96,8 +104,13 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   can verify without touching DNS.
 - **Your own health checks** are scripts too (curl, wget, urllib): keep them free with `free: ["/healthz"]`, a user
   agent of your own on the check, or `catchHttpClients: false`.
-- **Free paths are exact and literal.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else:
-  not `/healthz/`, `/HEALTHZ`, `/%68ealthz` or a POST. Use letters, digits, `- . _ ~` and `/`; full paths from the
+- **Webhooks and server-to-server calls** usually come from scripts with a default user agent (Go-http-client,
+  python-requests, axios), and a POST is never free, so the gate asks them to pay. Register those routes before
+  `app.use(gate())` (Express), or route them outside `withGate`, rather than letting every script through with
+  `catchHttpClients: false`.
+- **Free paths are exact and literal.** `free: ["/healthz"]` keeps `GET /healthz` (and HEAD) free, whatever query
+  follows (`/healthz?probe=1`), and nothing else: not `/healthz/`, `/HEALTHZ`, `/%68ealthz` or a POST. So don't free
+  a path that serves different content by query (a `/` that shows `/?article=…`). Use letters, digits, `- . _ ~` and `/`; full paths from the
   site's root, even for a gate mounted under a path. Every other path is gated. Where the runtime normalizes the URL
   before the gate sees it, as Bun and Workers do, the gate and your router read the same normalized path. There's
   no option to gate only some sections: each way of predicting how routers and file servers read a path left some
@@ -138,10 +151,12 @@ Serving directly with no proxy in front (Bun, Deno), give the gate the connectio
 
 ```ts
 // Bun: the handler takes the server too
-const handler = (request: Request, server: Server) => new Response("hello");
-Bun.serve({ fetch: withGate(handler, { clientIp: (request, server) => server.requestIP(request)?.address ?? null }) });
-// Deno
-Deno.serve(withGate(handler, { clientIp: (_request, info) => info.remoteAddr.hostname }));
+const bunHandler = (request: Request, server: Server) => new Response("hello");
+Bun.serve({ fetch: withGate(bunHandler, { clientIp: (request, server) => server.requestIP(request)?.address ?? null }) });
+
+// Deno: the handler takes the connection's info
+const denoHandler = (request: Request, info: Deno.ServeHandlerInfo) => new Response("hello");
+Deno.serve(withGate(denoHandler, { clientIp: (_request, info) => info.remoteAddr.hostname }));
 ```
 
 `clientIp` must return a string (or `null`), not a promise. Without an address, free passes can't verify, per-agent

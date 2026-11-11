@@ -19,6 +19,8 @@ jobs:
   npm-build:
     if: startsWith(github.ref_name, 'sdk-js-v')
     runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
     defaults:
       run:
         working-directory: sdk-js
@@ -40,10 +42,13 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      # Pack and hand over the tarball before anything else is installed: the smoke test installs third-party packages,
-      # which must never get a chance to touch what's published. The artifact can't be replaced once uploaded.
+      # Pack and hand over the tarball before anything else is installed, and record its hash: the smoke test installs
+      # third-party packages, and the publish job publishes only a tarball with exactly this hash.
       - name: Pack the tarball that gets published
-        run: mkdir -p ../release && npm pack --pack-destination ../release
+        id: pack
+        run: |
+          mkdir -p ../release && npm pack --pack-destination ../release
+          echo "sha256=$(sha256sum ../release/*.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: npm-package
@@ -72,5 +77,11 @@ jobs:
       # Trusted publishing needs npm 11.5 or later. An exact version, installed without its scripts: this job can mint
       # the publishing token, so nothing in it may change between releases unnoticed.
       - run: npm install -g npm@11.21.2 --ignore-scripts
+      - name: The tarball is the one the build job packed
+        env:
+          EXPECTED: ${{ needs.npm-build.outputs.sha256 }}
+        run: |
+          test -n "$EXPECTED"
+          echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --check
       - name: Publish the built tarball (no lifecycle scripts run here)
         run: npm publish release/*.tgz --provenance --access public --ignore-scripts
