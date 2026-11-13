@@ -505,3 +505,75 @@ describe("loads another request started", () => {
     expect((await g.check(request("/listings/1", BROWSER, { ip: "20.15.240.70" }))).action).toBe("respond");
   });
 });
+
+describe("the review's cases (cycle 13)", () => {
+  it("frees nothing after a `#` (a forged Host on Deno puts one in the URL; a router reads past it)", async () => {
+    const g = gate({ free: ["/healthz", "/"] });
+    for (const url of [`https://${DOMAIN}/healthz#/listings/1`, `https://${DOMAIN}/#/listings/1`, `https://${DOMAIN}/healthz?a#/x`]) {
+      expect((await g.check(request("/", GPTBOT, { url }))).action, url).toBe("respond");
+    }
+    expect((await g.check(request("/", GPTBOT, { url: `https://${DOMAIN}/healthz?a=1` }))).action).toBe("pass");
+  });
+
+  it("finds the browser check's cookie when a runtime joins Cookie fields with a comma", async () => {
+    const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
+    const script = { "user-agent": CHROME_UA, accept: "*/*" };
+    expect(await gate().check(request("/listings", { ...script, cookie: `a=1, stilebase_pass=${token}` }))).toEqual({ action: "pass" });
+  });
+
+  it("answers a free path without waiting for the settings (a health check on a cold start)", async () => {
+    let answer: (r: Response) => void = () => undefined;
+    const slow = () => new Promise<Response>((resolve) => (answer = resolve));
+    const g = createGate({ key: KEY, apiUrl: API, fetch: slow, onError: () => undefined, free: ["/healthz"] });
+    const started = Date.now();
+    expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
+    expect(Date.now() - started).toBeLessThan(500);
+    answer(new Response(null, { status: 500 }));
+  });
+
+  it("still serves the verification file at a free path once the settings are here", async () => {
+    const path = "/.well-known/stilebase-verify.txt";
+    stilebase.config = { status: 200, body: liveConfig({ verification: { path, value: "stilebase-verify=tok" } }) };
+    const g = gate({ free: [path] });
+    expect(await g.check(request(path))).toEqual({ action: "pass" }); // no settings yet: never waits for them
+    await g.check(request("/listings", BROWSER));
+    expect((await g.check(request(path))).action).toBe("respond");
+  });
+
+  it("hands out a new pass decision each time", async () => {
+    const g = gate();
+    const first = await g.check(request("/listings", BROWSER));
+    (first as { paymentResponse?: string }).paymentResponse = "changed";
+    expect(await g.check(request("/listings", BROWSER))).toEqual({ action: "pass" });
+  });
+
+  it("starts one background load per refresh, however many requests arrive while it runs", async () => {
+    const g = gate();
+    await g.check(request("/", BROWSER)); // a person: nothing reported, only the loads run in the background
+    clock += 2 * 60 * 60 * 1000; // settings and address lists both due
+    const waits: Promise<unknown>[] = [];
+    for (let i = 0; i < 5; i++) await g.check(request("/", BROWSER), (p) => waits.push(p));
+    await Promise.all(waits);
+    expect(waits).toHaveLength(2); // one for the settings, one for the address lists
+  });
+
+  it("takes an address index from another bundle (each CommonJS entry has its own NetworkIndex class)", async () => {
+    const { inNetworks } = await import("../src/detect.js");
+    const foreign = { has: () => true } as unknown as Parameters<typeof inNetworks>[1];
+    expect(inNetworks("20.15.240.70", foreign)).toBe(true);
+  });
+
+  it("reads no environment variable its option already gives (Deno asks permission for each)", async () => {
+    const env = process.env;
+    const read: string[] = [];
+    process.env = new Proxy(env, { get: (target, name) => (typeof name === "string" && name.startsWith("STILEBASE") && read.push(name), Reflect.get(target, name)) });
+    try {
+      createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch });
+      expect(read).toEqual([]);
+      createGate({ fetch: stilebase.fetch, onError: () => undefined });
+      expect(read.sort()).toEqual(["STILEBASE_API_URL", "STILEBASE_KEY"]);
+    } finally {
+      process.env = env;
+    }
+  });
+});

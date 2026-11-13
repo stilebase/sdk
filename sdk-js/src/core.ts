@@ -104,7 +104,8 @@ interface Cached {
   expires: number;
 }
 
-const PASS: GateDecision = { action: "pass" };
+/** A new object each time: a caller that changes one decision mustn't change the next. */
+const pass = (): GateDecision => ({ action: "pass" });
 
 /** A gate for your site. Adapters (express, fetch) wrap it; use it directly for anything else. */
 export function createGate(options: GateOptions = {}, adapter = "core"): Gate {
@@ -138,9 +139,9 @@ class SiteGate implements Gate {
     private readonly options: GateOptions,
     adapter: string,
   ) {
-    const env = { STILEBASE_API_URL: envVar("STILEBASE_API_URL"), STILEBASE_KEY: envVar("STILEBASE_KEY") };
     this.client = `${PACKAGE}/${VERSION} gate/${adapter}`; // e.g. "@stilebase/sdk/0.1.0 gate/express"
-    this.api = (options.apiUrl || env.STILEBASE_API_URL || DEFAULT_API_URL).replace(/\/+$/, ""); // empty counts as unset
+    // Each environment variable is read only when its option is missing (Deno asks for permission to read one).
+    this.api = (options.apiUrl || envVar("STILEBASE_API_URL") || DEFAULT_API_URL).replace(/\/+$/, ""); // empty counts as unset
     // Called as plain functions, never as this.fetch(...): a fetch with `this` bound to the gate throws on Workers.
     const given = options.fetch;
     this.fetch = given ? (input, init) => given(input, init) : (input, init) => globalThis.fetch(input, init);
@@ -152,7 +153,7 @@ class SiteGate implements Gate {
     const usable = listed.filter((p): p is string => typeof p === "string" && isLiteralPath(p));
     this.freePaths = new Set(usable);
     this.unusableFree = listed.filter((p) => !usable.includes(p as string));
-    const key = options.key ?? env.STILEBASE_KEY ?? "";
+    const key = options.key ?? envVar("STILEBASE_KEY") ?? "";
     this.site = parseSiteKey(key);
     if (!this.site) {
       this.report(new Error(key ? "STILEBASE_KEY isn't a site key (sbk_…): every request passes" : "STILEBASE_KEY isn't set: every request passes"));
@@ -164,13 +165,13 @@ class SiteGate implements Gate {
       return await this.decide(request, waitUntil);
     } catch (error) {
       this.report(error);
-      return PASS;
+      return pass();
     }
   }
 
   private async decide(original: GateRequest, waitUntil?: WaitUntil): Promise<GateDecision> {
     const site = this.site;
-    if (!site) return PASS;
+    if (!site) return pass();
     // Each field by name: a Fetch Request's are getters, which spreading would drop.
     const request: GateRequest = {
       method: original.method,
@@ -187,13 +188,16 @@ class SiteGate implements Gate {
       const entries = unusable.map(describe).join(", ");
       this.report(new Error(`free: ${entries} can never match (use literal paths from the site's root, like "/healthz": letters, digits, - . _ ~ and /, no query, %, "..", "//")`));
     }
-    const config = await this.settings(waitUntil);
-    if (!config) return PASS;
+    // A free request never waits for the settings (a health check on a cold start, Stilebase slow): only the
+    // verification file needs them, and only settings already here can name it.
+    const free = this.isFree(request.method, request.url);
+    const config = free ? this.config : await this.settings(waitUntil);
+    if (!config) return pass();
     const url = siteUrl(request.url, config.gateway.domain);
     if (config.verification && url.pathname === config.verification.path) {
       return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
-    if (!config.gateway.live || this.isFree(request.method, request.url)) return PASS;
+    if (free || !config.gateway.live) return pass();
 
     const headers = request.headers;
     // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
@@ -203,9 +207,9 @@ class SiteGate implements Gate {
     if (!payment && !(await this.isAgent(request, userAgent, config, waitUntil))) {
       const check = this.options.checkBrowsers !== false && !this.testMode;
       signals = check ? suspectSignals(request, config, this.options.assumeHttps !== false) : [];
-      if (!signals.length) return PASS;
+      if (!signals.length) return pass();
       const now = this.now();
-      if (await hasPass(headers.get("cookie") ?? "", config.pass.cookie, site.secret, userAgent, now, config.pass.max_age_seconds)) return PASS;
+      if (await hasPass(headers.get("cookie") ?? "", config.pass.cookie, site.secret, userAgent, now, config.pass.max_age_seconds)) return pass();
     }
 
     // Cut to Stilebase's limits: an over-long URL or user agent must never make its call fail (that would serve the page).
@@ -230,7 +234,7 @@ class SiteGate implements Gate {
         // A free pass: this agent reads for free. Or a suspect while strict detection is off: counted, served.
         const visit = signals.length ? { host, signals, request: siteRequest, agent } : { host, free_pass: true, request: siteRequest, agent };
         this.reportVisit(visit, waitUntil);
-        return PASS;
+        return pass();
       }
       if (answer.status === 200 && isRecord(answer.body)) {
         required = answer.body;
@@ -239,11 +243,11 @@ class SiteGate implements Gate {
         // Stilebase refused the lookup (a request built to be refused?): ask with the last price rather than give the page.
         required = { ...this.lastRequired, resource: { ...(this.lastRequired.resource as object), url: url.href } };
       } else {
-        return PASS; // no live gateway for this domain (yet), or no price known
+        return pass(); // no live gateway for this domain (yet), or no price known
       }
     } catch (error) {
       this.report(error);
-      return PASS; // Stilebase unreachable: never break the site
+      return pass(); // Stilebase unreachable: never break the site
     }
 
     if (!payment) {
@@ -275,7 +279,7 @@ class SiteGate implements Gate {
       return paymentRequired({ ...required, error: settlement.errorReason ?? "payment_rejected" }, receipt(settlement.header));
     }
     const header = receipt(settlement.header);
-    return header ? { action: "pass", paymentResponse: header } : PASS;
+    return header ? { action: "pass", paymentResponse: header } : pass();
   }
 
   /** A free path: the request's URL is literal (no encoding, no dot segments, a plain host) and its path is one of the
@@ -310,7 +314,11 @@ class SiteGate implements Gate {
       return this.config;
     }
     const every = this.config ? Math.max(this.config.refresh_seconds * 1000, MIN_REFRESH_MS) : RETRY_WITHOUT_CONFIG_MS;
-    if (this.now() - this.configCheckedAt >= every) this.background(this.loadSettings(), waitUntil);
+    if (this.now() - this.configCheckedAt >= every) {
+      const running = this.configLoading;
+      const load = this.loadSettings();
+      if (load !== running) this.background(load, waitUntil); // only the request that starts a load waits for it
+    }
     return this.config;
   }
 
@@ -394,7 +402,11 @@ class SiteGate implements Gate {
       return loading;
     };
     if (this.ranges === null) await bounded(load(), REQUIREMENTS_TIMEOUT_MS + 500);
-    else if (this.now() - this.rangesAt > RANGES_MAX_AGE_MS) this.background(load(), waitUntil);
+    else if (this.now() - this.rangesAt > RANGES_MAX_AGE_MS) {
+      const running = this.rangesLoading;
+      const loading = load();
+      if (loading !== running) this.background(loading, waitUntil); // only the request that starts a load waits for it
+    }
     return this.ranges ?? new NetworkIndex([]);
   }
 

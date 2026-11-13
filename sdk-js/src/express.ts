@@ -25,8 +25,8 @@ export interface ExpressResponse {
 
 export interface ExpressGateOptions extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets, e.g. "cf-connecting-ip"). Default:
-   * Express's req.ip, which honours the "trust proxy" setting; with `trust proxy` set to `true`, the last
-   * X-Forwarded-For entry instead. Never a header anyone can set. */
+   * Express's req.ip, which honours the "trust proxy" setting; when that trusts every hop (`true`, or ranges or a
+   * function that trust any address), the last X-Forwarded-For entry instead. Never a header anyone can set. */
   ipHeader?: string;
   /** Or work it out yourself. */
   clientIp?: (req: ExpressRequest) => string | null | undefined;
@@ -40,7 +40,7 @@ export function gate(options: ExpressGateOptions = {}) {
     if (warned) return;
     warned = true;
     const error = new Error(
-      `Express's "trust proxy" is true, so req.ip is the first X-Forwarded-For entry, which visitors write: the gate uses ` +
+      `Express's "trust proxy" trusts every hop, so req.ip is the first X-Forwarded-For entry, which visitors write: the gate uses ` +
         `the last entry (the one your proxy added) instead. Set "trust proxy" to your proxies (e.g. 1 or "loopback").`,
     );
     try {
@@ -88,9 +88,10 @@ export function gate(options: ExpressGateOptions = {}) {
   };
 }
 
-/** Where the visitor's address comes from. `trust proxy: true` trusts every hop, so Express's req.ip is the left-most
- * X-Forwarded-For entry: the visitor's to write. A spoofed operator address with an agent's user agent would get a free
- * pass or that agent's price, so then the gate takes the last entry, the one the nearest proxy added. */
+/** Where the visitor's address comes from. A "trust proxy" that trusts every hop (`true`, a function or ranges that
+ * trust any address) makes Express's req.ip the left-most X-Forwarded-For entry: the visitor's to write. A spoofed
+ * operator address with an agent's user agent would get a free pass or that agent's price, so then the gate takes the
+ * last entry, the one the nearest proxy added. */
 function visitorAddress(
   req: ExpressRequest,
   headers: { get(name: string): string | null },
@@ -99,11 +100,37 @@ function visitorAddress(
 ): string | null | undefined {
   if (options.clientIp) return addressOf(options.clientIp(req));
   if (options.ipHeader) return addressFrom(headers, options.ipHeader, null);
-  if (req.app?.get("trust proxy") === true) {
+  if (req.app && trustsEveryHop(req.app)) {
     warnTrustAll();
     return addressFrom(headers, "x-forwarded-for", null) ?? req.socket?.remoteAddress ?? null;
   }
   return req.ip;
+}
+
+const everyHop = new WeakMap<object, boolean>();
+// Addresses no proxy has (documentation ranges, far apart): a setting that trusts all of them, at a hop no chain
+// reaches, trusts every address. A hop count (`1`, `2`) trusts only that many hops and isn't caught here.
+const STRANGERS = [
+  ["192.0.2.1", "198.51.100.1", "203.0.113.1"],
+  ["2001:db8::1", "3fff:fff::1"],
+];
+
+/** Whether Express's "trust proxy" setting trusts every hop: `true`, or its compiled form ("trust proxy fn") trusting
+ * any address at any distance (`() => true`, "0.0.0.0/0", ["0.0.0.0/1", "128.0.0.0/1"]). */
+function trustsEveryHop(app: { get(setting: string): unknown }): boolean {
+  if (app.get("trust proxy") === true) return true;
+  const trust = app.get("trust proxy fn");
+  if (typeof trust !== "function") return false;
+  let answer = everyHop.get(trust);
+  if (answer === undefined) {
+    try {
+      answer = STRANGERS.some((family) => family.every((address) => trust(address, 1_000_000) === true));
+    } catch {
+      answer = false;
+    }
+    everyHop.set(trust, answer);
+  }
+  return answer;
 }
 
 export type { GateDecision, GateOptions } from "./core.js";

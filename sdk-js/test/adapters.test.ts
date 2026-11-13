@@ -49,21 +49,29 @@ describe("express", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9");
   });
 
-  it("with trust proxy true (req.ip is then the visitor's first entry), takes the last X-Forwarded-For entry and warns", async () => {
-    const warnings: string[] = [];
-    const app = express();
-    app.set("trust proxy", true);
-    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: (e) => warnings.push(e.message) }));
-    app.get("/listings", (req, res) => {
-      res.send(req.ip ?? "");
-    });
-    server = app.listen(0);
-    await new Promise((resolve) => server!.once("listening", resolve));
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    await fetch(`${base}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70, 198.51.100.9" } });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9"); // not the spoofed 20.15.240.70
-    expect(warnings.filter((w) => w.includes("trust proxy"))).toHaveLength(1);
-  });
+  // Every form that trusts every hop makes req.ip the visitor's first entry; a hop count or named proxies don't.
+  const trustAll: unknown[] = [true, () => true, ["0.0.0.0/1", "128.0.0.0/1"], "::/1, 8000::/1"];
+  const trustSome: unknown[] = [1, "loopback", "127.0.0.1", false];
+  it.each([...trustAll.map((t) => [t, true]), ...trustSome.map((t) => [t, false])])(
+    "with trust proxy %s (trusting every hop: %s), takes the last X-Forwarded-For entry, warning only when it trusts every hop",
+    async (trust, everyHop) => {
+      const warnings: string[] = [];
+      const app = express();
+      app.set("trust proxy", trust);
+      app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: (e) => warnings.push(e.message) }));
+      app.get("/listings", (req, res) => {
+        res.send(req.ip ?? "");
+      });
+      server = app.listen(0);
+      await new Promise((resolve) => server!.once("listening", resolve));
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      for (let i = 0; i < 2; i++) await fetch(`${base}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70, 198.51.100.9" } });
+      const ips = stilebase.to("/v1/x402/requirements").map((c) => c.query.get("ip"));
+      // Named proxies that don't include 127.0.0.1 (false) trust no hop: the socket's own address.
+      expect(ips[0]).toBe(trust === false ? "127.0.0.1" : "198.51.100.9"); // never the spoofed 20.15.240.70
+      expect(warnings.filter((w) => w.includes("trust proxy"))).toHaveLength(everyHop ? 1 : 0);
+    },
+  );
 
   it("keeps only the exact free path free, however another page is spelt (express.static)", async () => {
     const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");

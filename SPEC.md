@@ -104,7 +104,8 @@ default it uses:
 - the address the framework gives, where the framework works it out from proxies the owner configured (Express's
   `req.ip`, an ASGI server's client address, WSGI's `REMOTE_ADDR`). Owners configure their actual proxies, never
   "trust every hop": then the first `X-Forwarded-For` entry wins, and the visitor wrote it. Where the gate can tell
-  that every hop is trusted (Express's `trust proxy: true`), it takes the last entry instead and warns;
+  that every hop is trusted (Express's `trust proxy` set to `true`, or to ranges or a function that trust any
+  address), it takes the last entry instead and warns;
 - on Cloudflare Workers, which sets `CF-Connecting-IP` itself and overwrites the visitor's: that header;
 - elsewhere (Vercel, Bun, Deno, Hono on Node) no address, unless the owner names the header their platform or proxy
   sets (`x-real-ip` on Vercel). Without an address, free passes can't verify, per-agent prices don't apply, and hidden
@@ -167,7 +168,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
 
    200 and 204 answers are cached for as long as their `Cache-Control` says, at most 5 minutes, at most 1,000 entries.
 7. **The pass cookie.** `<cookie>=<unix time>.<first 32 hex of HMAC-SHA256(secret, "stilebase-pass\n<unix time>\n<User-Agent>")>`,
-   for `max_age_seconds`, `Path=/; SameSite=Lax; Secure`. The gate checks it itself, with no call to Stilebase: the
+   for `max_age_seconds`, `Path=/; SameSite=Lax; Secure`. The gate finds it in the Cookie header split at `;` and at
+   `,` (a runtime may join several Cookie fields with `, `), and checks it itself, with no call to Stilebase: the
    time at most `max_age_seconds` old and at most a minute ahead, the HMAC for this user agent, compared in constant
    time.
 8. **A payment.** A request with `PAYMENT-SIGNATURE` (x402 v2) or `X-PAYMENT` (v1) goes to a signed
@@ -217,12 +219,14 @@ and its URL is **literal**:
 - `http` or `https`, a plain host (a name of letters, digits, `-`, `_` and `.`, or a bracketed IPv6 address), an
   optional port, then `/`;
 - a path of letters, digits, `-` `.` `_` `~` and `/` only, with no empty, `.` or `..` segment (a trailing slash is
-  fine); a query may follow;
+  fine); a query may follow, nothing else (no `#`: a request URL has none unless a forged Host put it there);
 
 and that path is one of the free paths **character for character**, as the URL reaches the gate. There's no decoding
 and no resolving: `/HEALTHZ`, `/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?`
 are all gated. Some router or file server reads each unusual spelling differently, so only spellings every parser
-reads the same way can be free. A free entry that isn't literal is reported once and never matches.
+reads the same way can be free. A free entry that isn't literal is reported once and never matches. A free request
+never waits for the settings (a health check on a cold start, Stilebase slow): it passes, unless settings already
+loaded name it as the verification file.
 
 A runtime that normalizes the URL before the gate sees it (Bun, Workers) hands the app the same normalized URL, so
 the two still agree. A framework that routes a different path than the one it shows the gate can't be gated safely by

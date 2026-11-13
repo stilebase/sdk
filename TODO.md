@@ -86,6 +86,20 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **Cleanup:** `express.ts` and `fetch.ts` each repeat the warn-once logic from core;
   `ExpressResponse.headersSent` is no longer read; settings and address lists share their single-flight code by copy.
   *Waits:* no behaviour changes.
+- **Intervals and cache ages use the wall clock** (`Date.now`): a clock set back (NTP, a restored VM) stops refreshes
+  and keeps cached prices and free passes for as long as it jumped. Use `performance.now()` for durations, wall time
+  only for signatures. *Waits:* large backward jumps are rare and heal on their own; the injectable `now` the tests
+  use would need splitting in two.
+- **The agent and client name lists are lowercased on every request** rather than once per settings load. *Waits:*
+  about 60 short strings per request from a person; no measurable cost found.
+- **Each CommonJS entry carries its own copy of the core** (tsup splits shared code for ESM only), so mixing entries
+  in CommonJS gives two `createGate`s. Nothing depends on their identity any more (the address check no longer uses
+  `instanceof`). *Waits:* a few KB per entry; ESM, the main path, shares one copy.
+- **Express: a hop count larger than the real number of proxies** (`trust proxy` 5 behind one) makes `req.ip` an
+  entry the visitor wrote. The gate catches every setting that trusts every hop, but can't tell a wrong count from a
+  right one: `req.ip` being the first of several entries is also what a correct count gives when the visitor sent no
+  X-Forwarded-For. *Waits:* it's a misconfiguration Express documents; the README says to set the count to your
+  proxies.
 
 - **A Next.js adapter.** 0.1.0 has none: nine review cycles found Next-specific ways past a middleware gate. Next
   rewrites the URL middleware sees (a trailing `.rsc` stripped, `..` resolved) while it routes the original path;

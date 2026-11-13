@@ -119,8 +119,9 @@ export function normalizeIp(ip: string | null | undefined): string | null {
 export function inNetworks(ip: string | null | undefined, networks: readonly Network[] | NetworkIndex): boolean {
   const address = parseIp(ip ?? "");
   if (!address) return false;
-  if (networks instanceof NetworkIndex) return networks.has(address);
-  return networks.some((n) => n.version === address.version && address.value >> n.shift === n.base);
+  // Not `instanceof`: each CommonJS entry has its own copy of NetworkIndex.
+  if (!Array.isArray(networks)) return (networks as NetworkIndex).has(address);
+  return (networks as readonly Network[]).some((n) => n.version === address.version && address.value >> n.shift === n.base);
 }
 
 /** Networks grouped by prefix length, so a lookup costs one set probe per distinct length (a few dozen), not one
@@ -200,10 +201,10 @@ export function isLiteralPath(path: string): boolean {
 }
 
 /** The path of a request URL when the whole URL is literal: http(s), a plain host name, then a literal path (a query
- * may follow). Null for anything else (a Host like "x?", percent-encoding, dot segments, an odd scheme): such a request
+ * may follow, never a `#`: a request URL has none, unless a forged Host put it there). Null for anything else (a Host like "x?", percent-encoding, dot segments, an odd scheme): such a request
  * is never free, since some router may read it differently. */
 export function literalPath(url: string): string | null {
-  const parts = /^https?:\/\/([^/?#]*)(\/[^?#]*)(?:[?#].*)?$/is.exec(url);
+  const parts = /^https?:\/\/([^/?#]*)(\/[^?#]*)(?:\?[^#]*)?$/is.exec(url);
   if (!parts || !HOST.test(parts[1]!) || !isLiteralPath(parts[2]!)) return null;
   return parts[2]!;
 }

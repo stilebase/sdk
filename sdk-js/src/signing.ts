@@ -58,8 +58,10 @@ export async function hasPass(
   nowMs: number,
   maxAgeSeconds: number,
 ): Promise<boolean> {
+  // Split at `,` too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ".
+  // A cookie value never contains one.
   const cookie = cookieHeader
-    .split(";")
+    .split(/[;,]/)
     .map((c) => c.trim())
     .find((c) => c.startsWith(`${cookieName}=`));
   const token = cookie?.slice(cookieName.length + 1) ?? "";
