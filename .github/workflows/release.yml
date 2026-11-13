@@ -55,11 +55,38 @@ jobs:
           path: release/*.tgz
           if-no-files-found: error
           retention-days: 7
-      - name: The published tarball as users get it (install scripts off)
+
+  # The published tarball as users get it, in a job of its own: the smoke test installs third-party packages, which
+  # never run where the tarball is built or published.
+  npm-smoke:
+    needs: npm-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk-js
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: release
+      - name: The tarball is the one the build job packed
+        working-directory: .
+        env:
+          EXPECTED: ${{ needs.npm-build.outputs.sha256 }}
+        run: |
+          test -n "$EXPECTED" && test "$(ls release/*.tgz | wc -l)" = 1
+          echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --strict --check
+      - name: Install it in an empty project and import every entry (install scripts off)
         run: SMOKE_TARBALL="$(ls ../release/*.tgz)" npm run smoke
 
   npm-publish:
-    needs: npm-build
+    needs: [npm-build, npm-smoke]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -81,7 +108,7 @@ jobs:
         env:
           EXPECTED: ${{ needs.npm-build.outputs.sha256 }}
         run: |
-          test -n "$EXPECTED"
-          echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --check
+          test -n "$EXPECTED" && test "$(ls release/*.tgz | wc -l)" = 1
+          echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --strict --check
       - name: Publish the built tarball (no lifecycle scripts run here)
         run: npm publish release/*.tgz --provenance --access public --ignore-scripts

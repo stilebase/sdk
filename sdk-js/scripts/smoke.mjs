@@ -3,11 +3,14 @@
 // (the release checks the exact file it publishes).
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
+// The same versions the package is developed and tested with (package.json's devDependencies), never a range.
+const dev = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies;
+const pinned = (name) => `${name}@${dev[name]}`;
 const work = mkdtempSync(join(tmpdir(), "stilebase-sdk-smoke-"));
 const npm = (args, cwd) => execFileSync("npm", args, { cwd, stdio: ["ignore", "pipe", "inherit"], shell: process.platform === "win32" }).toString();
 
@@ -16,8 +19,9 @@ try {
     ? resolve(process.env.SMOKE_TARBALL)
     : join(work, JSON.parse(npm(["pack", "--json", "--pack-destination", work], root))[0].filename);
   writeFileSync(join(work, "package.json"), JSON.stringify({ name: "smoke", private: true, type: "module" }));
-  // --ignore-scripts, exact versions: the smoke test's third-party installs run no scripts and never change unseen.
-  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, "express@5.1.0", "typescript@5.6.3", "@types/express@5.0.6", "@types/node@20.17.9"], work);
+  // --ignore-scripts, exact top-level versions: the smoke test's third-party installs run no scripts. It runs in its
+  // own job in the release, never where the published tarball is built.
+  npm(["install", "--no-audit", "--no-fund", "--ignore-scripts", tarball, pinned("express"), pinned("typescript"), pinned("@types/express"), pinned("@types/node")], work);
 
   writeFileSync(
     join(work, "esm.mjs"),

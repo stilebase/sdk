@@ -57,10 +57,12 @@ These are what the reviews check first. Breaking one is a blocking finding.
 publish job gets only the built files and waits for approval in the `release` environment, then publishes through
 trusted publishing (no stored tokens), with provenance. Bump the version and `CHANGELOG.md` in a pull request first.
 
-The first npm release can't use trusted publishing yet (npm configures it on an existing package): publish 0.1.0
-once by hand from a clean checkout of `main` (`npm ci --ignore-scripts && npm run build && npm publish --access
-public`), then add the trusted publisher (`stilebase/sdk`, `release.yml`, environment `release`) and require 2FA with
-tokens disallowed. Every later release goes through the workflow.
+The first npm release can't use trusted publishing yet (npm configures it on an existing package). Push the
+`sdk-js-v0.1.0` tag and let the workflow build, check and smoke-test it; its publish step fails. Download that run's
+`npm-package` artifact, check its SHA-256 against the build job's output, and publish exactly that file by hand:
+`npm publish stilebase-sdk-0.1.0.tgz --access public --ignore-scripts` (logged in with 2FA). Then add the trusted
+publisher (`stilebase/sdk`, `release.yml`, environment `release`) and require 2FA with tokens disallowed. Every later
+release goes through the workflow.
 
 Approving a release in the `release` environment: check that the run's commit is the head of `main` (or on it) and
 that `release.yml` there is unchanged. The workflow checks it too, but that check lives in the tagged commit's own copy

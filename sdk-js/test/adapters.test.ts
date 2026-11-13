@@ -74,8 +74,11 @@ describe("express", () => {
       mkdirSync(join(root, "listings"));
       writeFileSync(join(root, "listings", "1.html"), "the listing");
       writeFileSync(join(root, "robots.txt"), "the robots file");
+      writeFileSync(join(root, "index.html"), "the home page");
+      writeFileSync(join(root, "listings", "index.html"), "the listings");
       const app = express();
-      app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/robots.txt"] }));
+      // "/" is free too: a spelling that reads as "/" to the gate but reaches a listing in Express would be served free.
+      app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, free: ["/robots.txt", "/"] }));
       app.use(express.static(root));
       server = app.listen(0);
       await new Promise((resolve) => server!.once("listening", resolve));
@@ -97,6 +100,11 @@ describe("express", () => {
         "http://h/robots.txt/../listings/1.html",
         "http://h/x//../listings/1.html",
         "http://x%2Flistings%2F1.html?",
+        "javascript://listings/1.html",
+        "JAVASCRIPT://listings/1.html",
+        "javascript://listings/",
+        "JAVASCRIPT://listings/",
+        "ftp://h/robots.txt/../listings/1.html",
         "http://a@x/robots.txt/../listings/1.html",
       ];
       for (const path of spellings) expect([path, await get(path)]).not.toEqual([path, 200]); // never the listing, unpaid

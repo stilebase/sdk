@@ -155,11 +155,12 @@ export function requestUrl(scheme: string, host: string | null | undefined, targ
   const safeHost = host && HOST.test(host) ? host : "localhost";
   let path = target || "/";
   if (!path.startsWith("/")) {
-    // An absolute-form target keeps only its path, but only when its host part is a plain host name: Node's url.parse
-    // (Express) ends a host part at `%`, `;` or `'`, so `http://x%2Fpremium/...` is a different path there. Anything
-    // else stays whole, as a path no free path can match.
+    // An absolute-form target keeps only its path, but only for http(s) with a plain host name: Node's url.parse
+    // (Express) ends a host part at `%`, `;` or `'` (`http://x%2Fpremium/...` is another path there), and gives schemes
+    // such as `javascript:` no host at all (`javascript://articles/` is the path `//articles/`). Anything else stays
+    // whole, as a path no free path can match.
     const parts = SCHEME_AND_AUTHORITY.exec(path);
-    path = parts && HOST.test(parts[2]!) ? parts[3] || "/" : `/${encodeURIComponent(path)}`;
+    path = parts && /^https?$/i.test(parts[1]!) && HOST.test(parts[2]!) ? parts[3] || "/" : `/${encodeURIComponent(path)}`;
     if (!path.startsWith("/")) path = `/${path}`;
   }
   return `${scheme === "https" ? "https" : "http"}://${safeHost}${path.replaceAll("#", "%23")}`;

@@ -51,10 +51,12 @@ export default { fetch: withGate(handler) }; // Workers: `npx wrangler secret pu
 The gate only sees requests that reach the handler it wraps. Anything the platform answers by itself skips it:
 
 - **Cloudflare Workers with static assets** serve matching files without running the Worker. Set
-  `assets.run_worker_first = true` in your Wrangler config (or list your paid paths there), so every request goes
-  through the gate first.
-- **Bun's `routes` and `static`** are matched before `fetch`. Send everything through `fetch: withGate(...)`, or wrap
-  each route's handler with `withGate` too.
+  `assets.run_worker_first = true` in your Wrangler config, so every request goes through the gate first, and have
+  your handler serve the files itself through the assets binding:
+  `withGate((request, env) => env.ASSETS.fetch(request))` for a static site, or your app's own fallback to
+  `env.ASSETS`. Don't list only some paths there: a file can be served under more than one path.
+- **Bun's `routes` and `static`** are matched before `fetch`, so a route never reaches the gate. Serve everything
+  through `fetch: withGate(...)` (route inside your handler, or with Hono), not through `routes`.
 
 ### Anything else
 
@@ -154,8 +156,8 @@ Serving directly with no proxy in front (Bun, Deno), give the gate the connectio
 const bunHandler = (request: Request, server: Server) => new Response("hello");
 Bun.serve({ fetch: withGate(bunHandler, { clientIp: (request, server) => server.requestIP(request)?.address ?? null }) });
 
-// Deno: the handler takes the connection's info
-const denoHandler = (request: Request, info: Deno.ServeHandlerInfo) => new Response("hello");
+// Deno: the handler takes the connection's info (a TCP address, so it has a hostname)
+const denoHandler = (request: Request, info: Deno.ServeHandlerInfo<Deno.NetAddr>) => new Response("hello");
 Deno.serve(withGate(denoHandler, { clientIp: (_request, info) => info.remoteAddr.hostname }));
 ```
 

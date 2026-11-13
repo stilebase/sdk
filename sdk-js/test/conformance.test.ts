@@ -94,3 +94,14 @@ describe("conformance vectors: the gate's decisions", () => {
     else expect(decision.action).toBe("pass");
   });
 });
+
+describe("requestUrl: the URL Express adapters build", () => {
+  it("keeps a plain host, underscores included, and never strips a non-http scheme's host part", async () => {
+    const { requestUrl } = await import("../src/detect.js");
+    expect(requestUrl("http", "web_app:3000", "/healthz")).toBe("http://web_app:3000/healthz");
+    expect(requestUrl("http", "x/healthz?", "/premium")).toBe("http://localhost/premium");
+    expect(requestUrl("http", "h", "http://web_app/healthz")).toBe("http://h/healthz");
+    expect(requestUrl("http", "h", "javascript://articles/")).not.toBe("http://h/");
+    expect(requestUrl("http", "h", "javascript://articles/")).toBe(`http://h/${encodeURIComponent("javascript://articles/")}`);
+  });
+});

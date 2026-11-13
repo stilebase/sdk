@@ -54,6 +54,10 @@ What's known and not yet done, each with why it waits. Findings from code review
 
 ## @stilebase/sdk
 
+- **The smoke test's transitive dependencies resolve fresh** from the registry (its top-level versions are pinned).
+  Install them from a committed lockfile. *Waits:* the smoke test runs in its own release job, which can't touch the
+  published tarball (the publish job checks its hash).
+
 - **Types under `moduleResolution: node`** (`"module": "commonjs"` projects): subpath types resolve only through
   `exports`. Add `typesVersions` for `gate`, `gate/express`, `gate/fetch`. *Waits:* NodeNext and bundler
   resolution, the defaults for new projects, work.

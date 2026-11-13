@@ -400,7 +400,7 @@
     ]
   },
   "free_paths": {
-    "about": "The `free` option (SPEC.md section 6): a request is free only when it's a GET or HEAD and its URL is literal (http or https, a plain host name, then a path of letters, digits, - . _ ~ and / with no empty, . or .. segment; a query may follow) and the path is one of the free paths character for character. No decoding, no resolving: anything else is gated. method defaults to GET; url, when given, is the request URL instead of https://<domain><path>. free_request: the request passes (an AI agent isn't asked to pay).",
+    "about": "The `free` option (SPEC.md section 6): a request is free only when it's a GET or HEAD and its URL is literal (http or https, a plain host: a name of letters, digits, - _ and . or a bracketed IPv6 address, an optional port, then a path of letters, digits, - . _ ~ and / with no empty, . or .. segment; a query may follow) and the path is one of the free paths character for character. No decoding, no resolving: anything else is gated. method defaults to GET; url, when given, is the request URL instead of https://<domain><path>. free_request: the request passes (an AI agent isn't asked to pay).",
     "cases": [
       {
         "free": [
