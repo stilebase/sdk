@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import example from "../../conformance/gate-config.example.json";
 import vectors from "../../conformance/vectors.json";
 import { type GateConfig, inNetworks, isAiAgent, isScript, normalizeIp, parseNetwork, suspectSignals } from "../src/detect.js";
-import { parseSiteKey, passToken, signedHeaders } from "../src/signing.js";
+import { hasPass, parseSiteKey, passToken, signedHeaders } from "../src/signing.js";
 import { VERSION } from "../src/version.js";
 import pkg from "../package.json";
 import { createGate } from "../src/core.js";
@@ -26,6 +26,11 @@ describe("conformance vectors", () => {
 
   it.each(vectors.pass_tokens)("makes the browser check's pass token", async (v) => {
     expect(await passToken(v.secret, v.user_agent, v.timestamp)).toBe(v.token);
+  });
+
+  it.each(vectors.pass_cookies.cases)("finds the pass cookie in $cookie", async (v) => {
+    const c = vectors.pass_cookies;
+    expect(await hasPass(v.cookie, c.cookie_name, c.secret, c.user_agent, c.now * 1000, c.max_age_seconds)).toBe(v.has_pass);
   });
 
   it.each(vectors.agent_matching.cases)("tells agents and scripts apart: $user_agent", (v) => {

@@ -58,13 +58,21 @@ export async function hasPass(
   nowMs: number,
   maxAgeSeconds: number,
 ): Promise<boolean> {
-  // Split at `,` too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ".
-  // A cookie value never contains one.
-  const cookie = cookieHeader
+  // Split at `,` too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ". Every
+  // piece with the cookie's name is tried: one planted before the real one (another cookie's value holding a comma, a
+  // sibling subdomain's cookie) mustn't hide it.
+  const tokens = cookieHeader
     .split(/[;,]/)
     .map((c) => c.trim())
-    .find((c) => c.startsWith(`${cookieName}=`));
-  const token = cookie?.slice(cookieName.length + 1) ?? "";
+    .filter((c) => c.startsWith(`${cookieName}=`))
+    .map((c) => c.slice(cookieName.length + 1));
+  for (const token of tokens) {
+    if (await validPass(token, secret, userAgent, nowMs, maxAgeSeconds)) return true;
+  }
+  return false;
+}
+
+async function validPass(token: string, secret: string, userAgent: string, nowMs: number, maxAgeSeconds: number): Promise<boolean> {
   if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) return false;
   const timestamp = Number(token.split(".")[0]);
   const age = Math.floor(nowMs / 1000) - timestamp;

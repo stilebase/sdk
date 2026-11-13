@@ -12,7 +12,7 @@ The spec for `@stilebase/sdk`, `stilebase-sdk`, and a gate in any other language
 When Stilebase can't be reached, answers with an error, or has no live gateway for the site, **everyone gets the site
 as usual**. A gate keeps working on the last settings it fetched (section 3) and on the price lookups it has cached
 (at most 5 minutes); once those run out during an outage, agents pass too. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
-in three cases: the gate's very first request waits for the settings (at most 3 seconds); the first request with an
+in three cases: the gate's first request that isn't free (section 6) waits for the settings (at most 3 seconds); the first request with an
 address waits for the operators' address lists (at most 5 seconds) while hidden agents are caught; and a browser that
 looks like a script (a *suspect*, section 5, step 5) waits on the price lookup (at most 5 seconds) unless it carries a valid
 pass cookie or that answer is cached.
@@ -89,7 +89,8 @@ gateway's page shows the site as **Connected** from it. The answer
 - `refresh_seconds`: how often to fetch them again. A gate uses 300 when it's missing, not a number or not positive,
   and never less than 30.
 
-**When.** On the first request, waiting at most 3 seconds. Then in the background every `refresh_seconds`, keeping
+**When.** On the first request that isn't free, waiting at most 3 seconds; a free request (section 6) starts the load
+without waiting for it. Then in the background every `refresh_seconds`, keeping
 the last good settings on failure. With no settings yet it retries at most every 30 seconds and lets everyone through
 meanwhile. A **404** (the gateway was removed) drops the settings, and everyone passes. A **401** (the key was
 rotated, or this server's clock is more than 5 minutes off) keeps the last settings: agents are still asked to pay,
@@ -206,7 +207,8 @@ Every answer the gate makes itself (402, the browser check's page, 503, the veri
 
 ## 6. The page's name
 
-The page is named to Stilebase and to agents by the gateway's domain over https, with the request's path and query:
+The page is named to Stilebase and to agents by the gateway's domain over https, with the request's path and query
+(a `#` in the request URL is part of the path, as `%23`: a request URL has no fragment, and a router reads past it):
 the Host header is the visitor's to write, and behind a proxy it's an internal name. The request URL is built from
 the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't change the path
 the gate reads. An absolute-form request target (`GET http://host/path`) keeps its path as written: it's cut as text,
@@ -225,8 +227,9 @@ and that path is one of the free paths **character for character**, as the URL r
 and no resolving: `/HEALTHZ`, `/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?`
 are all gated. Some router or file server reads each unusual spelling differently, so only spellings every parser
 reads the same way can be free. A free entry that isn't literal is reported once and never matches. A free request
-never waits for the settings (a health check on a cold start, Stilebase slow): it passes, unless settings already
-loaded name it as the verification file.
+never waits for the settings (a health check on a cold start, Stilebase slow): it starts loading them in the
+background when they're due, as any request does, and passes, unless settings already loaded name it as the
+verification file.
 
 A runtime that normalizes the URL before the gate sees it (Bun, Workers) hands the app the same normalized URL, so
 the two still agree. A framework that routes a different path than the one it shows the gate can't be gated safely by

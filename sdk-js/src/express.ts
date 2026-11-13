@@ -107,7 +107,6 @@ function visitorAddress(
   return req.ip;
 }
 
-const everyHop = new WeakMap<object, boolean>();
 // Addresses no proxy has (documentation ranges, far apart): a setting that trusts all of them, at a hop no chain
 // reaches, trusts every address. A hop count (`1`, `2`) trusts only that many hops and isn't caught here.
 const STRANGERS = [
@@ -115,22 +114,23 @@ const STRANGERS = [
   ["2001:db8::1", "3fff:fff::1"],
 ];
 
-/** Whether Express's "trust proxy" setting trusts every hop: `true`, or its compiled form ("trust proxy fn") trusting
- * any address at any distance (`() => true`, "0.0.0.0/0", ["0.0.0.0/1", "128.0.0.0/1"]). */
+/** Whether Express's "trust proxy" setting trusts every hop: `true`, or a function or ranges trusting any address at
+ * any distance (`() => true`, ["0.0.0.0/1", "128.0.0.0/1"]). Express trusts a hop on any truthy answer, so any truthy
+ * answer counts. Asked on every request (a function's answer can change once its own list loads), each address family
+ * on its own. A function is asked as given; ranges through Express's compiled form ("trust proxy fn", in Express 4
+ * and 5). */
 function trustsEveryHop(app: { get(setting: string): unknown }): boolean {
-  if (app.get("trust proxy") === true) return true;
-  const trust = app.get("trust proxy fn");
+  const setting = app.get("trust proxy");
+  if (setting === true) return true;
+  const trust = typeof setting === "function" ? setting : app.get("trust proxy fn");
   if (typeof trust !== "function") return false;
-  let answer = everyHop.get(trust);
-  if (answer === undefined) {
+  return STRANGERS.some((family) => {
     try {
-      answer = STRANGERS.some((family) => family.every((address) => trust(address, 1_000_000) === true));
+      return family.every((address) => Boolean(trust(address, 1_000_000)));
     } catch {
-      answer = false;
+      return false;
     }
-    everyHop.set(trust, answer);
-  }
-  return answer;
+  });
 }
 
 export type { GateDecision, GateOptions } from "./core.js";

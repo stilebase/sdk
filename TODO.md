@@ -100,6 +100,10 @@ What's known and not yet done, each with why it waits. Findings from code review
   right one: `req.ip` being the first of several entries is also what a correct count gives when the visitor sent no
   X-Forwarded-For. *Waits:* it's a misconfiguration Express documents; the README says to set the count to your
   proxies.
+- **Express: ranges that trust every hop are found through Express's compiled setting** (`trust proxy fn`, Express 4
+  and 5, not documented), and a `trust proxy` function is asked about made-up addresses on each request. A future
+  Express without that setting would leave only `true` and functions caught. *Waits:* it's been stable since Express
+  4; the tests run on the Express version installed, so a change shows up there.
 
 - **A Next.js adapter.** 0.1.0 has none: nine review cycles found Next-specific ways past a middleware gate. Next
   rewrites the URL middleware sees (a trailing `.rsc` stripped, `..` resolved) while it routes the original path;

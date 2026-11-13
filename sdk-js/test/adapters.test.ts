@@ -50,7 +50,7 @@ describe("express", () => {
   });
 
   // Every form that trusts every hop makes req.ip the visitor's first entry; a hop count or named proxies don't.
-  const trustAll: unknown[] = [true, () => true, ["0.0.0.0/1", "128.0.0.0/1"], "::/1, 8000::/1"];
+  const trustAll: unknown[] = [true, () => true, () => 1, (ip: string) => ip, ["0.0.0.0/1", "128.0.0.0/1"], "::/1, 8000::/1"];
   const trustSome: unknown[] = [1, "loopback", "127.0.0.1", false];
   it.each([...trustAll.map((t) => [t, true]), ...trustSome.map((t) => [t, false])])(
     "with trust proxy %s (trusting every hop: %s), takes the last X-Forwarded-For entry, warning only when it trusts every hop",

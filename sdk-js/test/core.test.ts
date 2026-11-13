@@ -506,7 +506,7 @@ describe("loads another request started", () => {
   });
 });
 
-describe("the review's cases (cycle 13)", () => {
+describe("the review's cases (cycles 13 and 14)", () => {
   it("frees nothing after a `#` (a forged Host on Deno puts one in the URL; a router reads past it)", async () => {
     const g = gate({ free: ["/healthz", "/"] });
     for (const url of [`https://${DOMAIN}/healthz#/listings/1`, `https://${DOMAIN}/#/listings/1`, `https://${DOMAIN}/healthz?a#/x`]) {
@@ -529,6 +529,18 @@ describe("the review's cases (cycle 13)", () => {
     expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
     expect(Date.now() - started).toBeLessThan(500);
     answer(new Response(null, { status: 500 }));
+  });
+
+  it("starts loading the settings from a free request, so an instance that only gets free requests serves the verification file", async () => {
+    const path = "/.well-known/stilebase-verify.txt";
+    stilebase.config = { status: 200, body: liveConfig({ verification: { path, value: "stilebase-verify=tok" } }) };
+    const g = gate({ free: [path, "/healthz"] });
+    const waits: Promise<unknown>[] = [];
+    expect(await g.check(request("/healthz"), (p) => waits.push(p))).toEqual({ action: "pass" });
+    expect(waits).toHaveLength(1); // the first load, in the background
+    await Promise.all(waits);
+    expect((await g.check(request(path))).action).toBe("respond");
+    expect(stilebase.to(`/v1/x402/sites/${GATEWAY_ID}/config`)).toHaveLength(1);
   });
 
   it("still serves the verification file at a free path once the settings are here", async () => {
@@ -559,8 +571,24 @@ describe("the review's cases (cycle 13)", () => {
 
   it("takes an address index from another bundle (each CommonJS entry has its own NetworkIndex class)", async () => {
     const { inNetworks } = await import("../src/detect.js");
-    const foreign = { has: () => true } as unknown as Parameters<typeof inNetworks>[1];
+    const foreign = { kind: "stilebase.NetworkIndex", has: () => true } as unknown as Parameters<typeof inNetworks>[1];
     expect(inNetworks("20.15.240.70", foreign)).toBe(true);
+    // Any other collection is a mistake, never a silent "not in the list".
+    expect(() => inNetworks("20.15.240.70", new Set() as unknown as Parameters<typeof inNetworks>[1])).toThrow(TypeError);
+  });
+
+  it("prices and names the page with a `#` in its URL as the router serves it, never the part before the `#`", async () => {
+    const g = gate();
+    await g.check(request("/", GPTBOT, { url: `https://${DOMAIN}/cheap-page#/premium/report` }));
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/cheap-page%23/premium/report`);
+  });
+
+  it("tries every pass cookie of that name: a planted one first doesn't hide the real one", async () => {
+    const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
+    const decoy = `${NOW / 1000}.${"0".repeat(32)}`;
+    const script = { "user-agent": CHROME_UA, accept: "*/*" };
+    const cookie = `prefs=x,stilebase_pass=${decoy}; stilebase_pass=${token}`;
+    expect(await gate().check(request("/listings", { ...script, cookie }))).toEqual({ action: "pass" });
   });
 
   it("reads no environment variable its option already gives (Deno asks permission for each)", async () => {

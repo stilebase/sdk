@@ -120,13 +120,16 @@ export function inNetworks(ip: string | null | undefined, networks: readonly Net
   const address = parseIp(ip ?? "");
   if (!address) return false;
   // Not `instanceof`: each CommonJS entry has its own copy of NetworkIndex.
-  if (!Array.isArray(networks)) return (networks as NetworkIndex).has(address);
+  if ((networks as { kind?: unknown }).kind === "stilebase.NetworkIndex") return (networks as NetworkIndex).has(address);
+  if (!Array.isArray(networks)) throw new TypeError("inNetworks takes an array of networks or a NetworkIndex");
   return (networks as readonly Network[]).some((n) => n.version === address.version && address.value >> n.shift === n.base);
 }
 
 /** Networks grouped by prefix length, so a lookup costs one set probe per distinct length (a few dozen), not one
  * comparison per network (thousands): it runs for every request from a person. */
 export class NetworkIndex {
+  /** What `inNetworks` recognises an index by: `instanceof` fails across bundles (each CommonJS entry has its own class). */
+  readonly kind = "stilebase.NetworkIndex";
   private readonly groups: { version: 4 | 6; shift: bigint; bases: Set<bigint> }[] = [];
 
   constructor(networks: readonly Network[]) {
@@ -214,7 +217,9 @@ export function literalPath(url: string): string | null {
  * belongs in a 402's resource URL or the Bazaar. Never throws, whatever the adapter was given. */
 export function siteUrl(raw: string, domain: string): URL {
   let rest = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(raw)?.[1] ?? raw;
-  rest = rest.replace(/#.*$/s, "").replaceAll("\\", "%5C"); // no fragment; a backslash would read as a slash
+  // A request URL has no fragment: a `#` (a forged Host put it there) is part of the path, as the router reads it, so
+  // the page is priced and named as served. A backslash would read as a slash.
+  rest = rest.replaceAll("#", "%23").replaceAll("\\", "%5C");
   rest = `/${rest.replace(/^\/+/, "")}`; // "//evil.example/x" is a path here, never a host
   try {
     return new URL(rest, `https://${domain}`);
