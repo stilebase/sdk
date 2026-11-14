@@ -30,6 +30,13 @@ library"), go here.
   `/x`. *Waits:* Starlette doesn't route it either; no page is freed.
 - **Python: the sync and async drivers repeat their effect loop** and the request code. *Waits:* no behaviour changes.
 
+- **A rewrite before the gate:** Express names the visitor's page (originalUrl), while WSGI, and ASGI without
+  `raw_path`, name the path after the rewrite. *Waits:* WSGI and ASGI hand the app no original URL to read; mount the
+  gate before rewrites.
+- **Tests that could be sharper:** concurrent address-list loads (the generation check), a verification value with a
+  lone surrogate sent through the gate rather than `_respond`, and a `client_ip` Future that fails later (its error
+  retrieved). *Waits:* the behaviour is covered at one level below.
+
 ## At Stilebase, not in the SDKs
 
 - **Price unusual page URLs conservatively** (percent-encoding, dot segments, a `#`): a router may serve another page
@@ -41,3 +48,13 @@ library"), go here.
 
 - **The test tooling's dependencies** (vitest 2 and its vite and esbuild) have open advisories. Bump them in a
   `chore/` pull request. *Waits:* development only; nothing ships with them (the package has no runtime dependencies).
+- **Express: `url.parse` on every request.** Node 24 can print DEP0169 once when the SDK isn't under `node_modules`
+  (bundled or linked), and a plain `/...` target is parsed twice (here and in the core). Express itself uses
+  `url.parse` only for unusual targets; doing the same would avoid both. *Waits:* a warning at most, no wrong page.
+- **The build's `external: ["node:url"]` is redundant:** tsup strips the `node:` prefix and ships a bare `url` import.
+  *Waits:* Node, Bun and Deno resolve `url` to the built-in; only a bundler that polyfills it would differ.
+
+## stilebase-sdk
+
+- **`_respond` scans every body for lone surrogates**, though only the verification value can hold one (the 402 is
+  escaped already). *Waits:* a few KB per 402.
