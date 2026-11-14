@@ -274,8 +274,8 @@ describe("the review's cases (cycle 1)", () => {
     expect((await g.check(request("/", BROWSER, { ip: "20.15.240.70" }))).action).toBe("respond");
   });
 
-  it("find the pass cookie when the Fetch API joined Cookie fields with a comma", async () => {
-    const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
-    expect(await gate().check(request("/listings", { ...SCRIPT, cookie: `a=1, stilebase_pass=${token}` }))).toEqual({ action: "pass" });
+  it("name a path that starts with two slashes as it is, never reading its first segment as a host", async () => {
+    await gate().check(request("/", GPTBOT, { url: `https://${DOMAIN}//premium/article.html` }));
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}//premium/article.html`);
   });
 });

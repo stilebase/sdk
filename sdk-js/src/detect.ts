@@ -136,7 +136,8 @@ export function normalizeIp(ip: string | null | undefined): string | null {
 /** The request's path and query ("/listings?city=Haifa"), "/" when the URL can't be read. */
 export function pathOf(url: string): string {
   try {
-    const parsed = new URL(url, "http://localhost");
+    // A path ("//premium/x" too) is read after a host of our own, never as a protocol-relative URL.
+    const parsed = new URL(url.startsWith("/") ? `http://localhost${url}` : url, "http://localhost");
     return parsed.pathname + parsed.search;
   } catch {
     return "/";

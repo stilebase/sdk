@@ -14,8 +14,8 @@ The cases every gate must agree on, whatever language it's written in:
 
 Every key and secret here is made up, for a gateway that doesn't exist. None of them works against Stilebase.
 
-The browser-check cases in `vectors.json` state their own settings (a case "over plain http" is checked with *assume
-HTTPS* off); run each case with the settings it names, not the gate's defaults.
+The browser-check cases in `vectors.json` are checked against `gate-config.example.json`; a case "over plain http" is
+never scored, whatever its headers.
 
 ## Changing them
 

@@ -33,7 +33,6 @@ const MAX_CACHED = 1000;
 const MAX_PENDING_REPORTS = 100;
 const WEB_BOT_AUTH_HEADERS = ["signature", "signature-input", "signature-agent"];
 const EMPTY = new Uint8Array();
-const STALE_LOAD_MS = 10_000; // a load older than this never ends (the runtime cancelled its request): start another
 
 export interface GateOptions {
   /** The site key from your gateway page. Default: the STILEBASE_KEY environment variable. */
@@ -206,9 +205,10 @@ class SiteGate implements Gate {
 
   /** The settings: fetched on the first request, then in the background every refresh_seconds. */
   private async settings(waitUntil?: WaitUntil): Promise<GateConfig | null> {
-    const fresh = !this.configLoading || this.now() - this.configLoadingAt > STALE_LOAD_MS;
+    // A load past its own timeout never ends (a runtime cancelled the request that started it): start another.
+    const fresh = !this.configLoading || this.now() - this.configLoadingAt > CONFIG_TIMEOUT_MS + 500;
     if (!this.configAt) {
-      if (fresh) this.startSettings();
+      if (fresh) this.background(this.startSettings(), waitUntil); // kept alive by the runtime, and waited on
       await bounded(this.configLoading!, CONFIG_TIMEOUT_MS + 500);
       return this.config;
     }
@@ -250,9 +250,9 @@ class SiteGate implements Gate {
 
   /** The AI operators' published address ranges: fetched on first use, refreshed in the background once an hour old. */
   private async agentRanges(waitUntil?: WaitUntil): Promise<Network[]> {
-    const fresh = !this.rangesLoading || this.now() - this.rangesLoadingAt > STALE_LOAD_MS;
+    const fresh = !this.rangesLoading || this.now() - this.rangesLoadingAt > REQUIREMENTS_TIMEOUT_MS + 500;
     if (this.ranges === null) {
-      if (fresh) this.startRanges();
+      if (fresh) this.background(this.startRanges(), waitUntil);
       await bounded(this.rangesLoading!, REQUIREMENTS_TIMEOUT_MS + 500);
     } else if (fresh && this.now() - this.rangesAt > RANGES_MAX_AGE_MS) this.background(this.startRanges(), waitUntil);
     return this.ranges ?? [];

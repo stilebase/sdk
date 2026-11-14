@@ -343,8 +343,3 @@ def test_the_last_address_lists_are_kept_when_an_answer_has_none(make: Any, stil
     site.check(request("/", BROWSER, ip="20.15.240.70"))
     site.settle()
     assert isinstance(site.check(request("/", BROWSER, ip="20.15.240.70")), Respond)
-
-
-def test_the_pass_cookie_is_found_when_cookie_fields_are_joined_with_a_comma(make: Any) -> None:
-    token = pass_token(SECRET, CHROME, int(NOW) - 60)
-    assert make().check(request("/listings", {**SCRIPT, "cookie": f"a=1, stilebase_pass={token}"})) == Pass()

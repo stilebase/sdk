@@ -7,6 +7,7 @@ app = GateMiddleware(app)                   # any ASGI app
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, MutableMapping
 from http import HTTPStatus
 from typing import Any
@@ -90,6 +91,9 @@ class GateMiddleware:
         client = scope.get("client")
         try:
             ip = self.client_ip(scope) if self.client_ip else address_from(headers, self.ip_header, client[0] if client else None)
+            if inspect.iscoroutine(ip):  # an async client_ip: no address (a sync function is what it takes)
+                ip.close()
+                ip = None
         except Exception:
             ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)
         raw = scope.get("raw_path")

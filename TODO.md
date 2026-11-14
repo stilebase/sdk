@@ -14,6 +14,9 @@ library"), go here.
 - **Some unusual paths are named differently by the two SDKs:** the JS SDK reads the path through `new URL` (it
   resolves `..` and `%2e%2e`, turns `\` into `/`, encodes `"` `<` `>` `{` `}` `|`); the Python SDK keeps the path as the
   server gave it. Only the page URL sent to Stilebase differs. *Waits:* rare; no page is freed by it.
+- **Cookie fields joined with ", "** (the Fetch API joins HTTP/2's separate Cookie fields so, on Deno and Bun): the pass
+  cookie is found only in the first. The Worker splits at ";" only, and the conformance cases say nothing about it.
+  *Waits:* strict detection is off by default; a shared case first.
 - **The address lists are scanned prefix by prefix** on each request with an address, as the Worker does. An index by
   prefix length would be faster. *Waits:* the lists are short today.
 - **Python: the timeouts are per network step**, not a total deadline (httpx applies 3, 5 and 65 seconds to each of
