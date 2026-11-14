@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
-from stilebase_sdk.gate import AsyncGate, GateOptions, GateRequest, Pass, Respond, SyncGate, pass_token
+from stilebase_sdk.gate import AsyncGate, GateConfig, GateOptions, GateRequest, Pass, Respond, SyncGate, pass_token
 from tests.fake_stilebase import (
     API,
     BROWSER,
@@ -343,3 +343,32 @@ def test_the_last_address_lists_are_kept_when_an_answer_has_none(make: Any, stil
     site.check(request("/", BROWSER, ip="20.15.240.70"))
     site.settle()
     assert isinstance(site.check(request("/", BROWSER, ip="20.15.240.70")), Respond)
+
+
+# --- The review's cases (cycle 3) ---------------------------------------------------------------------------------
+
+
+def test_a_path_starting_with_two_slashes_is_named_as_the_js_sdk_names_it() -> None:
+    from stilebase_sdk.gate._detect import path_of
+
+    assert path_of("//premium/article.html") == "//premium/article.html"
+    assert path_of("https://shop.example.com//premium/a?b=1") == "//premium/a?b=1"
+
+
+def test_a_header_is_trimmed_as_javascript_trims_it() -> None:
+    from stilebase_sdk.gate._detect import is_script
+    from tests.fake_stilebase import EXAMPLE
+
+    config = GateConfig.parse(EXAMPLE)
+    assert config is not None
+    assert is_script("\x85", config) is False and is_script(" \t", config) is True
+
+
+def test_the_402_is_written_as_json_stringify_writes_it(make: Any, stilebase: FakeStilebase) -> None:
+    stilebase.requirements = lambda q: (200, {**REQUIRED, "extra": {"name": "caf\u00e9"}}, {})
+    decision = make().check(request("/listings", {"user-agent": GPTBOT}))
+    assert isinstance(decision, Respond)
+    assert (
+        decision.body
+        == json.dumps({**REQUIRED, "extra": {"name": "caf\u00e9"}}, separators=(",", ":"), ensure_ascii=False).encode()
+    )

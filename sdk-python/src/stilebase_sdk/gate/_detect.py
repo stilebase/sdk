@@ -105,6 +105,12 @@ def headers_of(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
     return headers
 
 
+# What JavaScript's String.prototype.trim() removes: both SDKs and the Worker read a header the same way.
+JS_WHITESPACE = (
+    "\t\n\v\f\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
 def _names(user_agent: str, tokens: Sequence[str]) -> bool:
     """Whether `user_agent` names any of `tokens`, case-insensitively, anywhere in it."""
     lowered = user_agent.lower()
@@ -118,7 +124,7 @@ def is_ai_agent(user_agent: str, config: GateConfig) -> bool:
 
 def is_script(user_agent: str, config: GateConfig) -> bool:
     """A script by its default user agent, or none at all: no person browses with one."""
-    return not user_agent.strip() or _names(user_agent, config.http_clients)
+    return not user_agent.strip(JS_WHITESPACE) or _names(user_agent, config.http_clients)
 
 
 def suspect_signals(request: GateRequest, config: GateConfig) -> list[str]:
@@ -138,7 +144,7 @@ def suspect_signals(request: GateRequest, config: GateConfig) -> list[str]:
         fired.append("no_sec_fetch")
     if re.search(r"Chrome/\d", user_agent) and not request.header("sec-ch-ua"):
         fired.append("chrome_without_client_hints")
-    accept = request.header("accept").strip()
+    accept = request.header("accept").strip(JS_WHITESPACE)
     if not accept or accept == "*/*":
         fired.append("accept_any")
     if (request.http_protocol or "").upper().startswith("HTTP/1"):
@@ -183,7 +189,8 @@ def normalize_ip(ip: str | None) -> str | None:
 def path_of(url: str) -> str:
     """The request's path and query ("/listings?city=Haifa"); "/" when the URL can't be read."""
     try:
-        parts = urlsplit(url)
+        # A path ("//premium/x" too) is read after a host of our own, never as a network-path reference (as the JS SDK).
+        parts = urlsplit(f"http://localhost{url}" if url.startswith("/") else url)
     except ValueError:
         return "/"
     return (parts.path or "/") + (f"?{parts.query}" if parts.query else "")

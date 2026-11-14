@@ -219,13 +219,14 @@ class SiteGate implements Gate {
 
   private startSettings(): Promise<void> {
     this.configLoadingAt = this.now();
-    const loading: Promise<void> = this.loadSettings().finally(() => {
+    const loading: Promise<void> = this.loadSettings(() => this.configLoading === loading).finally(() => {
       if (this.configLoading === loading) this.configLoading = null;
     });
     return (this.configLoading = loading);
   }
 
-  private async loadSettings(): Promise<void> {
+  /** `current()`: false once a newer load replaced this one (it then applies nothing). */
+  private async loadSettings(current: () => boolean): Promise<void> {
     const site = this.site!;
     const path = `/v1/x402/sites/${site.gatewayId}/config`;
     try {
@@ -233,14 +234,14 @@ class SiteGate implements Gate {
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) });
       if (answer.status !== 200) discard(answer);
       if (answer.status === 404) {
-        this.config = null; // the gateway was removed: stop asking agents to pay
+        if (current()) this.config = null; // the gateway was removed: stop asking agents to pay
         throw new Error("Stilebase has no gateway for this site key (404): every request passes");
       }
       // Any other failure keeps the last good settings (a 401 after a rotated key: agents are still asked to pay).
       if (answer.status !== 200) throw new Error(`Stilebase answered the settings ${answer.status}`);
       const config = parseConfig(await answer.json());
       if (!config) throw new Error("Stilebase sent settings this version can't read");
-      this.config = config;
+      if (current()) this.config = config;
     } catch (error) {
       this.report(error);
     } finally {
@@ -260,13 +261,13 @@ class SiteGate implements Gate {
 
   private startRanges(): Promise<void> {
     this.rangesLoadingAt = this.now();
-    const loading: Promise<void> = this.loadRanges().finally(() => {
+    const loading: Promise<void> = this.loadRanges(() => this.rangesLoading === loading).finally(() => {
       if (this.rangesLoading === loading) this.rangesLoading = null;
     });
     return (this.rangesLoading = loading);
   }
 
-  private async loadRanges(): Promise<void> {
+  private async loadRanges(current: () => boolean): Promise<void> {
     try {
       const answer = await this.fetch(`${this.api}/v1/x402/agent-ranges`, { signal: AbortSignal.timeout(REQUIREMENTS_TIMEOUT_MS) });
       if (answer.status !== 200) {
@@ -276,7 +277,7 @@ class SiteGate implements Gate {
       const body: unknown = await answer.json();
       if (!isRecord(body) || !Array.isArray(body.prefixes)) throw new Error("Stilebase's agent ranges have no prefixes list");
       const prefixes: unknown[] = body.prefixes;
-      this.ranges = prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : []));
+      if (current()) this.ranges = prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : []));
     } catch (error) {
       this.report(error);
       this.ranges ??= []; // keep what we had (or none) and try again in an hour

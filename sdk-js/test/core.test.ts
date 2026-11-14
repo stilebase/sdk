@@ -250,8 +250,10 @@ describe("the review's cases (cycle 1)", () => {
     let calls = 0;
     const hanging = (input: RequestInfo | URL, init?: RequestInit) => (calls++ === 0 ? new Promise<Response>(() => undefined) : stilebase.fetch(input, init));
     const g = createGate({ key: KEY, apiUrl: API, fetch: hanging, now: () => clock, onError: () => undefined });
-    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" }); // waits its 3.5 s, then passes
-    clock += 11_000;
+    const waits: Promise<unknown>[] = [];
+    expect(await g.check(request("/listings", GPTBOT), (task) => waits.push(task))).toEqual({ action: "pass" }); // waits 3.5 s
+    expect(waits).toHaveLength(1); // the first load, kept alive by the runtime
+    clock += 3_600; // past its own timeout: another load starts
     expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
   }, 10_000);
 

@@ -191,7 +191,7 @@ def decide(request: GateRequest, secret: str, options: GateOptions) -> Flow:
     except Exception:
         # The outcome is unknown (the payment may have settled): never serve the page, never say nothing was charged.
         headers = {"content-type": "application/json", "retry-after": "5"}
-        return _respond(503, headers, json.dumps({"error": "Payment settlement unavailable"}))
+        return _respond(503, headers, _json({"error": "Payment settlement unavailable"}))
     receipt = settlement.get("header")
     receipt = receipt if isinstance(receipt, str) and 0 < len(receipt) <= 8192 and set(receipt) <= RECEIPT_CHARACTERS else None
     if not settlement["success"]:
@@ -221,7 +221,7 @@ def _is_agent(
 
 def _payment_required(required: dict[str, Any], payment_response: str | None = None) -> Respond:
     """The 402 for an agent: the x402 PaymentRequired as the body and, base64-encoded, in PAYMENT-REQUIRED."""
-    text = json.dumps(required)
+    text = _json(required)
     headers = {"content-type": "application/json", "PAYMENT-REQUIRED": b64(text)}
     if payment_response:
         headers["PAYMENT-RESPONSE"] = payment_response
@@ -243,7 +243,12 @@ def _browser_check(required: dict[str, Any], token: str, config: GateConfig) -> 
         'else document.getElementById("m").textContent="Please allow cookies for this site to continue.";</script>\n'
         "</body></html>"
     )
-    return _respond(402, {"content-type": "text/html; charset=utf-8", "PAYMENT-REQUIRED": b64(json.dumps(required))}, page)
+    return _respond(402, {"content-type": "text/html; charset=utf-8", "PAYMENT-REQUIRED": b64(_json(required))}, page)
+
+
+def _json(value: Any) -> str:
+    """JSON as JavaScript's JSON.stringify writes it (compact, raw UTF-8): the same bytes from both SDKs."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
 def _respond(status: int, headers: dict[str, str], body: str) -> Respond:

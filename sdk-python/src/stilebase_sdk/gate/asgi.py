@@ -7,6 +7,7 @@ app = GateMiddleware(app)                   # any ASGI app
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, MutableMapping
 from http import HTTPStatus
@@ -91,8 +92,11 @@ class GateMiddleware:
         client = scope.get("client")
         try:
             ip = self.client_ip(scope) if self.client_ip else address_from(headers, self.ip_header, client[0] if client else None)
-            if inspect.iscoroutine(ip):  # an async client_ip: no address (a sync function is what it takes)
-                ip.close()
+            if inspect.isawaitable(ip):  # an async client_ip: no address (a sync function is what it takes)
+                if inspect.iscoroutine(ip):
+                    ip.close()
+                elif isinstance(ip, asyncio.Future):
+                    ip.add_done_callback(lambda done: done.cancelled() or done.exception())  # retrieved, never logged
                 ip = None
         except Exception:
             ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)

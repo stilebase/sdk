@@ -8,6 +8,8 @@ import hashlib
 import hmac
 import re
 
+from ._detect import JS_WHITESPACE
+
 SITE_KEY = re.compile(r"^sbk_([0-9a-f]{32})_([0-9a-f]{64})$")
 PASS_TOKEN = re.compile(r"^[0-9]{1,12}\.[0-9a-f]{32}$")
 
@@ -43,7 +45,7 @@ def has_pass(cookie_header: str, cookie_name: str, secret: str, user_agent: str,
     ahead)."""
     token = ""
     for part in cookie_header.split(";"):
-        name, _, value = part.strip().partition("=")
+        name, _, value = part.strip(JS_WHITESPACE).partition("=")
         if name == cookie_name:
             token = value
             break

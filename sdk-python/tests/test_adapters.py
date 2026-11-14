@@ -111,23 +111,20 @@ def __getattr__(name: str) -> Any:  # Django's ROOT_URLCONF: this module, its ur
     raise AttributeError(name)
 
 
-def test_asgi_takes_an_async_client_ip_as_no_address_without_a_warning() -> None:
-    import warnings
-
-    from starlette.applications import Starlette
-    from starlette.responses import PlainTextResponse
-    from starlette.routing import Route
-    from starlette.testclient import TestClient
-
+def test_asgi_takes_an_async_client_ip_as_no_address_and_closes_it() -> None:
     from stilebase_sdk.gate.asgi import GateMiddleware
+
+    made: list[Any] = []
 
     async def lookup(scope: Any) -> str:
         return "198.51.100.9"
 
-    stilebase = FakeStilebase()
-    app = Starlette(routes=[Route("/", lambda request: PlainTextResponse("ok"))])
-    app.add_middleware(GateMiddleware, client_ip=lookup, **options(stilebase))  # type: ignore[arg-type]
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        assert TestClient(app).get("/", headers={"user-agent": GPTBOT}).status_code == 402
-    assert stilebase.to("/v1/x402/requirements")[0].query["ip"] == ""
+    def client_ip(scope: Any) -> Any:
+        made.append(lookup(scope))
+        return made[-1]
+
+    async def app(scope: Any, receive: Any, send: Any) -> None: ...
+
+    middleware = GateMiddleware(app, client_ip=client_ip, key=KEY, api_url=API)
+    assert middleware.request({"type": "http", "path": "/", "headers": []}).ip is None
+    assert made[0].cr_frame is None  # closed, never left unawaited

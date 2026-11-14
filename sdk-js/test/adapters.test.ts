@@ -63,6 +63,20 @@ describe("express", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings?a=1`);
   });
 
+  it("names an absolute-form target new URL can't read (a port too large) by its path, as Express routes it", async () => {
+    const { request: raw } = await import("node:http");
+    const base = new URL(await site());
+    await new Promise<void>((resolve, reject) => {
+      const req = raw({ host: base.hostname, port: base.port, path: "http://host:99999/listings", headers: GPTBOT }, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings`);
+  });
+
   it("names a path starting with two slashes as Express routes it, the whole path", async () => {
     const { request: raw } = await import("node:http");
     const base = new URL(await site());
