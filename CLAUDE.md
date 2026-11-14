@@ -16,7 +16,7 @@ customers. The SDKs talk only to Stilebase's public API.
 
 - `sdk-js/`: `@stilebase/sdk`, TypeScript, tsup, vitest, Node 20+, **no runtime dependencies** (WebCrypto, `fetch`).
   Entries `.` (the `gate` namespace, `VERSION`), `/gate` (`createGate`, framework-neutral), `/gate/express`,
-  `/gate/fetch` (Workers, Hono, Bun, Deno). No Next.js adapter yet (TODO.md).
+  `/gate/fetch` (Workers, Hono, Bun, Deno).
 - `sdk-python/`: `stilebase-sdk`, Python 3.10+, depends only on `httpx`, hatchling, typed (`py.typed`, mypy strict).
   `stilebase_sdk.gate`: `_core.decide` is one sans-IO decision generator that yields effects; `AsyncGate` and
   `SyncGate` drive it. Adapters `asgi`, `wsgi`, `django`.
@@ -39,8 +39,12 @@ runs all of it, the Python suite on 3.10 to 3.13.
 
 These are what the reviews check first. Breaking one is a blocking finding.
 
+- **A connector, not a library.** A gate does what Stilebase's Cloudflare Worker does, plus fetching its settings with
+  the site key, and nothing more: no options or defences the Worker doesn't have. The logic lives at Stilebase. A
+  review finding that the Worker shares goes to TODO.md, not into an SDK; only where an SDK differs from the Worker, or
+  breaks a rule below, is it fixed.
 - **Never break the site.** When Stilebase can't be reached or errors, everyone gets the site. The only exceptions
-  are the three in SPEC.md, each because the alternative lets agents read free.
+  are the two in SPEC.md, each because the alternative lets agents read free.
 - **Never tell an agent it wasn't charged when the outcome is unknown** (a settlement without an answer).
 - **Never trust a header the visitor can set** for their address (SPEC.md, "The visitor's address"). A spoofed
   operator address would get a free pass.
