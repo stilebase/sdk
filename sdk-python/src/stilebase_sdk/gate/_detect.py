@@ -106,7 +106,14 @@ class GateRequest:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def header(self, name: str) -> str:
-        return self.headers.get(name, "")
+        """A header's value, "" when absent, read through the caller's own mapping (a framework's case-insensitive one
+        too). A lone surrogate (a header decoded with surrogateescape) reads as U+FFFD, as JavaScript's TextEncoder
+        writes it: the lookup, the pass token and the check page encode values as UTF-8, and an error there would let
+        the request through. A value that isn't a string reads as its text."""
+        value = self.headers.get(name)
+        if value is None:
+            return ""
+        return without_surrogates(value if isinstance(value, str) else str(value))
 
 
 def headers_of(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
@@ -243,14 +250,19 @@ PATH_SAFE = "/:@!$&'()*+,;=-._~"  # what stays as it is when a decoded path is p
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
-def has_surrogates(text: str) -> bool:
-    return _LONE_SURROGATE.search(text) is not None
-
-
 def without_surrogates(text: str) -> str:
     """`text` with each lone surrogate (a header decoded with surrogateescape) as U+FFFD, as JavaScript's TextEncoder
     and URLSearchParams write one: encoding it as UTF-8 then never raises."""
-    return _LONE_SURROGATE.sub("\ufffd", text) if _LONE_SURROGATE.search(text) else text
+    return _LONE_SURROGATE.sub("\ufffd", text)
+
+
+def encode_path(decoded: str) -> bytes:
+    """A decoded path's bytes: a surrogate from surrogateescape decoding is the byte the visitor sent (%FF), any other
+    lone one is written as it is, never an error."""
+    try:
+        return decoded.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return decoded.encode("utf-8", "surrogatepass")
 
 
 def fit_encoded(value: str, max_encoded: int) -> str:

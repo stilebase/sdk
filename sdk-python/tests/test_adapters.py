@@ -234,15 +234,18 @@ def test_asgi_keeps_only_the_exact_free_path_free_however_another_page_is_spelt(
             assert (path, answer.status_code == 200 and answer.text == "the listing") == (path, False)  # never free
 
 
-def test_django_on_asgi_names_the_page_by_the_raw_path(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Under ASGI the server has decoded the path (uvicorn turns a broken byte into U+FFFD): the scope's raw path counts."""
+def test_django_names_the_page_with_the_prefix_it_is_mounted_under(
+    stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SCRIPT_NAME (root_path, FORCE_SCRIPT_NAME) is part of the page, as free paths are written, on any ASGI server."""
     from types import SimpleNamespace
 
     from stilebase_sdk.gate.django import GateMiddleware
 
     _django(stilebase, monkeypatch)
-    scope = {"raw_path": b"/x%FF", "path": "/x\ufffd", "root_path": ""}
-    meta = {"PATH_INFO": "/x\ufffd", "SCRIPT_NAME": "", "HTTP_HOST": "shop.example.com", "REQUEST_METHOD": "GET"}
+    scope = {"raw_path": b"/healthz", "path": "/healthz", "root_path": "/app"}  # Daphne and Hypercorn leave root_path out
+    meta = {"SCRIPT_NAME": "/app", "PATH_INFO": "/healthz", "HTTP_HOST": "shop.example.com", "REQUEST_METHOD": "GET"}
     middleware = GateMiddleware(lambda request: None)
-    assert middleware.request(SimpleNamespace(scope=scope, META=meta, scheme="https")).url == "https://shop.example.com/x%FF"
+    named = middleware.request(SimpleNamespace(scope=scope, META=meta, scheme="https")).url
     middleware.gate.close()
+    assert named == "https://shop.example.com/app/healthz"

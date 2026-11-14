@@ -6,7 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -771,6 +770,8 @@ def test_max_age_is_read_as_the_javascript_sdk_reads_it() -> None:
         ("max-age=9999999999", True),
         ("max-age=300, max-age=0", True),
         ("max-age=0, max-age=300", False),
+        ("max-age=0000000000", False),  # leading zeros: Number() reads 0
+        ("max-age=00000000005", True),  # 5 seconds
     ):
         gate.store_requirements(header, 200, REQUIRED, header)
         assert (gate.cached_requirements(header) is not None) is cached, header
@@ -837,7 +838,6 @@ def test_a_header_value_that_isnt_a_string_doesnt_let_an_agent_through(make: Any
     assert isinstance(make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")), Respond)
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="Python 3.10 can't tell whose cancellation it is")
 def test_a_request_cancelled_with_its_load_stays_cancelled(stilebase: FakeStilebase) -> None:
     async def slow(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(1)
@@ -856,9 +856,33 @@ def test_a_request_cancelled_with_its_load_stays_cancelled(stilebase: FakeStileb
     asyncio.run(run())
 
 
-def test_a_lone_surrogate_in_a_decoded_path_is_encoded_not_an_error() -> None:
+def test_a_decoded_path_is_named_by_the_bytes_the_visitor_sent() -> None:
+    """A surrogate from surrogateescape decoding is the byte sent (%FF); any other lone one is written, never an error. A
+    raw path is percent-encoded where a URL must be, as JavaScript's new URL writes it."""
     from stilebase_sdk.gate.asgi import visitor_path
     from stilebase_sdk.gate.wsgi import request_from_environ
 
-    assert visitor_path({"path": "/x\udcff"}) == "/x%ED%B3%BF"
-    assert request_from_environ({"PATH_INFO": "/x\udcff", "HTTP_HOST": DOMAIN}).url == f"http://{DOMAIN}/x%ED%B3%BF"
+    assert visitor_path({"path": "/x\udcff"}) == "/x%FF"
+    assert visitor_path({"path": "/x\ud800"}) == "/x%ED%A0%80"
+    assert request_from_environ({"PATH_INFO": "/x\udcff", "HTTP_HOST": DOMAIN}).url == f"http://{DOMAIN}/x%FF"
+    assert visitor_path({"raw_path": b"/caf\xc3\xa9"}) == "/caf%C3%A9"
+    assert visitor_path({"raw_path": b'/a"b<c>d e'}) == "/a%22b%3Cc%3Ed%20e"
+    assert visitor_path({"raw_path": b"/x%FF/[a]|^"}) == "/x%FF/[a]|^"
+    assert visitor_path({"raw_path": "/not-bytes", "path": "/not-bytes"}) == "/not-bytes"  # a nonconforming server
+
+
+# --- The review's cases (stilebase-sdk, cycle 4) ------------------------------------------------------------------
+
+
+def test_a_surrogate_in_one_header_doesnt_change_how_the_others_read(make: Any) -> None:
+    """Headers are read through the caller's mapping, a surrogate cleaned as it's read: a framework's repeated Cookie
+    still gives its first value, as without the surrogate."""
+    from werkzeug.datastructures import Headers
+
+    token = pass_token(SECRET, CHROME, int(NOW) - 60)
+    given = [("User-Agent", CHROME), ("Accept", "*/*"), ("Cookie", f"stilebase_pass={token}"), ("Cookie", "a=1")]
+    site = make()
+    for extra in ([], [("Referer", "https://x.example/\udcff")]):
+        headers = Headers([*given, *extra])
+        as_given = GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")  # type: ignore[arg-type]
+        assert site.check(as_given) == Pass(), extra

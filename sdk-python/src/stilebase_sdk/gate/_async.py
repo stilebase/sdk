@@ -61,8 +61,10 @@ class AsyncGate(Engine):
     async def aclose(self) -> None:
         """Wait for background reports, then close the HTTP clients (e.g. at shutdown, or in tests). A gate used
         after this opens them again; close it again then."""
-        while self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        for _ in range(3):  # a few rounds, not "until none": requests still arriving keep adding reports
+            if not self._tasks:
+                break
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
         for client in (self._http, self._reports_http):
             if client is not None:
                 await client.aclose()
@@ -136,16 +138,9 @@ class AsyncGate(Engine):
     @staticmethod
     async def _wait(task: asyncio.Task[None], timeout: float) -> None:
         """Wait for a load, at most `timeout`: this request's own deadline, whatever happens to the load."""
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout)
-        except asyncio.TimeoutError:
-            pass  # the load goes on; this request goes on without it
-        except asyncio.CancelledError:
-            current = asyncio.current_task()
-            cancelling = getattr(current, "cancelling", None)  # Python 3.11+
-            if not task.cancelled() or (cancelling is not None and cancelling()):
-                raise  # this request itself was cancelled
-            # only the load was (a shutdown): this request goes on without it
+        # asyncio.wait neither cancels the load nor raises when it ends (cancelled, failed or late): a CancelledError
+        # here is this request's own, and goes on up.
+        await asyncio.wait({task}, timeout=timeout)
 
     async def _load_config(self) -> None:
         try:

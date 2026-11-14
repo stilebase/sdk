@@ -151,6 +151,10 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **Django names a page with an encoded `%` (`/a%25FF`) as `/a%FF`**: Django decodes the path before the middleware
   and re-percents only broken bytes, so the two read the same there. The WSGI and ASGI adapters and the JS SDK say
   `/a%25FF`. *Waits:* a `%25` in a page path is rare, and a price set for such a page is the only thing affected.
+- **Django on uvicorn names a page with a byte that isn't UTF-8 (`/x%FF`) as `/x%EF%BF%BD`**: uvicorn decodes the
+  path with replacement before Django sees it. Naming by the scope's raw path instead lost the mount prefix on Daphne
+  and Hypercorn (which leave `root_path` out of it), so free paths under a mount stopped matching. *Waits:* such paths
+  are rare; only a price set for one is affected.
 - **A request still running after `aclose()`** (an ASGI lifespan shutdown while requests drain) may open a client or
   start a refresh that nothing closes or waits for: a ResourceWarning at exit. A gate used again after `aclose()` is
   fine (its clients reopen; close it again). *Waits:* only at process exit.

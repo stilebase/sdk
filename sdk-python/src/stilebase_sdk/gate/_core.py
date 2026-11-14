@@ -31,7 +31,6 @@ from ._detect import (
     NetworkIndex,
     fit_encoded,
     form_quote,
-    has_surrogates,
     in_networks,
     is_ai_agent,
     is_literal_path,
@@ -258,7 +257,7 @@ class Engine:
         # As @stilebase/sdk reads it: the first max-age=<ASCII digits>, any length, at most MAX_REQUIREMENTS_AGE (a
         # value too long for int() is over it anyway).
         found = _MAX_AGE.search(cache_control)
-        digits = found.group(1) if found else "0"
+        digits = (found.group(1) if found else "0").lstrip("0") or "0"  # as Number() reads 00000000005: 5
         max_age = MAX_REQUIREMENTS_AGE if len(digits) > 9 else min(int(digits), MAX_REQUIREMENTS_AGE)
         if status not in (200, 204) or max_age <= 0 or (status == 200 and not isinstance(body, dict)):
             return  # a 200 without a JSON object (cut short, an error page) is asked again next time, as in JS
@@ -329,17 +328,8 @@ def decide(
     ip = normalize_ip(request.ip) if isinstance(request.ip, str) else None
     # No address is longer than 45 characters: anything longer (a header someone stuffed) counts as none, as Stilebase
     # treats it, and never bloats the price lookup past proxies' limits.
+    # Lone surrogates in the URL as U+FFFD (headers get the same as they're read: GateRequest.header).
     request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url))
-    # Lone surrogates (a header decoded with surrogateescape) as U+FFFD, once, here: the lookup, the pass token and
-    # the check page all encode these as UTF-8, and an error there would let the request through. Only then is the
-    # caller's mapping copied (names lowercased, as headers_of gives them); otherwise it's kept as given (a framework's
-    # case-insensitive headers), whatever its values.
-    if any(isinstance(value, str) and has_surrogates(value) for value in request.headers.values()):
-        cleaned = {
-            str(name).lower(): without_surrogates(value) if isinstance(value, str) else value
-            for name, value in request.headers.items()
-        }
-        request = replace(request, headers=cleaned)
     path, page_query = site_path(request.url)
     page = site_url(config.domain, path, page_query)
     if config.verification_path and config.verification_value and path == config.verification_path:
@@ -365,8 +355,8 @@ def decide(
     given_user_agent = request.headers.get("user-agent")
     agent = {
         "ip": request.ip,
-        "user_agent": given_user_agent[:MAX_USER_AGENT] if given_user_agent is not None else None,
-        "headers": {h: request.headers[h] for h in WEB_BOT_AUTH_HEADERS if request.headers.get(h)},
+        "user_agent": request.header("user-agent")[:MAX_USER_AGENT] if given_user_agent is not None else None,
+        "headers": {h: request.header(h) for h in WEB_BOT_AUTH_HEADERS if request.header(h)},
     }
     host = config.domain
     query = {

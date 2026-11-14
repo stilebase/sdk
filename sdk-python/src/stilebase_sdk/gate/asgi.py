@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from ._async import AsyncGate
 from ._core import GateOptions, Respond, address_from
-from ._detect import PATH_SAFE, GateRequest, headers_of, request_url
+from ._detect import PATH_SAFE, GateRequest, encode_path, headers_of, request_url
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -131,8 +131,10 @@ def visitor_path(scope: Scope) -> str:
     under a mount or a root path), else the decoded path encoded again, with root_path in front unless it's in already
     (servers differ)."""
     raw = scope.get("raw_path")
-    if raw:
-        return bytes(raw).decode("latin-1")
+    if isinstance(raw, (bytes, bytearray)) and raw:
+        # As sent, but percent-encoded where a URL must be (a raw byte over 0x7F, a space, `"`, `<`…), as JavaScript's
+        # new URL writes it; the visitor's own %XX stay.
+        return quote(bytes(raw), safe=PATH_SAFE + "%[]^|")
     path, root = scope.get("path", "/"), scope.get("root_path", "")
     full = path if not root or path.startswith(root) else root + path
-    return quote(full.encode("utf-8", "surrogatepass"), safe=PATH_SAFE)
+    return quote(encode_path(full), safe=PATH_SAFE)
