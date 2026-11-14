@@ -117,11 +117,12 @@ export function normalizeIp(ip: string | null | undefined): string | null {
 }
 
 export function inNetworks(ip: string | null | undefined, networks: readonly Network[] | NetworkIndex): boolean {
+  // Not `instanceof`: each CommonJS entry has its own copy of NetworkIndex.
+  const index = (networks as { kind?: unknown } | null | undefined)?.kind === "stilebase.NetworkIndex";
+  if (!index && !Array.isArray(networks)) throw new TypeError("inNetworks takes an array of networks or a NetworkIndex");
   const address = parseIp(ip ?? "");
   if (!address) return false;
-  // Not `instanceof`: each CommonJS entry has its own copy of NetworkIndex.
-  if ((networks as { kind?: unknown } | null | undefined)?.kind === "stilebase.NetworkIndex") return (networks as NetworkIndex).has(address);
-  if (!Array.isArray(networks)) throw new TypeError("inNetworks takes an array of networks or a NetworkIndex");
+  if (index) return (networks as NetworkIndex).has(address);
   return (networks as readonly Network[]).some((n) => n.version === address.version && address.value >> n.shift === n.base);
 }
 
@@ -154,7 +155,8 @@ const SCHEME_AND_AUTHORITY = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is;
 
 /** The URL a visitor asked for, from parts a framework gives: the Host header is the visitor's to write, so anything
  * that isn't a host name (a "?" or "#" would change the path the gate reads) becomes "localhost", and an absolute-form
- * request target keeps only its path and query, as written (cut as text, never resolved by a URL parser). */
+ * request target keeps only what follows its host, as written (cut as text, never resolved by a URL parser); a `#`
+ * stays, so the URL is never free. */
 export function requestUrl(scheme: string, host: string | null | undefined, target: string): string {
   const safeHost = host && HOST.test(host) ? host : "localhost";
   let path = target || "/";
@@ -204,7 +206,7 @@ export function isLiteralPath(path: string): boolean {
 }
 
 /** The path of a request URL when the whole URL is literal: http(s), a plain host name, then a literal path (a query
- * may follow, never a `#`: a request URL has none, unless a forged Host put it there). Null for anything else (a Host like "x?", percent-encoding, dot segments, an odd scheme): such a request
+ * may follow, never a `#`: only a forged Host or a raw request target puts one in a request URL). Null for anything else (a Host like "x?", percent-encoding, dot segments, an odd scheme): such a request
  * is never free, since some router may read it differently. */
 export function literalPath(url: string): string | null {
   const parts = /^https?:\/\/([^/?#]*)(\/[^?#]*)(?:\?[^#]*)?$/is.exec(url);

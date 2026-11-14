@@ -50,7 +50,7 @@ export async function passToken(secret: string, userAgent: string, timestamp: nu
 }
 
 /** How many pass cookies of one request are checked at most (SPEC.md, section 5, step 7). */
-export const MAX_PASS_CANDIDATES = 4;
+export const MAX_PASS_CANDIDATES = 8;
 
 /** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (the time no more than a minute ahead). */
 export async function hasPass(
@@ -62,23 +62,26 @@ export async function hasPass(
   maxAgeSeconds: number,
 ): Promise<boolean> {
   // Split at `,` too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ". Every
-  // piece with the cookie's name is a candidate: one planted before the real one (another cookie's value holding a
-  // comma, a sibling subdomain's cookie) mustn't hide it. Only the first few distinct, well-formed, in-time ones get an
-  // HMAC, so a Cookie header stuffed with them can't make one request cost hundreds.
+  // piece with the cookie's name is a candidate, tried from the last: the check page sets the real cookie just before
+  // it reloads, so browsers send it after any planted earlier or on a longer path (another cookie's value holding
+  // commas, a sibling subdomain's cookie), which mustn't hide it. Only the last few distinct, well-formed, in-time
+  // ones get an HMAC, so a Cookie header stuffed with them can't make one request cost hundreds.
   const now = Math.floor(nowMs / 1000);
-  const candidates = new Set<string>();
-  for (const piece of cookieHeader.split(/[;,]/)) {
-    const c = piece.trim();
-    if (!c.startsWith(`${cookieName}=`)) continue;
-    const token = c.slice(cookieName.length + 1);
+  const prefix = `${cookieName}=`;
+  const candidates = new Map<string, number>(); // token -> its time
+  const pieces = cookieHeader.split(/[;,]/);
+  for (let i = pieces.length - 1; i >= 0 && candidates.size < MAX_PASS_CANDIDATES; i -= 1) {
+    const piece = pieces[i]!.trim();
+    if (!piece.startsWith(prefix)) continue;
+    const token = piece.slice(prefix.length);
     if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) continue;
-    const age = now - Number(token.split(".")[0]);
+    const timestamp = Number(token.split(".")[0]);
+    const age = now - timestamp;
     if (age < -60 || age > maxAgeSeconds) continue;
-    candidates.add(token);
-    if (candidates.size === MAX_PASS_CANDIDATES) break;
+    candidates.set(token, timestamp);
   }
-  for (const token of candidates) {
-    if (sameText(token, await passToken(secret, userAgent, Number(token.split(".")[0])))) return true;
+  for (const [token, timestamp] of candidates) {
+    if (sameText(token, await passToken(secret, userAgent, timestamp))) return true;
   }
   return false;
 }

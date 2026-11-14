@@ -506,7 +506,7 @@ describe("loads another request started", () => {
   });
 });
 
-describe("the review's cases (cycles 13 to 15)", () => {
+describe("the review's cases (cycles 13 to 16)", () => {
   it("frees nothing after a `#` (a forged Host on Deno puts one in the URL; a router reads past it)", async () => {
     const g = gate({ free: ["/healthz", "/"] });
     for (const url of [`https://${DOMAIN}/healthz#/listings/1`, `https://${DOMAIN}/#/listings/1`, `https://${DOMAIN}/healthz?a#/x`]) {
@@ -550,6 +550,7 @@ describe("the review's cases (cycles 13 to 15)", () => {
     expect(inNetworks("20.15.240.70", foreign)).toBe(true);
     // Any other collection is a mistake, never a silent "not in the list".
     expect(() => inNetworks("20.15.240.70", new Set() as unknown as Parameters<typeof inNetworks>[1])).toThrow(TypeError);
+    expect(() => inNetworks("", null as unknown as Parameters<typeof inNetworks>[1])).toThrow(TypeError); // whatever the address
   });
 
   it("names a page with a `#` in its URL by the part before it, as Express and `new URL` read it (never free)", async () => {
@@ -572,10 +573,12 @@ describe("the review's cases (cycles 13 to 15)", () => {
     const script = { "user-agent": CHROME_UA, accept: "*/*" };
     const decoys = Array.from({ length: MAX_PASS_CANDIDATES }, (_, i) => `stilebase_pass=${NOW / 1000 - i}.${"0".repeat(32)}`);
     const g = gate();
-    // The real one after as many distinct decoys as are checked: not reached. A repeated decoy counts once.
-    expect((await g.check(request("/listings", { ...script, cookie: [...decoys, `stilebase_pass=${token}`].join("; ") }))).action).toBe("respond");
-    const repeated = [...decoys.slice(0, 1), ...decoys.slice(0, 1), `stilebase_pass=${token}`].join("; ");
-    expect(await g.check(request("/listings", { ...script, cookie: repeated }))).toEqual({ action: "pass" });
+    // Tried from the last: the real one before as many distinct decoys as are checked isn't reached...
+    expect((await g.check(request("/listings", { ...script, cookie: [`stilebase_pass=${token}`, ...decoys].join("; ") }))).action).toBe("respond");
+    // ...but after them it is (planted earlier, or on a longer path), and repeated, malformed or stale decoys don't count.
+    expect(await g.check(request("/listings", { ...script, cookie: [...decoys, `stilebase_pass=${token}`].join("; ") }))).toEqual({ action: "pass" });
+    const others = [...Array(9).fill(decoys[0]), ...Array(9).fill("stilebase_pass=junk"), `stilebase_pass=${NOW / 1000 - 99_999}.${"0".repeat(32)}`];
+    for (const other of others) expect(await g.check(request("/listings", { ...script, cookie: [`stilebase_pass=${token}`, ...Array(9).fill(other)].join("; ") }))).toEqual({ action: "pass" });
   });
 
   it("reads no environment variable its option already gives (Deno asks permission for each)", async () => {

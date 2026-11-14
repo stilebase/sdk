@@ -76,7 +76,7 @@
     }
   ],
   "pass_cookies": {
-    "about": "The browser check's pass cookie (SPEC.md section 5, step 7), as the gate finds it in the Cookie header: split at ; and at , (a runtime may join several Cookie fields with \", \"), every piece named cookie_name a candidate (a planted one mustn't hide the real one), and only the first 4 distinct candidates that are well formed and within the times get an HMAC. The token is pass_tokens[0]'s, checked at now (unix seconds) with max_age_seconds. has_pass: the request passes without the browser check.",
+    "about": "The browser check's pass cookie (SPEC.md section 5, step 7), as the gate finds it in the Cookie header: split at ; and at , (a runtime may join several Cookie fields with \", \"), every piece named cookie_name a candidate, tried from the last (the real one is set just before the check page reloads, so browsers send it after one planted earlier or on a longer path), and only the last 8 distinct candidates that are well formed and within the times get an HMAC. The token is pass_tokens[0]'s, checked at now (unix seconds) with max_age_seconds. has_pass: the request passes without the browser check.",
     "cookie_name": "stilebase_pass",
     "secret": "sbsec_test_secret",
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
@@ -96,6 +96,10 @@
         "has_pass": true
       },
       {
+        "cookie": "z=1,stilebase_pass=1792756800.00000000000000000000000000000000,stilebase_pass=1792756799.00000000000000000000000000000000,stilebase_pass=1792756798.00000000000000000000000000000000,stilebase_pass=1792756797.00000000000000000000000000000000,stilebase_pass=1792756796.00000000000000000000000000000000,stilebase_pass=1792756795.00000000000000000000000000000000,stilebase_pass=1792756794.00000000000000000000000000000000,stilebase_pass=1792756793.00000000000000000000000000000000; stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": true
+      },
+      {
         "cookie": "stilebase_pass=1792756800.00000000000000000000000000000000; a=1",
         "has_pass": false
       },
@@ -108,11 +112,19 @@
         "has_pass": false
       },
       {
-        "cookie": "stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756799.00000000000000000000000000000000; stilebase_pass=1792756798.00000000000000000000000000000000; stilebase_pass=1792756797.00000000000000000000000000000000; stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756799.00000000000000000000000000000000; stilebase_pass=1792756798.00000000000000000000000000000000; stilebase_pass=1792756797.00000000000000000000000000000000; stilebase_pass=1792756796.00000000000000000000000000000000; stilebase_pass=1792756795.00000000000000000000000000000000; stilebase_pass=1792756794.00000000000000000000000000000000; stilebase_pass=1792756793.00000000000000000000000000000000",
         "has_pass": false
       },
       {
-        "cookie": "stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=junk; stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792706800.00000000000000000000000000000000; stilebase_pass=1792706799.00000000000000000000000000000000; stilebase_pass=1792706798.00000000000000000000000000000000; stilebase_pass=1792706797.00000000000000000000000000000000; stilebase_pass=1792706796.00000000000000000000000000000000; stilebase_pass=1792760400.00000000000000000000000000000000; stilebase_pass=1792760401.00000000000000000000000000000000; stilebase_pass=1792760402.00000000000000000000000000000000; stilebase_pass=1792760403.00000000000000000000000000000000; stilebase_pass=1792760404.00000000000000000000000000000000",
         "has_pass": true
       }
     ]

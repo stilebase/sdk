@@ -558,10 +558,20 @@ function receipt(value: unknown): string | undefined {
  * its rejection is caught here, never left unhandled (which can stop a Node process). */
 export function addressOf(value: unknown): string | null {
   if (typeof value === "string") return value;
-  if (value !== null && typeof value === "object" && typeof (value as { then?: unknown }).then === "function") {
-    (value as Promise<unknown>).then(undefined, () => undefined);
-  }
+  quietThenable(value);
   return null;
+}
+
+/** A promise (or any thenable) someone handed back where a plain value was expected: its rejection is handled, never
+ * left to crash the process, and a `then` that throws is ignored. */
+export function quietThenable(value: unknown): void {
+  try {
+    if (value !== null && (typeof value === "object" || typeof value === "function") && typeof (value as { then?: unknown }).then === "function") {
+      (value as PromiseLike<unknown>).then(undefined, () => undefined);
+    }
+  } catch {
+    // a thenable whose `then` throws: nothing to handle
+  }
 }
 
 /** A value for a warning: JSON when it can be, else its type (a BigInt or a circular object never throws here). */

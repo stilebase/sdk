@@ -1,6 +1,6 @@
 // Express (4 and 5) middleware: `app.use(gate())`, before your routes.
 
-import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
+import { type GateOptions, addressFrom, addressOf, createGate, quietThenable } from "./core.js";
 import { requestUrl } from "./detect.js";
 
 /** The parts of Express's request and response the gate uses (no dependency on Express's types). */
@@ -128,10 +128,9 @@ function trustsEveryHop(app: { get(setting: string): unknown }): boolean {
     try {
       return family.every((address) => {
         const answer: unknown = trust(address, 1_000_000);
-        // Express counts a promise as trusting (it's truthy); a rejected one mustn't crash the process unhandled.
-        if (answer && typeof (answer as { then?: unknown }).then === "function") {
-          (answer as PromiseLike<unknown>).then(undefined, () => undefined);
-        }
+        // Express counts a promise as trusting (it's truthy, as Express reads it); a rejected one mustn't crash the
+        // process unhandled.
+        quietThenable(answer);
         return Boolean(answer);
       });
     } catch {

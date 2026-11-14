@@ -25,10 +25,10 @@ What's known and not yet done, each with why it waits. Findings from code review
   whole thing. The SDKs keep only the rule they must apply on their own (such a URL is never free, decided without a
   call to Stilebase); pricing is Stilebase's. *Waits:* a server-side change; only a forged Host or a raw request
   target puts a `#` in a request URL.
-- **A cold start's first request waits for the settings, a free health check included** (at most about 3.5 seconds
+- **A cold start's first requests wait for the settings, free health checks included** (at most about 3.5 seconds
   when Stilebase is slow or unreachable). Two cycles of letting free requests skip the wait each opened a hole (agents
   reading free after a failed background load, a free-listed verification file not served on a cold instance).
-  *Waits:* only the very first request of an instance, bounded; give readiness probes a timeout above 4 seconds.
+  *Waits:* only until an instance's first load ends, bounded; give readiness probes a timeout above 4 seconds.
 
 - **Warn once when the gate has no visitor address** (the fetch adapter outside Cloudflare, without `ipHeader`). Free
   passes then never verify and hidden agents aren't caught by address, silently. *Waits:* the READMEs say to set it;

@@ -105,8 +105,8 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
 - **Domain verification.** Until you prove your domain, the gate serves `/.well-known/stilebase-verify.txt`, so you
   can verify without touching DNS.
 - **Your own health checks** are scripts too (curl, wget, urllib): keep them free with `free: ["/healthz"]`, a user
-  agent of your own on the check, or `catchHttpClients: false`. An instance's very first request, a free one too,
-  waits for the gate's settings (at most about 3.5 seconds, only while Stilebase is slow): give readiness probes a
+  agent of your own on the check, or `catchHttpClients: false`. An instance's first requests, free ones too, wait
+  for the gate's settings (at most about 3.5 seconds, only while Stilebase is slow): give readiness probes a
   timeout above 4 seconds.
 - **Webhooks and server-to-server calls** usually come from scripts with a default user agent (Go-http-client,
   python-requests, axios), and a POST is never free, so the gate asks them to pay. Register those routes before
