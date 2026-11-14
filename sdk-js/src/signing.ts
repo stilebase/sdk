@@ -49,7 +49,7 @@ export async function passToken(secret: string, userAgent: string, timestamp: nu
   return `${timestamp}.${(await hmacHex(secret, `stilebase-pass\n${timestamp}\n${userAgent}`)).slice(0, 32)}`;
 }
 
-/** How many pass cookies of one request are checked at most (SPEC.md, section 5, step 7). */
+/** How many distinct times among one request's pass cookies are checked at most (SPEC.md, section 5, step 7). */
 export const MAX_PASS_CANDIDATES = 8;
 
 /** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (the time no more than a minute ahead). */
@@ -68,20 +68,23 @@ export async function hasPass(
   // ones get an HMAC, so a Cookie header stuffed with them can't make one request cost hundreds.
   const now = Math.floor(nowMs / 1000);
   const prefix = `${cookieName}=`;
-  const candidates = new Map<string, number>(); // token -> its time
+  const candidates = new Map<number, Set<string>>(); // its time -> the tokens with that time (one HMAC each time)
   const pieces = cookieHeader.split(/[;,]/);
-  for (let i = pieces.length - 1; i >= 0 && candidates.size < MAX_PASS_CANDIDATES; i -= 1) {
+  for (let i = pieces.length - 1; i >= 0; i -= 1) {
     const piece = pieces[i]!.trim();
     if (!piece.startsWith(prefix)) continue;
     const token = piece.slice(prefix.length);
-    if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) continue;
+    if (!/^[1-9]\d{0,11}\.[0-9a-f]{32}$/.test(token)) continue;
     const timestamp = Number(token.split(".")[0]);
     const age = now - timestamp;
     if (age < -60 || age > maxAgeSeconds) continue;
-    candidates.set(token, timestamp);
+    const tokens = candidates.get(timestamp);
+    if (tokens) tokens.add(token);
+    else if (candidates.size < MAX_PASS_CANDIDATES) candidates.set(timestamp, new Set([token]));
   }
-  for (const [token, timestamp] of candidates) {
-    if (sameText(token, await passToken(secret, userAgent, timestamp))) return true;
+  for (const [timestamp, tokens] of candidates) {
+    const expected = await passToken(secret, userAgent, timestamp);
+    for (const token of tokens) if (sameText(token, expected)) return true;
   }
   return false;
 }

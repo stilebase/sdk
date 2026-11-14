@@ -165,7 +165,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
      suspect.
    - **200 for a suspect** (strict detection on): report it with `signals`, then answer 402. When the request asked for
      HTML (`Accept` contains `text/html`), the body is a small page whose script sets the pass cookie and reloads, so
-     a real browser goes straight through.
+     a real browser goes straight through. It reloads once: shown again within 30 seconds (the gate didn't find the
+     cookie), it asks the visitor to allow cookies instead of reloading forever.
    - **400, 413, 414, 422, 429, 431**: 402 with the last price (the rule at the top).
    - Anything else (a 200 that isn't a JSON object included), or no answer within 5 seconds: the request passes.
 
@@ -175,8 +176,9 @@ the entries before it are the visitor's to write. An address over 45 characters 
    time at most `max_age_seconds` old and at most a minute ahead, the HMAC for this user agent, compared in constant
    time. It splits the Cookie header at `;` and at `,` (a runtime may join several Cookie fields with `, `), and every
    piece with the cookie's name is a candidate, tried from the last (the check page sets the real one just before it
-   reloads, so browsers send it after one planted earlier or on a longer path, which mustn't hide it). Only the last 8
-   distinct candidates that are well formed and within those times get an HMAC.
+   reloads, so browsers usually send it after one planted earlier or on a longer path). Candidates that are well formed
+   (the time without leading zeros) and within those times are grouped by their time, and only the last 8 distinct
+   times get an HMAC (one each).
 8. **A payment.** A request with `PAYMENT-SIGNATURE` (x402 v2) or `X-PAYMENT` (v1) goes to a signed
    `POST <stilebase>/v1/x402/settle`, waiting up to 65 seconds (longer than Stilebase takes at most: giving up first
    would answer 503 for a payment that then settles):

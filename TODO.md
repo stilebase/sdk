@@ -19,6 +19,14 @@ What's known and not yet done, each with why it waits. Findings from code review
   own "no such gateway" answer. *Waits:* the API answers 404 only for removed gateways.
 - **The browser check's pass token is in the 402 page**, so a script that reads the page can lift it. A stronger
   challenge is a design change to strict detection. *Waits:* strict detection is off by default.
+- **Planted pass cookies can still hide the real one.** Whoever can set a same-named cookie (a sibling subdomain with
+  `Domain=`, or the site echoing user input into a cookie value with commas) can put more distinct times than the gate
+  checks (8) after the real cookie; a browser keeps a re-set cookie's original place. The check page then asks for
+  cookies instead of reloading forever, but that person stays on it until the planted cookies expire. Fix at the
+  source: Stilebase's settings name the cookie `__Host-stilebase_pass` (browsers refuse that name from another
+  subdomain; the check page already sets `Secure; Path=/` with no `Domain`), and the check page expires the old cookie
+  before setting the new one. *Waits:* a Stilebase settings change; strict detection is off by default, and it needs
+  control of a sibling subdomain or such an echo.
 - **Stilebase should price unusual page URLs conservatively** (percent-encoding, a `%23`, dot segments): the gate
   names a page as it reads it, and some router may serve another page for the same request. A URL with a `#` is named
   by the part before it (Express, `new URL`), while a router reading it as a string (Hono's `getPath`) serves the

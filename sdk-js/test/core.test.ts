@@ -224,6 +224,32 @@ describe("browser-looking requests that don't act like a browser", () => {
     expect(decision.headers["PAYMENT-REQUIRED"]).toBeTruthy();
   });
 
+  it("whose page reloads once, then asks for cookies rather than reloading forever (the gate didn't find the cookie)", async () => {
+    const { runInNewContext } = await import("node:vm");
+    const decision = await gate().check(request("/listings", { ...SCRIPT, accept: "text/html" }));
+    if (decision.action !== "respond") throw new Error("no page");
+    const script = /<script>([\s\S]*)<\/script>/.exec(decision.body)![1]!;
+    const stored = new Map<string, string>();
+    let time = 1_000_000;
+    const visit = (storage: unknown = { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v) }) => {
+      const page = { reloads: 0, message: "", cookie: "" };
+      const document = {
+        get cookie() { return page.cookie; },
+        set cookie(value: string) { page.cookie = value.split(";")[0]!; },
+        getElementById: () => ({ set textContent(text: string) { page.message = text; } }),
+      };
+      runInNewContext(script, { document, location: { reload: () => (page.reloads += 1) }, sessionStorage: storage, Date: { now: () => time } });
+      return page;
+    };
+    expect(visit()).toMatchObject({ reloads: 1, message: "" });
+    time += 5_000; // the gate answered the check page again
+    expect(visit()).toMatchObject({ reloads: 0, message: expect.stringMatching(/allow cookies/) });
+    time += 60_000; // a later visit gets its one reload again
+    expect(visit().reloads).toBe(1);
+    // Storage blocked: it still reloads (as before), never throws.
+    expect(visit({ getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } }).reloads).toBe(1);
+  });
+
   it("with the browser check's cookie pass without asking Stilebase", async () => {
     const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
     const g = gate();
@@ -575,9 +601,11 @@ describe("the review's cases (cycles 13 to 16)", () => {
     const g = gate();
     // Tried from the last: the real one before as many distinct decoys as are checked isn't reached...
     expect((await g.check(request("/listings", { ...script, cookie: [`stilebase_pass=${token}`, ...decoys].join("; ") }))).action).toBe("respond");
+    // One fewer than the limit after it: reached.
+    expect(await g.check(request("/listings", { ...script, cookie: [`stilebase_pass=${token}`, ...decoys.slice(1)].join("; ") }))).toEqual({ action: "pass" });
     // ...but after them it is (planted earlier, or on a longer path), and repeated, malformed or stale decoys don't count.
     expect(await g.check(request("/listings", { ...script, cookie: [...decoys, `stilebase_pass=${token}`].join("; ") }))).toEqual({ action: "pass" });
-    const others = [...Array(9).fill(decoys[0]), ...Array(9).fill("stilebase_pass=junk"), `stilebase_pass=${NOW / 1000 - 99_999}.${"0".repeat(32)}`];
+    const others = [decoys[0], "stilebase_pass=junk", `stilebase_pass=${NOW / 1000 - 99_999}.${"0".repeat(32)}`];
     for (const other of others) expect(await g.check(request("/listings", { ...script, cookie: [`stilebase_pass=${token}`, ...Array(9).fill(other)].join("; ") }))).toEqual({ action: "pass" });
   });
 

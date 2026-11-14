@@ -512,13 +512,16 @@ function paymentRequired(required: Record<string, unknown>, paymentResponse?: st
 
 /** The 402 for a suspect that asks for HTML: a page whose script lets a real browser through, the payment request in
  * the header for everyone else. */
+/** The browser check: a page whose script sets the pass cookie and reloads, once. Reloaded within 30 seconds and
+ * checked again (the gate didn't find the cookie: blocked, stripped by a proxy, or hidden by planted ones), it asks for
+ * cookies instead of reloading forever. */
 function browserCheck(required: Record<string, unknown>, token: string, config: GateConfig): GateDecision {
   const cookie = `${config.pass.cookie}=${token}; Max-Age=${config.pass.max_age_seconds}; Path=/; SameSite=Lax; Secure`;
   const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>One moment…</title></head>
 <body style="font-family:system-ui,sans-serif;margin:3rem auto;max-width:32rem;padding:0 1rem;color:#334">
 <p id="m">Checking your browser…</p>
 <noscript><p>This page needs JavaScript. Automated clients: the price is in the PAYMENT-REQUIRED header (x402).</p></noscript>
-<script>document.cookie=${JSON.stringify(cookie)};if(document.cookie.indexOf(${JSON.stringify(token)})>=0)location.reload();else document.getElementById("m").textContent="Please allow cookies for this site to continue.";</script>
+<script>var k="stilebase-check",n=Date.now(),t=0;try{t=Number(sessionStorage.getItem(k))||0}catch(e){}document.cookie=${JSON.stringify(cookie)};if(document.cookie.indexOf(${JSON.stringify(token)})>=0&&!(n-t<30000)){try{sessionStorage.setItem(k,String(n))}catch(e){}location.reload()}else document.getElementById("m").textContent="Please allow cookies for this site, then reload the page.";</script>
 </body></html>`;
   return respond(402, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "PAYMENT-REQUIRED": base64(JSON.stringify(required)) }, page);
 }
