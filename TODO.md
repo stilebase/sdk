@@ -142,3 +142,9 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **The ASGI middleware doesn't gate WebSocket connections.** *Waits:* few sites serve their content over WebSockets.
 - **It doesn't follow redirects**, so an API address that redirects (an old name) gives it no settings. *Waits:* the
   default address doesn't redirect.
+- **WSGI servers that keep headers with underscores** (uWSGI, gunicorn before 22) let a visitor's `CF_Connecting_IP`
+  land on the same environ key as the proxy's `CF-Connecting-IP`, so `ip_header` can read the visitor's. The README
+  says which servers drop them. *Waits:* WSGI hides the raw header names; the common servers drop such headers.
+- **Cleanup:** the sync and async drivers repeat the effect loop and the load functions; the ASGI and WSGI middlewares
+  list GateOptions' keywords by hand (Django takes STILEBASE_GATE as GateOptions plus `ip_header` and `client_ip`).
+  *Waits:* no behaviour changes.

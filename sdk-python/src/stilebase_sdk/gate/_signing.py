@@ -10,7 +10,7 @@ import re
 
 SITE_KEY = re.compile(r"^sbk_([0-9a-f]{32})_([0-9a-f]{64})$")
 # A bounded timestamp (int() refuses over 4300 digits), with no leading zeros: pass_token never makes one.
-PASS_TOKEN = re.compile(r"^[1-9]\d{0,11}\.[0-9a-f]{32}$")
+PASS_TOKEN = re.compile(r"^[1-9][0-9]{0,11}\.[0-9a-f]{32}$")  # ASCII digits: \d matches any script's
 
 
 def parse_site_key(key: str) -> tuple[str, str] | None:
@@ -39,7 +39,7 @@ def pass_token(secret: str, user_agent: str, timestamp: int) -> str:
 MAX_PASS_CANDIDATES = 8  # distinct times among one request's pass cookies checked at most (SPEC.md, section 5, step 7)
 
 
-def has_pass(cookie_header: str, cookie_name: str, secret: str, user_agent: str, now: float, max_age: int) -> bool:
+def has_pass(cookie_header: str, cookie_name: str, secret: str, user_agent: str, now: float, max_age: float) -> bool:
     """A browser that passed the check within `max_age` seconds carries the cookie it earned (its time no more than a
     minute ahead)."""
     # Split at "," too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ". Every

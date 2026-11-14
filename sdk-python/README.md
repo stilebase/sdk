@@ -98,7 +98,8 @@ When the gate first runs it fetches its settings from Stilebase, and the gateway
   for the gate's settings (at most a few seconds, only while Stilebase is slow): give readiness probes a timeout
   above 4 seconds.
 - **Free paths are exact and literal.** `free=["/healthz"]` keeps `GET /healthz` (and HEAD) free and nothing else:
-  not `/healthz/`, `/HEALTHZ`, `/%68ealthz`, a POST, or any path that only resolves to it. Use letters, digits,
+  not `/healthz/`, `/HEALTHZ`, a POST, or any path that only resolves to it. Under WSGI and Django the server decodes
+  the path before the app sees it, so `/%68ealthz` arrives as `/healthz` there, and your routes read it the same way. Use letters, digits,
   `- . _ ~` and `/`; full paths from the site's root, even for a gate mounted under a path. Every other path is gated. (There's no option to gate only some sections: each
   way of predicting how routers and file servers read a path left some spelling of a gated page free.)
 
@@ -135,7 +136,9 @@ Behind a proxy, make those the visitor's (`--proxy-headers`, `ProxyFix`), or nam
 `127.0.0.1`, suits a proxy on the same machine), never `*`, and `ProxyFix(x_for=1)` should count your proxies. With
 every hop trusted, the address is the first `X-Forwarded-For` entry, which the visitor writes, and a spoofed
 operator address would get a free pass. For a list such as `X-Forwarded-For` the gate takes the last entry, the one your proxy added. Never use a
-header the visitor can set themselves.
+header the visitor can set themselves. Under WSGI and Django, `ip_header` is read from the environ, where
+`CF-Connecting-IP` and a visitor's `CF_Connecting_IP` are the same key: use a server that drops headers with
+underscores (gunicorn 22 or later, Werkzeug, waitress, mod_wsgi), or have your proxy strip them.
 
 ## Undo
 

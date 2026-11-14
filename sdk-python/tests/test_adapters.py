@@ -87,7 +87,8 @@ def test_wsgi_answers_agents_serves_people_and_paid_requests(stilebase: FakeStil
 # --- Django -------------------------------------------------------------------------------------------------------
 
 
-def test_django_answers_agents_serves_people_and_paid_requests(stilebase: FakeStilebase) -> None:
+def _django(stilebase: FakeStilebase, **gate: Any) -> Any:
+    """Django set up once per process; a new test Client loads the middleware again, with these STILEBASE_GATE."""
     from django.conf import settings
 
     if not settings.configured:
@@ -101,10 +102,14 @@ def test_django_answers_agents_serves_people_and_paid_requests(stilebase: FakeSt
         import django
 
         django.setup()
-    settings.STILEBASE_GATE = options(stilebase)
+    settings.STILEBASE_GATE = {**options(stilebase), **gate}
     from django.test import Client
 
-    client = Client(HTTP_HOST="shop.example.com")
+    return Client(HTTP_HOST="shop.example.com")
+
+
+def test_django_answers_agents_serves_people_and_paid_requests(stilebase: FakeStilebase) -> None:
+    client = _django(stilebase)
     asked = client.get("/listings", HTTP_USER_AGENT=GPTBOT, secure=True)
     assert asked.status_code == 402 and asked["PAYMENT-REQUIRED"]
     person = client.get("/listings", secure=True, **{f"HTTP_{k.upper().replace('-', '_')}": v for k, v in BROWSER.items()})
@@ -120,12 +125,32 @@ def _listings(request: Any) -> Any:
     return HttpResponse("the listings")
 
 
+def _premium(request: Any, slug: str) -> Any:
+    from django.http import HttpResponse
+
+    return HttpResponse(f"PREMIUM {slug}")
+
+
 def __getattr__(name: str) -> Any:  # Django's ROOT_URLCONF: this module, its urlpatterns made on first use
     if name == "urlpatterns":
-        from django.urls import path
+        from django.urls import path, re_path
 
-        return [path("listings", _listings)]
+        return [path("listings", _listings), re_path(r"^premium/(?P<slug>[\w-]+)/", _premium)]
     raise AttributeError(name)
+
+
+def test_django_never_frees_a_path_it_routes_elsewhere(stilebase: FakeStilebase) -> None:
+    """Django routes /premium/article/../../healthz to the premium view; the gate must not read it as /healthz."""
+    client = _django(stilebase, free=["/healthz"])
+    for path in ("/premium/article/%2E%2E/%2E%2E/healthz", "/premium/article/../../healthz"):
+        answer = client.get(path, HTTP_USER_AGENT=GPTBOT, secure=True)
+        assert answer.status_code == 402, (path, answer.content)
+
+
+def test_django_takes_a_client_ip_given_the_request(stilebase: FakeStilebase) -> None:
+    client = _django(stilebase, client_ip=lambda request: request.META.get("HTTP_X_TEST_IP"))
+    client.get("/listings", HTTP_USER_AGENT=GPTBOT, HTTP_X_TEST_IP="198.51.100.9", secure=True)
+    assert stilebase.to("/v1/x402/requirements")[0].query["ip"] == "198.51.100.9"
 
 
 # --- The review's cases (cycle 1) ---------------------------------------------------------------------------------

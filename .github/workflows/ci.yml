@@ -94,5 +94,5 @@ jobs:
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen mypy
       - run: uv run --frozen pytest
-      - run: uv build
+      - run: uv build --build-constraints build-constraints.txt --require-hashes # the backend exact and hashed
       - run: bash scripts/smoke.sh ${{ matrix.python }}

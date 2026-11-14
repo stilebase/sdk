@@ -37,6 +37,8 @@ class SyncGate(Engine):
     """`gate.check(request)` tells you what to do with a request. Never raises. Safe to share between threads."""
 
     def __init__(self, options: GateOptions | None = None, adapter: str = "sync", **kwargs: Any) -> None:
+        if options is not None and kwargs:
+            raise TypeError(f"SyncGate takes GateOptions or keywords, not both (got {', '.join(kwargs)} too)")
         super().__init__(options or GateOptions(**kwargs), adapter)
         self._http: httpx.Client | None = None
         self._http_lock = threading.Lock()
@@ -169,19 +171,31 @@ class SyncGate(Engine):
 
         with self._pending_lock:
             self._pending += 1
-        threading.Thread(target=run, name=f"stilebase-sdk-{name}", daemon=True).start()
+        try:
+            threading.Thread(target=run, name=f"stilebase-sdk-{name}", daemon=True).start()
+        except Exception as error:  # no thread to be had: undo, so the next due request tries again
+            self.end_refresh(name)
+            with self._pending_lock:
+                self._pending -= 1
+                self._pending_lock.notify_all()
+            self.report(error)
 
     def _background(self, work: Callable[[], Any]) -> None:
         """A visit report: one worker thread, a bounded queue, dropped when full."""
         with self._pending_lock:
+            if self._worker is None or not self._worker.is_alive():
+                worker = threading.Thread(target=self._drain, name="stilebase-sdk", daemon=True)
+                try:
+                    worker.start()
+                except Exception as error:  # no thread to be had: this report is dropped, the next one tries again
+                    self.report(error)
+                    return
+                self._worker = worker
             try:
                 self._queue.put_nowait(work)
             except queue.Full:
                 return  # statistics can wait; requests never do
             self._pending += 1
-            if self._worker is None or not self._worker.is_alive():
-                self._worker = threading.Thread(target=self._drain, name="stilebase-sdk", daemon=True)
-                self._worker.start()
 
     def _drain(self) -> None:
         while True:

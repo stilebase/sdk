@@ -626,3 +626,127 @@ def test_the_check_page_is_the_same_as_the_javascript_sdks(make: Any) -> None:
     assert 'var k="stilebase-check",n=Date.now(),t=0;' in body
     assert "&&!(n-t<30000)){try{sessionStorage.setItem(k,String(n))}catch(e){}location.reload()}" in body
     assert "Please allow cookies for this site, then reload the page." in body
+
+
+# --- The review's cases (stilebase-sdk, cycle 1) ------------------------------------------------------------------
+
+
+def test_a_cancelled_first_request_doesnt_leave_the_gate_without_settings(stilebase: FakeStilebase) -> None:
+    """The first settings load runs on its own: the request that started it can be cancelled (its client gone), and the
+    next agent is still asked to pay."""
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        if request.url.path == CONFIG_PATH:
+            await asyncio.sleep(0.2)
+        return stilebase.handle(request)
+
+    async def run() -> Pass | Respond:
+        gate = AsyncGate(key=KEY, api_url=API, transport=httpx.MockTransport(slow), on_error=lambda e: None)
+        first = asyncio.ensure_future(gate.check(request("/listings", {"user-agent": GPTBOT})))
+        await asyncio.sleep(0.05)
+        first.cancel()
+        try:
+            return await gate.check(request("/listings", {"user-agent": GPTBOT}))
+        finally:
+            await gate.aclose()
+
+    assert isinstance(asyncio.run(run()), Respond)
+
+
+def test_visit_reports_have_a_client_of_their_own(stilebase: FakeStilebase) -> None:
+    """While Stilebase is slow to take reports, they never hold the connections a price lookup needs."""
+
+    async def run() -> None:
+        gate = AsyncGate(key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None)
+        await gate.check(request("/listings", {"user-agent": GPTBOT}))  # a 402: its visit is reported
+        while gate._tasks:
+            await asyncio.gather(*gate._tasks)
+        assert gate._reports_http is not None and gate._reports_http is not gate._http
+        await gate.aclose()
+
+    asyncio.run(run())
+    assert len(stilebase.to("/v1/x402/visits")) == 1
+
+
+def test_a_pass_cookie_in_another_scripts_digits_is_no_pass_and_no_crash(make: Any) -> None:
+    arabic_indic = str(int(NOW) - 60).translate(str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩"))
+    site = make()
+    decision = site.check(request("/listings", {**SCRIPT, "cookie": f"stilebase_pass=1{arabic_indic[1:]}.{'0' * 32}"}))
+    assert isinstance(decision, Respond)
+    assert site.errors == []
+
+
+def test_a_lone_surrogate_in_a_header_is_written_as_javascript_writes_it(make: Any, stilebase: FakeStilebase) -> None:
+    site = make()
+    assert isinstance(site.check(request("/listings", {"user-agent": GPTBOT + "\udcff"})), Respond)
+    assert stilebase.to("/v1/x402/requirements")[0].query["ua"].endswith("\ufffd")
+
+
+def test_the_site_key_is_never_in_the_options_repr() -> None:
+    assert SECRET not in repr(GateOptions(key=KEY)) and KEY not in repr(GateOptions(key=KEY))
+
+
+def test_a_refresh_thread_that_cant_start_is_tried_again(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    site = Site("sync", stilebase)
+    try:
+        site.check(request("/", BROWSER))
+        site.clock += 301
+        start = threading.Thread.start
+        monkeypatch.setattr(threading.Thread, "start", lambda self: (_ for _ in ()).throw(RuntimeError("can't start new thread")))
+        assert site.check(request("/", BROWSER)) == Pass()
+        monkeypatch.setattr(threading.Thread, "start", start)
+        site.check(request("/", BROWSER))
+        site.settle()
+        assert len(stilebase.to(CONFIG_PATH)) == 2
+    finally:
+        site.close()
+
+
+@pytest.mark.parametrize(
+    ("checks", "runs"),
+    [
+        ({"cloud_asns": None}, True),
+        ({"cloud_asns": ["AS13335", 13335]}, True),
+        ({"suspect_score": 2.5}, True),
+        ({"suspect_score": "3"}, False),
+        ({"suspect_score": True}, False),
+    ],
+)
+def test_settings_are_read_as_the_javascript_sdk_reads_them(
+    make: Any, stilebase: FakeStilebase, checks: dict[str, Any], runs: bool
+) -> None:
+    config = live_config()
+    config["browser_checks"] = {**config["browser_checks"], **checks}
+    config["verification"] = "not an object"
+    stilebase.config = (200, config, {})
+    decision = make().check(request("/listings", {"user-agent": GPTBOT}))
+    assert isinstance(decision, Respond) is runs
+
+
+def test_a_price_answer_that_isnt_json_is_asked_again(make: Any, stilebase: FakeStilebase) -> None:
+    site = make()
+    answers = iter(
+        [(200, None, {"cache-control": "public, max-age=300"}), (200, REQUIRED, {"cache-control": "public, max-age=300"})]
+    )
+    stilebase.requirements = lambda q: next(answers)
+    assert site.check(request("/listings", {"user-agent": GPTBOT})) == Pass()  # no price: never the 402
+    assert isinstance(site.check(request("/listings", {"user-agent": GPTBOT})), Respond)
+
+
+def test_an_empty_refusal_reason_is_kept_as_javascript_keeps_it(make: Any, stilebase: FakeStilebase) -> None:
+    stilebase.settle = (200, {"success": False, "errorReason": ""}, {})
+    assert decoded(make().check(request("/listings", PAID)))["error"] == ""
+
+
+def test_free_paths_given_as_an_iterator_keep_working(make: Any) -> None:
+    site = make(free=(p for p in ["/healthz"]))
+    for _ in range(2):
+        assert site.check(request("/healthz", {"user-agent": GPTBOT})) == Pass()
+
+
+def test_options_and_keywords_together_are_refused() -> None:
+    for gate in (SyncGate, AsyncGate):
+        with pytest.raises(TypeError):
+            gate(GateOptions(key=KEY), free=["/healthz"])

@@ -5,6 +5,7 @@ cases every implementation must agree on."""
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -31,11 +32,11 @@ class GateConfig:
     test_mode_agents: tuple[str, ...]
     http_clients: tuple[str, ...]
     known_bots: tuple[str, ...]
-    weights: Mapping[str, int]
-    suspect_score: int
-    cloud_asns: frozenset[int]
+    weights: Mapping[str, float]
+    suspect_score: float
+    cloud_asns: frozenset[float]
     pass_cookie: str
-    pass_max_age: int
+    pass_max_age: float
 
     @classmethod
     def parse(cls, value: Any) -> GateConfig | None:
@@ -43,29 +44,46 @@ class GateConfig:
         try:
             if value["config_version"] != CONFIG_VERSION:
                 return None  # settings whose meaning changed: run on none rather than misread them
+            # As @stilebase/sdk's parseConfig reads them: what a gate can't run without is checked strictly (None),
+            # the rest is taken as far as it's usable (an odd cloud_asns entry is dropped, not the whole document).
             gateway, checks, passes = value["gateway"], value["browser_checks"], value["pass"]
-            verification = value.get("verification") or {}
+            verification = value.get("verification")
+            verification = verification if isinstance(verification, dict) else {}
             lists = [_strings(value[name]) for name in ("agents", "test_mode_agents", "http_clients", "known_bots")]
             if not isinstance(gateway["domain"], str) or not isinstance(gateway["live"], bool):
                 return None
+            if not isinstance(checks["weights"], dict) or not isinstance(passes["cookie"], str):
+                return None
+            asns = checks.get("cloud_asns")
             return cls(
                 domain=gateway["domain"],
                 live=gateway["live"],
                 refresh_seconds=_refresh_seconds(value.get("refresh_seconds")),
-                verification_path=verification.get("path"),
-                verification_value=verification.get("value"),
+                verification_path=verification.get("path") if isinstance(verification.get("path"), str) else None,
+                verification_value=verification.get("value") if isinstance(verification.get("value"), str) else None,
                 agents=lists[0],
                 test_mode_agents=lists[1],
                 http_clients=lists[2],
                 known_bots=lists[3],
-                weights={str(k): int(v) for k, v in checks["weights"].items()},
-                suspect_score=int(checks["suspect_score"]),
-                cloud_asns=frozenset(int(a) for a in checks.get("cloud_asns", [])),
-                pass_cookie=str(passes["cookie"]),
-                pass_max_age=int(passes["max_age_seconds"]),
+                weights={str(k): v for k, v in checks["weights"].items() if _is_number(v)},
+                suspect_score=_number(checks["suspect_score"]),
+                cloud_asns=frozenset(a for a in asns if _is_number(a)) if isinstance(asns, list) else frozenset(),
+                pass_cookie=passes["cookie"],
+                pass_max_age=_number(passes["max_age_seconds"]),
             )
         except (KeyError, TypeError, ValueError, AttributeError):
             return None
+
+
+def _is_number(value: Any) -> bool:
+    """A finite number, as JavaScript's typeof sees one: never a bool or a numeric string."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _number(value: Any) -> float:
+    if not _is_number(value):
+        raise TypeError("not a number")
+    return float(value) if isinstance(value, float) else int(value)
 
 
 def _strings(value: Any) -> tuple[str, ...]:
@@ -216,7 +234,11 @@ def form_quote(value: str | bytes, *_: Any) -> str:
     quote_via."""
     if isinstance(value, bytes):
         value = value.decode("utf-8", "surrogateescape")
+    value = _LONE_SURROGATE.sub("\ufffd", value)  # as URLSearchParams writes one (a header decoded with surrogateescape)
     return quote_plus(value, safe="*").replace("~", "%7E")
+
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def fit_encoded(value: str, max_encoded: int) -> str:

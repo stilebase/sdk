@@ -141,7 +141,7 @@ jobs:
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen mypy
       - run: uv run --frozen pytest
-      - run: uv build
+      - run: uv build --build-constraints build-constraints.txt --require-hashes # the backend exact and hashed
       # Record the hashes of exactly the files that get published (the wheel and the sdist): the smoke and publish jobs
       # take only files with exactly these hashes.
       - name: Record the hashes of the files that get published

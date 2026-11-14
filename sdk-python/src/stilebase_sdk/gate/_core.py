@@ -19,7 +19,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -92,10 +92,11 @@ PASS = Pass()
 class GateOptions:
     """How the gate runs. Everything has a default; most sites set nothing (the key comes from STILEBASE_KEY)."""
 
-    key: str | None = None  # the site key from your gateway page; default: STILEBASE_KEY
+    # The site key from your gateway page; default: STILEBASE_KEY. Never in a repr (error pages, log lines).
+    key: str | None = field(default=None, repr=False)
     api_url: str | None = None  # Stilebase's API; default: STILEBASE_API_URL, else https://stilebase.com
     mode: Literal["live", "test"] = "live"  # test: only Stilebase's test agent is asked to pay
-    free: Sequence[str] | None = None  # exact paths that stay free for everyone (["/healthz"]); all others are gated
+    free: Iterable[str] | None = None  # exact paths that stay free for everyone (["/healthz"]); all others are gated
     catch_http_clients: bool = True  # scripts with their default user agent (curl, python-requests…) pay too
     catch_hidden_agents: bool = True  # agents behind a browser's user agent (operators' addresses, Web Bot Auth) too
     check_browsers: bool = True  # browser-looking requests that don't act like one: counted, or asked under strict detection
@@ -165,7 +166,9 @@ class Engine:
         self._warned: dict[str, float] = {}
         if self.site is None:
             self.report(GateError(f"STILEBASE_KEY {'is not a site key (sbk_…)' if key else 'is not set'}: every request passes"))
-        _, unusable = _free_entries(options.free)
+        # Worked out once (an iterator given as `free` would be used up by a second look).
+        usable, unusable = _free_entries(options.free)
+        self.free_paths = frozenset(usable)
         if unusable:
             self.report(
                 GateError(
@@ -180,7 +183,7 @@ class Engine:
         return self.site[1]
 
     def flow(self, request: GateRequest) -> Flow:
-        return decide(request, self.secret, self.options, self.report, self.memory)
+        return decide(request, self.secret, self.options, self.report, self.memory, self.free_paths)
 
     # --- Settings ------------------------------------------------------------------------------------------------
 
@@ -254,8 +257,8 @@ class Engine:
             name, _, value = part.strip().partition("=")
             if name == "max-age" and value.isdigit():
                 max_age = min(int(value), MAX_REQUIREMENTS_AGE)
-        if status not in (200, 204) or max_age <= 0:
-            return
+        if status not in (200, 204) or max_age <= 0 or (status == 200 and not isinstance(body, dict)):
+            return  # a 200 without a JSON object (cut short, an error page) is asked again next time, as in JS
         with self._lock:
             while len(self._requirements) >= REQUIREMENTS_CACHE_SIZE:
                 self._requirements.popitem(last=False)
@@ -309,9 +312,12 @@ def decide(
     options: GateOptions,
     report: Callable[[BaseException], None],
     memory: dict[str, Any] | None = None,
+    free: frozenset[str] | None = None,
 ) -> Flow:
-    """What to do with this request (see the module docstring). `memory` keeps the last price between requests."""
+    """What to do with this request (see the module docstring). `memory` keeps the last price between requests; `free`
+    is the owner's usable free paths (default: worked out from options.free)."""
     memory = memory if memory is not None else {}
+    free = free if free is not None else frozenset(_free_entries(options.free)[0])
     config: GateConfig | None = yield GetConfig()
     if config is None:
         return PASS
@@ -326,7 +332,7 @@ def decide(
     if config.verification_path and config.verification_value and path == config.verification_path:
         headers = {"content-type": "text/plain; charset=utf-8", "cache-control": "no-store"}
         return Respond(200, headers, f"{config.verification_value}\n".encode())
-    if not config.live or _is_free(request.method, request.url, options.free):
+    if not config.live or _is_free(request.method, request.url, free):
         return PASS
 
     payment = request.header("payment-signature") or request.header("x-payment") or None
@@ -397,7 +403,8 @@ def decide(
         return Respond(503, headers, b'{"error": "Payment settlement unavailable"}')
     header = _receipt(settlement.get("header"))
     if not settlement.get("success"):
-        refused = {**required, "error": settlement.get("errorReason") or "payment_rejected"}
+        reason = settlement.get("errorReason")
+        refused = {**required, "error": reason if reason is not None else "payment_rejected"}
         return payment_required(refused, header)
     return Pass(header) if header else PASS
 
@@ -411,22 +418,21 @@ def _receipt(value: Any) -> str | None:
     return value if isinstance(value, str) and _RECEIPT.fullmatch(value) else None
 
 
-def _free_entries(free: Sequence[str] | str | None) -> tuple[set[str], list[Any]]:
+def _free_entries(free: Iterable[str] | str | None) -> tuple[set[str], list[Any]]:
     """The owner's free paths that can match (literal), and the ones that never can."""
     listed: list[Any] = [] if free is None else [free] if isinstance(free, str) else list(free)  # one path, not chars
     usable = [p for p in listed if isinstance(p, str) and is_literal_path(p)]
     return set(usable), [p for p in listed if p not in usable]
 
 
-def _is_free(method: str, url: str, free: Sequence[str] | str | None) -> bool:
+def _is_free(method: str, url: str, free: frozenset[str]) -> bool:
     """A free path: a GET or HEAD (a POST can run code a free page shares with gated ones) whose URL is literal (no
     encoding, no dot segments, a plain host) and whose path is one of the owner's free paths character for character.
     Anything unusual is gated: no two parsers can read it differently."""
     if not free or method.upper() not in ("GET", "HEAD"):
         return False
-    exact, _ = _free_entries(free)
     path = literal_path(url)
-    return path is not None and path in exact
+    return path is not None and path in free
 
 
 def _is_agent(request: GateRequest, user_agent: str, config: GateConfig, options: GateOptions) -> Generator[Effect, Any, bool]:

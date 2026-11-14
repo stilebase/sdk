@@ -2,7 +2,7 @@
 
     # settings.py
     MIDDLEWARE = ["stilebase_sdk.gate.django.GateMiddleware", ...]   # first, before anything that renders pages
-    STILEBASE_GATE = {"ip_header": "cf-connecting-ip"}           # optional: GateOptions, plus ip_header
+    STILEBASE_GATE = {"ip_header": "cf-connecting-ip"}           # optional: GateOptions, plus ip_header or client_ip
 
 The key comes from STILEBASE_KEY (the environment, or STILEBASE_GATE["key"]).
 """
@@ -15,9 +15,10 @@ from typing import Any
 from django.conf import settings
 from django.http import HttpResponse
 
-from ._core import GateOptions, Respond, address_from
-from ._detect import GateRequest, headers_of
+from ._core import GateOptions, Respond
+from ._detect import GateRequest
 from ._sync import SyncGate
+from .wsgi import request_from_environ
 
 
 class GateMiddleware:
@@ -30,6 +31,7 @@ class GateMiddleware:
         self.get_response = get_response
         options = dict(getattr(settings, "STILEBASE_GATE", {}))
         self.ip_header: str | None = options.pop("ip_header", None)
+        self.client_ip: Callable[[Any], str | None] | None = options.pop("client_ip", None)  # given the Django request
         self.gate = SyncGate(GateOptions(**options), adapter="django")
 
     def __call__(self, request: Any) -> Any:
@@ -45,10 +47,13 @@ class GateMiddleware:
         return response
 
     def request(self, request: Any) -> GateRequest:
-        headers = headers_of(request.headers.items())
-        ip = address_from(headers, self.ip_header, request.META.get("REMOTE_ADDR"))
+        """The request as the WSGI adapter reads it, from META: the path as Django routes it (PATH_INFO), never resolved.
+        build_absolute_uri() resolves "/premium/x/../../healthz" to "/healthz", a free path, while Django routes the
+        premium page."""
         try:
-            url = request.build_absolute_uri()  # validates the host against ALLOWED_HOSTS
+            scheme = request.scheme  # honours SECURE_PROXY_SSL_HEADER
         except Exception:
-            url = f"{request.scheme}://localhost{request.get_full_path()}"
-        return GateRequest(method=request.method, url=url, headers=headers, ip=ip)
+            scheme = "http"
+        environ = {**request.META, "wsgi.url_scheme": scheme}
+        client_ip = self.client_ip
+        return request_from_environ(environ, self.ip_header, (lambda _environ: client_ip(request)) if client_ip else None)
