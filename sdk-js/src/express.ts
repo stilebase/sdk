@@ -7,6 +7,9 @@ export interface ExpressRequest {
   method: string;
   protocol: string;
   originalUrl: string;
+  /** The path Express routes (its own parse of the target), and the path the app is mounted under. */
+  path: string;
+  baseUrl?: string | undefined;
   ip?: string | undefined;
   get(name: string): string | undefined;
 }
@@ -37,12 +40,13 @@ export function gate(options: ExpressGateOptions = {}) {
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }
-    // The path as Express routes it, as sent ("//premium/x" stays that); an absolute-form target (`GET
-    // http://host:99999/premium`) keeps what follows its authority, as Express's url.parse reads it, whatever the host.
-    // The host doesn't matter: the gate names the page by the gateway's domain.
-    const original = typeof req.originalUrl === "string" ? req.originalUrl : "/";
-    const rest = original.startsWith("/") ? original : (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(original)?.[1] ?? original);
-    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${rest.startsWith("/") ? rest : `/${rest}`}`;
+    // The page by the path Express itself routes (req.path: its own parse of the target, an absolute-form one
+    // included), under the path the app is mounted at, with the query as sent. The host doesn't matter: the gate names
+    // the page by the gateway's domain.
+    const routed = `${req.baseUrl ?? ""}${typeof req.path === "string" ? req.path : "/"}`;
+    const original = typeof req.originalUrl === "string" ? req.originalUrl : "";
+    const query = original.includes("?") ? original.slice(original.indexOf("?")) : "";
+    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${routed.startsWith("/") ? routed : `/${routed}`}${query}`;
     siteGate.check({ method: req.method, url, headers, ip: ip ?? null }).then(
       (decision) => {
         if (decision.action === "respond") {

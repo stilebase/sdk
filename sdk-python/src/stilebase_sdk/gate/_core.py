@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -21,6 +22,7 @@ from urllib.parse import urlencode
 
 from .._version import PACKAGE, VERSION
 from ._detect import (
+    JS_WHITESPACE,
     GateConfig,
     GateRequest,
     Network,
@@ -239,16 +241,20 @@ def _browser_check(required: dict[str, Any], token: str, config: GateConfig) -> 
         '<p id="m">Checking your browser…</p>\n'
         "<noscript><p>This page needs JavaScript. Automated clients: the price is in the PAYMENT-REQUIRED header (x402)."
         "</p></noscript>\n"
-        f"<script>document.cookie={json.dumps(cookie)};if(document.cookie.indexOf({json.dumps(token)})>=0)location.reload();"
+        f"<script>document.cookie={_json(cookie)};if(document.cookie.indexOf({_json(token)})>=0)location.reload();"
         'else document.getElementById("m").textContent="Please allow cookies for this site to continue.";</script>\n'
         "</body></html>"
     )
     return _respond(402, {"content-type": "text/html; charset=utf-8", "PAYMENT-REQUIRED": b64(_json(required))}, page)
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def _json(value: Any) -> str:
     """JSON as JavaScript's JSON.stringify writes it (compact, raw UTF-8): the same bytes from both SDKs."""
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return _LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)  # escaped, as JSON.stringify escapes one
 
 
 def _respond(status: int, headers: dict[str, str], body: str) -> Respond:
@@ -260,7 +266,7 @@ def address_from(headers: dict[str, str], name: str | None, fallback: str | None
     """The visitor's address from a header your proxy sets: from a list (X-Forwarded-For) its last entry, the one your
     proxy added; the ones before it are the visitor's to write. Else the server's own address for the connection."""
     if name:
-        return headers.get(name.lower(), "").split(",")[-1].strip() or None
+        return headers.get(name.lower(), "").split(",")[-1].strip(JS_WHITESPACE) or None
     return fallback or None
 
 
@@ -370,7 +376,7 @@ class Engine:
 
     def signed_post(self, path: str, payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
         assert self.site is not None
-        body = json.dumps(payload).encode()
+        body = _json(payload).encode()
         return body, {"content-type": "application/json", **signed_headers(self.site[1], "POST", path, body, self.options.now())}
 
     def report(self, error: BaseException) -> None:

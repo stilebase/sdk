@@ -16,7 +16,7 @@ PASS_TOKEN = re.compile(r"^[0-9]{1,12}\.[0-9a-f]{32}$")
 
 def parse_site_key(key: str) -> tuple[str, str] | None:
     """The gateway's id and signing secret in a site key (`sbk_<32 hex>_<64 hex>`), or None when it isn't one."""
-    match = SITE_KEY.match(key.strip())
+    match = SITE_KEY.match(key.strip(JS_WHITESPACE))
     if not match:
         return None
     h = match.group(1)

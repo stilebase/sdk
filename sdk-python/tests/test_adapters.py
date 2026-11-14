@@ -128,3 +128,21 @@ def test_asgi_takes_an_async_client_ip_as_no_address_and_closes_it() -> None:
     middleware = GateMiddleware(app, client_ip=client_ip, key=KEY, api_url=API)
     assert middleware.request({"type": "http", "path": "/", "headers": []}).ip is None
     assert made[0].cr_frame is None  # closed, never left unawaited
+
+
+def test_asgi_with_an_async_client_ip_still_asks_agents_to_pay() -> None:
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    async def lookup(scope: Any) -> str:
+        return "198.51.100.9"
+
+    stilebase = FakeStilebase()
+    app = Starlette(routes=[Route("/", lambda request: PlainTextResponse("ok"))])
+    app.add_middleware(GateMiddleware, client_ip=lookup, **options(stilebase))  # type: ignore[arg-type]
+    assert TestClient(app).get("/", headers={"user-agent": GPTBOT}).status_code == 402
+    assert stilebase.to("/v1/x402/requirements")[0].query["ip"] == ""

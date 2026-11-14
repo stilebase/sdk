@@ -97,6 +97,7 @@ class GateMiddleware:
                     ip.close()
                 elif isinstance(ip, asyncio.Future):
                     ip.add_done_callback(lambda done: done.cancelled() or done.exception())  # retrieved, never logged
+                    ip.cancel()
                 ip = None
         except Exception:
             ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)

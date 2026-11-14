@@ -81,10 +81,14 @@ class SiteGate implements Gate {
   private configAt = 0;
   private configLoading: Promise<void> | null = null;
   private configLoadingAt = 0;
+  private configStarted = 0; // generations: the latest load started, and the newest whose answer applied
+  private configApplied = 0;
   private ranges: Network[] | null = null;
   private rangesAt = 0;
   private rangesLoading: Promise<void> | null = null;
   private rangesLoadingAt = 0;
+  private rangesStarted = 0;
+  private rangesApplied = 0;
   private readonly cache = new Map<string, { status: number; body: unknown; expires: number }>();
   private readonly warned = new Map<string, number>();
   private pendingReports = 0;
@@ -219,14 +223,16 @@ class SiteGate implements Gate {
 
   private startSettings(): Promise<void> {
     this.configLoadingAt = this.now();
-    const loading: Promise<void> = this.loadSettings(() => this.configLoading === loading).finally(() => {
+    const loading: Promise<void> = this.loadSettings(++this.configStarted).finally(() => {
       if (this.configLoading === loading) this.configLoading = null;
     });
     return (this.configLoading = loading);
   }
 
-  /** `current()`: false once a newer load replaced this one (it then applies nothing). */
-  private async loadSettings(current: () => boolean): Promise<void> {
+  /** A load's answer applies unless a newer load's already did; its failure counts only if it's the latest started
+   * (an older load's never ends a newer one's wait). */
+  private async loadSettings(generation: number): Promise<void> {
+    const applies = () => generation > this.configApplied && ((this.configApplied = generation), true);
     const site = this.site!;
     const path = `/v1/x402/sites/${site.gatewayId}/config`;
     try {
@@ -234,18 +240,22 @@ class SiteGate implements Gate {
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) });
       if (answer.status !== 200) discard(answer);
       if (answer.status === 404) {
-        if (current()) this.config = null; // the gateway was removed: stop asking agents to pay
+        if (!applies()) return;
+        this.config = null; // the gateway was removed: stop asking agents to pay
+        this.configAt = this.now();
         throw new Error("Stilebase has no gateway for this site key (404): every request passes");
       }
       // Any other failure keeps the last good settings (a 401 after a rotated key: agents are still asked to pay).
       if (answer.status !== 200) throw new Error(`Stilebase answered the settings ${answer.status}`);
       const config = parseConfig(await answer.json());
       if (!config) throw new Error("Stilebase sent settings this version can't read");
-      if (current()) this.config = config;
+      if (applies()) {
+        this.config = config;
+        this.configAt = this.now();
+      }
     } catch (error) {
       this.report(error);
-    } finally {
-      this.configAt = this.now();
+      if (generation === this.configStarted) this.configAt = this.now(); // tried: retried when due, as with no answer
     }
   }
 
@@ -261,13 +271,13 @@ class SiteGate implements Gate {
 
   private startRanges(): Promise<void> {
     this.rangesLoadingAt = this.now();
-    const loading: Promise<void> = this.loadRanges(() => this.rangesLoading === loading).finally(() => {
+    const loading: Promise<void> = this.loadRanges(++this.rangesStarted).finally(() => {
       if (this.rangesLoading === loading) this.rangesLoading = null;
     });
     return (this.rangesLoading = loading);
   }
 
-  private async loadRanges(current: () => boolean): Promise<void> {
+  private async loadRanges(generation: number): Promise<void> {
     try {
       const answer = await this.fetch(`${this.api}/v1/x402/agent-ranges`, { signal: AbortSignal.timeout(REQUIREMENTS_TIMEOUT_MS) });
       if (answer.status !== 200) {
@@ -277,12 +287,17 @@ class SiteGate implements Gate {
       const body: unknown = await answer.json();
       if (!isRecord(body) || !Array.isArray(body.prefixes)) throw new Error("Stilebase's agent ranges have no prefixes list");
       const prefixes: unknown[] = body.prefixes;
-      if (current()) this.ranges = prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : []));
+      if (generation > this.rangesApplied) {
+        this.rangesApplied = generation;
+        this.ranges = prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : []));
+        this.rangesAt = this.now();
+      }
     } catch (error) {
       this.report(error);
-      this.ranges ??= []; // keep what we had (or none) and try again in an hour
-    } finally {
-      this.rangesAt = this.now();
+      if (generation === this.rangesStarted) {
+        this.ranges ??= []; // keep what we had (or none) and try again in an hour
+        this.rangesAt = this.now();
+      }
     }
   }
 

@@ -372,3 +372,21 @@ def test_the_402_is_written_as_json_stringify_writes_it(make: Any, stilebase: Fa
         decision.body
         == json.dumps({**REQUIRED, "extra": {"name": "caf\u00e9"}}, separators=(",", ":"), ensure_ascii=False).encode()
     )
+
+
+# --- The review's cases (cycle 4) ---------------------------------------------------------------------------------
+
+
+def test_a_lone_surrogate_in_the_price_is_escaped_as_json_stringify_escapes_it() -> None:
+    """A price cut in the middle of an emoji: the 402 is still written (JSON.stringify escapes it), never an error."""
+    from stilebase_sdk.gate._core import _payment_required
+
+    decision = _payment_required({**REQUIRED, "extra": "\ud83d"})
+    assert decision.status == 402 and b'"extra":"\\ud83d"' in decision.body
+
+
+def test_addresses_and_relative_paths_are_read_as_the_js_sdk_reads_them() -> None:
+    from stilebase_sdk.gate._detect import normalize_ip, path_of
+
+    assert normalize_ip("20.15.240.70\x85") == "20.15.240.70\x85"
+    assert path_of("premium/x") == "/premium/x"

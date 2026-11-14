@@ -77,6 +77,20 @@ describe("express", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings`);
   });
 
+  it("names a target whose host Express's parser ends early by the path Express routes", async () => {
+    const { request: raw } = await import("node:http");
+    const base = new URL(await site());
+    await new Promise<void>((resolve, reject) => {
+      const req = raw({ host: base.hostname, port: base.port, path: "http://h%2Fpremium%2Fx.html", headers: GPTBOT }, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/%2Fpremium%2Fx.html`);
+  });
+
   it("names a path starting with two slashes as Express routes it, the whole path", async () => {
     const { request: raw } = await import("node:http");
     const base = new URL(await site());

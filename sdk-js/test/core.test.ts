@@ -281,3 +281,25 @@ describe("the review's cases (cycle 1)", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}//premium/article.html`);
   });
 });
+
+describe("the review's cases (cycle 4)", () => {
+  it("keep an older load's good settings when the newer load fails", async () => {
+    let release: () => void = () => undefined;
+    let calls = 0;
+    const slowThenFailing = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (new URL(String(input)).pathname.endsWith("/config")) {
+        calls += 1;
+        if (calls === 1) await new Promise<void>((resolve) => (release = resolve)); // the first: slow, then good
+        else return new Response(null, { status: 500 }); // the second: fails
+      }
+      return stilebase.fetch(input, init);
+    };
+    const g = createGate({ key: KEY, apiUrl: API, fetch: slowThenFailing, now: () => clock, onError: () => undefined });
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" }); // the first load is slow
+    clock += 3_600; // a second load starts and fails
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" });
+    release(); // the first load's good settings arrive
+    await settled();
+    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
+  }, 15_000);
+});

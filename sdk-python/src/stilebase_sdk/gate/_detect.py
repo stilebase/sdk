@@ -181,7 +181,7 @@ def in_networks(ip: str | None, networks: Sequence[Network]) -> bool:
 def normalize_ip(ip: str | None) -> str | None:
     """The visitor's address as Stilebase and the address lists expect it: IPv4-mapped IPv6 ("::ffff:8.8.8.8", how
     dual-stack servers report IPv4 visitors) as plain IPv4, trimmed; None when there is none."""
-    trimmed = (ip or "").strip()
+    trimmed = (ip or "").strip(JS_WHITESPACE)
     mapped = re.fullmatch(r"::ffff:(\d{1,3}(?:\.\d{1,3}){3})", trimmed, re.IGNORECASE)
     return mapped.group(1) if mapped else (trimmed or None)
 
@@ -193,7 +193,8 @@ def path_of(url: str) -> str:
         parts = urlsplit(f"http://localhost{url}" if url.startswith("/") else url)
     except ValueError:
         return "/"
-    return (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    path = parts.path if parts.path.startswith("/") else f"/{parts.path}"  # a relative one from the root, as in JS
+    return path + (f"?{parts.query}" if parts.query else "")
 
 
 def form_quote(value: str | bytes, *_: Any) -> str:
