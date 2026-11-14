@@ -9,7 +9,7 @@ The cases every gate must agree on, whatever language it's written in:
 
 | File | What it is | Checked by |
 | --- | --- | --- |
-| `vectors.json` | Call signing, site keys, the browser check's pass token, agent and script matching, the browser-header checks, address ranges, address normalization, free paths, which header is the payment | Each SDK's conformance tests, and Stilebase's own |
+| `vectors.json` | Call signing, site keys, the browser check's pass token and how its cookie is found, agent and script matching, the browser-header checks, address ranges, address normalization, free paths, which header is the payment | Each SDK's conformance tests, and Stilebase's own |
 | `gate-config.example.json` | The settings a gate fetches (`GET /v1/x402/sites/{id}/config`, [SPEC.md](../SPEC.md)), as Stilebase sends them | Each SDK's tests serve it from a fake Stilebase. Stilebase's tests fail when it no longer matches what Stilebase sends |
 
 Every key and secret here is made up, for a gateway that doesn't exist. None of them works against Stilebase.

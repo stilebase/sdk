@@ -49,6 +49,9 @@ export async function passToken(secret: string, userAgent: string, timestamp: nu
   return `${timestamp}.${(await hmacHex(secret, `stilebase-pass\n${timestamp}\n${userAgent}`)).slice(0, 32)}`;
 }
 
+/** How many pass cookies of one request are checked at most (SPEC.md, section 5, step 7). */
+export const MAX_PASS_CANDIDATES = 4;
+
 /** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (the time no more than a minute ahead). */
 export async function hasPass(
   cookieHeader: string,
@@ -59,25 +62,25 @@ export async function hasPass(
   maxAgeSeconds: number,
 ): Promise<boolean> {
   // Split at `,` too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ". Every
-  // piece with the cookie's name is tried: one planted before the real one (another cookie's value holding a comma, a
-  // sibling subdomain's cookie) mustn't hide it.
-  const tokens = cookieHeader
-    .split(/[;,]/)
-    .map((c) => c.trim())
-    .filter((c) => c.startsWith(`${cookieName}=`))
-    .map((c) => c.slice(cookieName.length + 1));
-  for (const token of tokens) {
-    if (await validPass(token, secret, userAgent, nowMs, maxAgeSeconds)) return true;
+  // piece with the cookie's name is a candidate: one planted before the real one (another cookie's value holding a
+  // comma, a sibling subdomain's cookie) mustn't hide it. Only the first few distinct, well-formed, in-time ones get an
+  // HMAC, so a Cookie header stuffed with them can't make one request cost hundreds.
+  const now = Math.floor(nowMs / 1000);
+  const candidates = new Set<string>();
+  for (const piece of cookieHeader.split(/[;,]/)) {
+    const c = piece.trim();
+    if (!c.startsWith(`${cookieName}=`)) continue;
+    const token = c.slice(cookieName.length + 1);
+    if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) continue;
+    const age = now - Number(token.split(".")[0]);
+    if (age < -60 || age > maxAgeSeconds) continue;
+    candidates.add(token);
+    if (candidates.size === MAX_PASS_CANDIDATES) break;
+  }
+  for (const token of candidates) {
+    if (sameText(token, await passToken(secret, userAgent, Number(token.split(".")[0])))) return true;
   }
   return false;
-}
-
-async function validPass(token: string, secret: string, userAgent: string, nowMs: number, maxAgeSeconds: number): Promise<boolean> {
-  if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) return false;
-  const timestamp = Number(token.split(".")[0]);
-  const age = Math.floor(nowMs / 1000) - timestamp;
-  if (age < -60 || age > maxAgeSeconds) return false;
-  return sameText(token, await passToken(secret, userAgent, timestamp));
 }
 
 /** Equal strings, compared in time that doesn't depend on where they differ (no guessing a token one character at a time). */

@@ -126,7 +126,14 @@ function trustsEveryHop(app: { get(setting: string): unknown }): boolean {
   if (typeof trust !== "function") return false;
   return STRANGERS.some((family) => {
     try {
-      return family.every((address) => Boolean(trust(address, 1_000_000)));
+      return family.every((address) => {
+        const answer: unknown = trust(address, 1_000_000);
+        // Express counts a promise as trusting (it's truthy); a rejected one mustn't crash the process unhandled.
+        if (answer && typeof (answer as { then?: unknown }).then === "function") {
+          (answer as PromiseLike<unknown>).then(undefined, () => undefined);
+        }
+        return Boolean(answer);
+      });
     } catch {
       return false;
     }

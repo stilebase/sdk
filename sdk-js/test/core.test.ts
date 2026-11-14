@@ -506,7 +506,7 @@ describe("loads another request started", () => {
   });
 });
 
-describe("the review's cases (cycles 13 and 14)", () => {
+describe("the review's cases (cycles 13 to 15)", () => {
   it("frees nothing after a `#` (a forged Host on Deno puts one in the URL; a router reads past it)", async () => {
     const g = gate({ free: ["/healthz", "/"] });
     for (const url of [`https://${DOMAIN}/healthz#/listings/1`, `https://${DOMAIN}/#/listings/1`, `https://${DOMAIN}/healthz?a#/x`]) {
@@ -521,35 +521,10 @@ describe("the review's cases (cycles 13 and 14)", () => {
     expect(await gate().check(request("/listings", { ...script, cookie: `a=1, stilebase_pass=${token}` }))).toEqual({ action: "pass" });
   });
 
-  it("answers a free path without waiting for the settings (a health check on a cold start)", async () => {
-    let answer: (r: Response) => void = () => undefined;
-    const slow = () => new Promise<Response>((resolve) => (answer = resolve));
-    const g = createGate({ key: KEY, apiUrl: API, fetch: slow, onError: () => undefined, free: ["/healthz"] });
-    const started = Date.now();
-    expect(await g.check(request("/healthz", GPTBOT))).toEqual({ action: "pass" });
-    expect(Date.now() - started).toBeLessThan(500);
-    answer(new Response(null, { status: 500 }));
-  });
-
-  it("starts loading the settings from a free request, so an instance that only gets free requests serves the verification file", async () => {
+  it("serves the verification file at a free path on an instance's first request (a free request waits for the settings too)", async () => {
     const path = "/.well-known/stilebase-verify.txt";
     stilebase.config = { status: 200, body: liveConfig({ verification: { path, value: "stilebase-verify=tok" } }) };
-    const g = gate({ free: [path, "/healthz"] });
-    const waits: Promise<unknown>[] = [];
-    expect(await g.check(request("/healthz"), (p) => waits.push(p))).toEqual({ action: "pass" });
-    expect(waits).toHaveLength(1); // the first load, in the background
-    await Promise.all(waits);
-    expect((await g.check(request(path))).action).toBe("respond");
-    expect(stilebase.to(`/v1/x402/sites/${GATEWAY_ID}/config`)).toHaveLength(1);
-  });
-
-  it("still serves the verification file at a free path once the settings are here", async () => {
-    const path = "/.well-known/stilebase-verify.txt";
-    stilebase.config = { status: 200, body: liveConfig({ verification: { path, value: "stilebase-verify=tok" } }) };
-    const g = gate({ free: [path] });
-    expect(await g.check(request(path))).toEqual({ action: "pass" }); // no settings yet: never waits for them
-    await g.check(request("/listings", BROWSER));
-    expect((await g.check(request(path))).action).toBe("respond");
+    expect((await gate({ free: [path] }).check(request(path))).action).toBe("respond");
   });
 
   it("hands out a new pass decision each time", async () => {
@@ -577,10 +552,10 @@ describe("the review's cases (cycles 13 and 14)", () => {
     expect(() => inNetworks("20.15.240.70", new Set() as unknown as Parameters<typeof inNetworks>[1])).toThrow(TypeError);
   });
 
-  it("prices and names the page with a `#` in its URL as the router serves it, never the part before the `#`", async () => {
-    const g = gate();
-    await g.check(request("/", GPTBOT, { url: `https://${DOMAIN}/cheap-page#/premium/report` }));
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/cheap-page%23/premium/report`);
+  it("names a page with a `#` in its URL by the part before it, as Express and `new URL` read it (never free)", async () => {
+    const g = gate({ free: ["/premium"] });
+    expect((await g.check(request("/", GPTBOT, { url: `https://${DOMAIN}/premium#/cheap` }))).action).toBe("respond");
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/premium`);
   });
 
   it("tries every pass cookie of that name: a planted one first doesn't hide the real one", async () => {
@@ -589,6 +564,18 @@ describe("the review's cases (cycles 13 and 14)", () => {
     const script = { "user-agent": CHROME_UA, accept: "*/*" };
     const cookie = `prefs=x,stilebase_pass=${decoy}; stilebase_pass=${token}`;
     expect(await gate().check(request("/listings", { ...script, cookie }))).toEqual({ action: "pass" });
+  });
+
+  it("checks at most a few pass cookies per request, so a stuffed Cookie header can't cost hundreds of HMACs", async () => {
+    const { MAX_PASS_CANDIDATES } = await import("../src/signing.js");
+    const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
+    const script = { "user-agent": CHROME_UA, accept: "*/*" };
+    const decoys = Array.from({ length: MAX_PASS_CANDIDATES }, (_, i) => `stilebase_pass=${NOW / 1000 - i}.${"0".repeat(32)}`);
+    const g = gate();
+    // The real one after as many distinct decoys as are checked: not reached. A repeated decoy counts once.
+    expect((await g.check(request("/listings", { ...script, cookie: [...decoys, `stilebase_pass=${token}`].join("; ") }))).action).toBe("respond");
+    const repeated = [...decoys.slice(0, 1), ...decoys.slice(0, 1), `stilebase_pass=${token}`].join("; ");
+    expect(await g.check(request("/listings", { ...script, cookie: repeated }))).toEqual({ action: "pass" });
   });
 
   it("reads no environment variable its option already gives (Deno asks permission for each)", async () => {

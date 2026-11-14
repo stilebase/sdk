@@ -120,7 +120,7 @@ export function inNetworks(ip: string | null | undefined, networks: readonly Net
   const address = parseIp(ip ?? "");
   if (!address) return false;
   // Not `instanceof`: each CommonJS entry has its own copy of NetworkIndex.
-  if ((networks as { kind?: unknown }).kind === "stilebase.NetworkIndex") return (networks as NetworkIndex).has(address);
+  if ((networks as { kind?: unknown } | null | undefined)?.kind === "stilebase.NetworkIndex") return (networks as NetworkIndex).has(address);
   if (!Array.isArray(networks)) throw new TypeError("inNetworks takes an array of networks or a NetworkIndex");
   return (networks as readonly Network[]).some((n) => n.version === address.version && address.value >> n.shift === n.base);
 }
@@ -167,7 +167,7 @@ export function requestUrl(scheme: string, host: string | null | undefined, targ
     path = parts && /^https?$/i.test(parts[1]!) && HOST.test(parts[2]!) ? parts[3] || "/" : `/${encodeURIComponent(path)}`;
     if (!path.startsWith("/")) path = `/${path}`;
   }
-  return `${scheme === "https" ? "https" : "http"}://${safeHost}${path.replaceAll("#", "%23")}`;
+  return `${scheme === "https" ? "https" : "http"}://${safeHost}${path}`;
 }
 
 export const CONFIG_VERSION = 1; // the settings this version reads; another means they changed meaning
@@ -217,9 +217,9 @@ export function literalPath(url: string): string | null {
  * belongs in a 402's resource URL or the Bazaar. Never throws, whatever the adapter was given. */
 export function siteUrl(raw: string, domain: string): URL {
   let rest = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(.*)$/is.exec(raw)?.[1] ?? raw;
-  // A request URL has no fragment: a `#` (a forged Host put it there) is part of the path, as the router reads it, so
-  // the page is priced and named as served. A backslash would read as a slash.
-  rest = rest.replaceAll("#", "%23").replaceAll("\\", "%5C");
+  // The page is the part before a `#`, as Express, `new URL` and most routers read it (a request URL with one is never
+  // free: literalPath). A backslash would read as a slash.
+  rest = rest.replace(/#.*$/s, "").replaceAll("\\", "%5C");
   rest = `/${rest.replace(/^\/+/, "")}`; // "//evil.example/x" is a path here, never a host
   try {
     return new URL(rest, `https://${domain}`);

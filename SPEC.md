@@ -12,7 +12,7 @@ The spec for `@stilebase/sdk`, `stilebase-sdk`, and a gate in any other language
 When Stilebase can't be reached, answers with an error, or has no live gateway for the site, **everyone gets the site
 as usual**. A gate keeps working on the last settings it fetched (section 3) and on the price lookups it has cached
 (at most 5 minutes); once those run out during an outage, agents pass too. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
-in three cases: the gate's first request that isn't free (section 6) waits for the settings (at most 3 seconds); the first request with an
+in three cases: the gate's very first request waits for the settings (at most 3 seconds); the first request with an
 address waits for the operators' address lists (at most 5 seconds) while hidden agents are caught; and a browser that
 looks like a script (a *suspect*, section 5, step 5) waits on the price lookup (at most 5 seconds) unless it carries a valid
 pass cookie or that answer is cached.
@@ -89,8 +89,8 @@ gateway's page shows the site as **Connected** from it. The answer
 - `refresh_seconds`: how often to fetch them again. A gate uses 300 when it's missing, not a number or not positive,
   and never less than 30.
 
-**When.** On the first request that isn't free, waiting at most 3 seconds; a free request (section 6) starts the load
-without waiting for it. Then in the background every `refresh_seconds`, keeping
+**When.** On the first request (a free one too: it may be the verification file), waiting at most 3 seconds. Then in
+the background every `refresh_seconds`, keeping
 the last good settings on failure. With no settings yet it retries at most every 30 seconds and lets everyone through
 meanwhile. A **404** (the gateway was removed) drops the settings, and everyone passes. A **401** (the key was
 rotated, or this server's clock is more than 5 minutes off) keeps the last settings: agents are still asked to pay,
@@ -169,10 +169,11 @@ the entries before it are the visitor's to write. An address over 45 characters 
 
    200 and 204 answers are cached for as long as their `Cache-Control` says, at most 5 minutes, at most 1,000 entries.
 7. **The pass cookie.** `<cookie>=<unix time>.<first 32 hex of HMAC-SHA256(secret, "stilebase-pass\n<unix time>\n<User-Agent>")>`,
-   for `max_age_seconds`, `Path=/; SameSite=Lax; Secure`. The gate finds it in the Cookie header split at `;` and at
-   `,` (a runtime may join several Cookie fields with `, `), and checks it itself, with no call to Stilebase: the
+   for `max_age_seconds`, `Path=/; SameSite=Lax; Secure`. The gate checks it itself, with no call to Stilebase: the
    time at most `max_age_seconds` old and at most a minute ahead, the HMAC for this user agent, compared in constant
-   time.
+   time. It splits the Cookie header at `;` and at `,` (a runtime may join several Cookie fields with `, `), and every
+   piece with the cookie's name is a candidate, not only the first (a planted one mustn't hide the real one). Only the
+   first 4 distinct candidates that are well formed and within those times get an HMAC.
 8. **A payment.** A request with `PAYMENT-SIGNATURE` (x402 v2) or `X-PAYMENT` (v1) goes to a signed
    `POST <stilebase>/v1/x402/settle`, waiting up to 65 seconds (longer than Stilebase takes at most: giving up first
    would answer 503 for a payment that then settles):
@@ -208,7 +209,7 @@ Every answer the gate makes itself (402, the browser check's page, 503, the veri
 ## 6. The page's name
 
 The page is named to Stilebase and to agents by the gateway's domain over https, with the request's path and query
-(a `#` in the request URL is part of the path, as `%23`: a request URL has no fragment, and a router reads past it):
+(without anything from a `#` on, as Express and `new URL` read it; such a URL is never free):
 the Host header is the visitor's to write, and behind a proxy it's an internal name. The request URL is built from
 the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't change the path
 the gate reads. An absolute-form request target (`GET http://host/path`) keeps its path as written: it's cut as text,
@@ -226,10 +227,8 @@ and its URL is **literal**:
 and that path is one of the free paths **character for character**, as the URL reaches the gate. There's no decoding
 and no resolving: `/HEALTHZ`, `/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?`
 are all gated. Some router or file server reads each unusual spelling differently, so only spellings every parser
-reads the same way can be free. A free entry that isn't literal is reported once and never matches. A free request
-never waits for the settings (a health check on a cold start, Stilebase slow): it starts loading them in the
-background when they're due, as any request does, and passes, unless settings already loaded name it as the
-verification file.
+reads the same way can be free. A free entry that isn't literal is reported once and never matches. Like any request,
+the gate's very first one waits for the settings, free or not (section 3).
 
 A runtime that normalizes the URL before the gate sees it (Bun, Workers) hands the app the same normalized URL, so
 the two still agree. A framework that routes a different path than the one it shows the gate can't be gated safely by

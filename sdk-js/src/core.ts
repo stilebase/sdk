@@ -188,16 +188,13 @@ class SiteGate implements Gate {
       const entries = unusable.map(describe).join(", ");
       this.report(new Error(`free: ${entries} can never match (use literal paths from the site's root, like "/healthz": letters, digits, - . _ ~ and /, no query, %, "..", "//")`));
     }
-    // A free request never waits for the settings (a health check on a cold start, Stilebase slow): it starts loading
-    // them in the background when they're due, and only settings already here can name the verification file.
-    const free = this.isFree(request.method, request.url);
-    const config = free ? this.settingsNow(waitUntil) : await this.settings(waitUntil);
+    const config = await this.settings(waitUntil);
     if (!config) return pass();
     const url = siteUrl(request.url, config.gateway.domain);
     if (config.verification && url.pathname === config.verification.path) {
       return respond(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, `${config.verification.value}\n`);
     }
-    if (free || !config.gateway.live) return pass();
+    if (!config.gateway.live || this.isFree(request.method, request.url)) return pass();
 
     const headers = request.headers;
     // An empty header is no payment: an empty PAYMENT-SIGNATURE mustn't hide an X-PAYMENT.
@@ -313,13 +310,8 @@ class SiteGate implements Gate {
       await bounded(this.loadSettings(), CONFIG_TIMEOUT_MS + 500);
       return this.config;
     }
-    return this.settingsNow(waitUntil);
-  }
-
-  /** The settings already here, never waiting: a load starts in the background when they're due (the first one too). */
-  private settingsNow(waitUntil?: WaitUntil): GateConfig | null {
     const every = this.config ? Math.max(this.config.refresh_seconds * 1000, MIN_REFRESH_MS) : RETRY_WITHOUT_CONFIG_MS;
-    if (!this.configTried || this.now() - this.configCheckedAt >= every) {
+    if (this.now() - this.configCheckedAt >= every) {
       const running = this.configLoading;
       const load = this.loadSettings();
       if (load !== running) this.background(load, waitUntil); // only the request that starts a load waits for it

@@ -74,7 +74,8 @@ describe("the review's cases (cycle 1)", () => {
     expect(new URL(requestUrl("https", "a.example#", "/premium/x")).pathname).toBe("/premium/x");
     expect(requestUrl("http", "[::1]:8080", "/")).toBe("http://[::1]:8080/");
     expect(requestUrl("https", "shop.example.com", "http://evil.example/premium/x?b")).toBe("https://shop.example.com/premium/x?b");
-    expect(new URL(requestUrl("https", "shop.example.com", "/premium/a#b")).pathname).toBe("/premium/a%23b");
+    // A `#` stays: the URL is never free (literalPath) and names the part before it, as Express routes it.
+    expect(requestUrl("https", "shop.example.com", "/premium/a#b")).toBe("https://shop.example.com/premium/a#b");
   });
 });
 
