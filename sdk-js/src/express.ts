@@ -1,6 +1,7 @@
 // Express (4 and 5) middleware: `app.use(gate())`, before your routes.
 
-import { type GateOptions, addressFrom, createGate } from "./core.js";
+import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
+import { pathOf } from "./detect.js";
 
 /** The parts of Express's request and response the gate uses (no dependency on Express's types). */
 export interface ExpressRequest {
@@ -33,12 +34,13 @@ export function gate(options: ExpressGateOptions = {}) {
     const headers = { get: (name: string) => req.get(name) ?? null };
     let ip: string | null | undefined = null;
     try {
-      ip = options.clientIp ? options.clientIp(req) : options.ipHeader ? addressFrom(headers, options.ipHeader) : req.ip;
+      ip = options.clientIp ? addressOf(options.clientIp(req)) : options.ipHeader ? addressFrom(headers, options.ipHeader) : req.ip;
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }
-    // The path as Express routes it. The host doesn't matter: the gate names the page by the gateway's domain.
-    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${req.originalUrl.startsWith("/") ? req.originalUrl : "/"}`;
+    // The path as Express routes it (an absolute-form target, `GET http://host/premium`, keeps its path). The host
+    // doesn't matter: the gate names the page by the gateway's domain.
+    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${pathOf(req.originalUrl)}`;
     siteGate.check({ method: req.method, url, headers, ip: ip ?? null }).then(
       (decision) => {
         if (decision.action === "respond") {

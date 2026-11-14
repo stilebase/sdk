@@ -244,3 +244,38 @@ describe("settings", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   }, 10_000);
 });
+
+describe("the review's cases (cycle 1)", () => {
+  it("start another load when the first never ends (a runtime cancelled the request that started it)", async () => {
+    let calls = 0;
+    const hanging = (input: RequestInfo | URL, init?: RequestInit) => (calls++ === 0 ? new Promise<Response>(() => undefined) : stilebase.fetch(input, init));
+    const g = createGate({ key: KEY, apiUrl: API, fetch: hanging, now: () => clock, onError: () => undefined });
+    expect(await g.check(request("/listings", GPTBOT))).toEqual({ action: "pass" }); // waits its 3.5 s, then passes
+    clock += 11_000;
+    expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
+  }, 10_000);
+
+  it("never follow a redirect from the API: it's an answer like any other", async () => {
+    const seen: (RequestInit | undefined)[] = [];
+    const g = createGate({ key: KEY, apiUrl: API, fetch: (input, init) => (seen.push(init), stilebase.fetch(input, init)), now: () => clock });
+    await g.check(request("/listings", GPTBOT));
+    expect(seen.every((init) => init?.redirect === "manual")).toBe(true);
+    stilebase.requirements = () => ({ status: 301, headers: { location: "https://elsewhere.example/" } });
+    expect(await gate().check(request("/other", GPTBOT))).toEqual({ action: "pass" });
+  });
+
+  it("keep the last address lists when an answer has none", async () => {
+    const g = gate();
+    await g.check(request("/", BROWSER, { ip: "20.15.240.70" }));
+    stilebase.ranges = { status: 200, body: { nothing: true } };
+    clock += 3_601_000;
+    await g.check(request("/", BROWSER, { ip: "20.15.240.70" }));
+    await settled();
+    expect((await g.check(request("/", BROWSER, { ip: "20.15.240.70" }))).action).toBe("respond");
+  });
+
+  it("find the pass cookie when the Fetch API joined Cookie fields with a comma", async () => {
+    const token = await passToken(`sbsec_${"ab".repeat(32)}`, CHROME_UA, NOW / 1000 - 60);
+    expect(await gate().check(request("/listings", { ...SCRIPT, cookie: `a=1, stilebase_pass=${token}` }))).toEqual({ action: "pass" });
+  });
+});

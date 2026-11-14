@@ -42,7 +42,7 @@ def has_pass(cookie_header: str, cookie_name: str, secret: str, user_agent: str,
     """A browser that passed the check within `max_age` seconds carries the cookie it earned (its time at most a minute
     ahead)."""
     token = ""
-    for part in cookie_header.split(";"):
+    for part in re.split(r"[;,]", cookie_header):  # as the JS SDK: a runtime may join Cookie fields with ", "
         name, _, value = part.strip().partition("=")
         if name == cookie_name:
             token = value

@@ -33,6 +33,7 @@ const MAX_CACHED = 1000;
 const MAX_PENDING_REPORTS = 100;
 const WEB_BOT_AUTH_HEADERS = ["signature", "signature-input", "signature-agent"];
 const EMPTY = new Uint8Array();
+const STALE_LOAD_MS = 10_000; // a load older than this never ends (the runtime cancelled its request): start another
 
 export interface GateOptions {
   /** The site key from your gateway page. Default: the STILEBASE_KEY environment variable. */
@@ -80,9 +81,11 @@ class SiteGate implements Gate {
   private config: GateConfig | null = null;
   private configAt = 0;
   private configLoading: Promise<void> | null = null;
+  private configLoadingAt = 0;
   private ranges: Network[] | null = null;
   private rangesAt = 0;
   private rangesLoading: Promise<void> | null = null;
+  private rangesLoadingAt = 0;
   private readonly cache = new Map<string, { status: number; body: unknown; expires: number }>();
   private readonly warned = new Map<string, number>();
   private pendingReports = 0;
@@ -95,8 +98,9 @@ class SiteGate implements Gate {
     this.site = parseSiteKey(key);
     this.api = (options.apiUrl || env("STILEBASE_API_URL") || DEFAULT_API_URL).replace(/\/+$/, "");
     this.client = `${PACKAGE}/${VERSION} gate/${adapter}`;
-    const given = options.fetch;
-    this.fetch = given ? (input, init) => given(input, init) : (input, init) => globalThis.fetch(input, init);
+    // Never a redirect (signed headers mustn't go elsewhere; a redirect is an answer like any other non-200).
+    const given = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.fetch = (input, init) => given(input, { ...init, redirect: "manual" });
     this.now = options.now ?? Date.now;
     if (!this.site) this.report(new Error(key ? "STILEBASE_KEY isn't a site key (sbk_…): every request passes" : "STILEBASE_KEY isn't set: every request passes"));
   }
@@ -172,7 +176,10 @@ class SiteGate implements Gate {
     let settlement: Record<string, unknown>;
     try {
       const answer = await this.post("/v1/x402/settle", { host, payment, request: siteRequest, agent }, SETTLE_TIMEOUT_MS);
-      if (answer.status !== 200) throw new Error(`Stilebase answered the settlement ${answer.status}`);
+      if (answer.status !== 200) {
+        discard(answer);
+        throw new Error(`Stilebase answered the settlement ${answer.status}`);
+      }
       const body: unknown = await answer.json();
       if (!isRecord(body) || typeof body.success !== "boolean") throw new Error("Stilebase's settlement answer has no success");
       settlement = body;
@@ -199,13 +206,23 @@ class SiteGate implements Gate {
 
   /** The settings: fetched on the first request, then in the background every refresh_seconds. */
   private async settings(waitUntil?: WaitUntil): Promise<GateConfig | null> {
+    const fresh = !this.configLoading || this.now() - this.configLoadingAt > STALE_LOAD_MS;
     if (!this.configAt) {
-      await bounded((this.configLoading ??= this.loadSettings()), CONFIG_TIMEOUT_MS + 500);
+      if (fresh) this.startSettings();
+      await bounded(this.configLoading!, CONFIG_TIMEOUT_MS + 500);
       return this.config;
     }
     const every = this.config ? Math.max(this.config.refresh_seconds * 1000, MIN_REFRESH_MS) : RETRY_WITHOUT_CONFIG_MS;
-    if (!this.configLoading && this.now() - this.configAt >= every) this.background((this.configLoading = this.loadSettings()), waitUntil);
+    if (fresh && this.now() - this.configAt >= every) this.background(this.startSettings(), waitUntil);
     return this.config;
+  }
+
+  private startSettings(): Promise<void> {
+    this.configLoadingAt = this.now();
+    const loading: Promise<void> = this.loadSettings().finally(() => {
+      if (this.configLoading === loading) this.configLoading = null;
+    });
+    return (this.configLoading = loading);
   }
 
   private async loadSettings(): Promise<void> {
@@ -214,6 +231,7 @@ class SiteGate implements Gate {
     try {
       const headers = { ...(await signedHeaders(site.secret, "GET", path, EMPTY, this.now())), "Stilebase-Client": this.client };
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) });
+      if (answer.status !== 200) discard(answer);
       if (answer.status === 404) {
         this.config = null; // the gateway was removed: stop asking agents to pay
         throw new Error("Stilebase has no gateway for this site key (404): every request passes");
@@ -227,30 +245,43 @@ class SiteGate implements Gate {
       this.report(error);
     } finally {
       this.configAt = this.now();
-      this.configLoading = null;
     }
   }
 
   /** The AI operators' published address ranges: fetched on first use, refreshed in the background once an hour old. */
   private async agentRanges(waitUntil?: WaitUntil): Promise<Network[]> {
-    if (this.ranges === null) await bounded((this.rangesLoading ??= this.loadRanges()), REQUIREMENTS_TIMEOUT_MS + 500);
-    else if (!this.rangesLoading && this.now() - this.rangesAt > RANGES_MAX_AGE_MS) this.background((this.rangesLoading = this.loadRanges()), waitUntil);
+    const fresh = !this.rangesLoading || this.now() - this.rangesLoadingAt > STALE_LOAD_MS;
+    if (this.ranges === null) {
+      if (fresh) this.startRanges();
+      await bounded(this.rangesLoading!, REQUIREMENTS_TIMEOUT_MS + 500);
+    } else if (fresh && this.now() - this.rangesAt > RANGES_MAX_AGE_MS) this.background(this.startRanges(), waitUntil);
     return this.ranges ?? [];
+  }
+
+  private startRanges(): Promise<void> {
+    this.rangesLoadingAt = this.now();
+    const loading: Promise<void> = this.loadRanges().finally(() => {
+      if (this.rangesLoading === loading) this.rangesLoading = null;
+    });
+    return (this.rangesLoading = loading);
   }
 
   private async loadRanges(): Promise<void> {
     try {
       const answer = await this.fetch(`${this.api}/v1/x402/agent-ranges`, { signal: AbortSignal.timeout(REQUIREMENTS_TIMEOUT_MS) });
-      if (answer.status !== 200) throw new Error(`Stilebase answered the agent ranges ${answer.status}`);
+      if (answer.status !== 200) {
+        discard(answer);
+        throw new Error(`Stilebase answered the agent ranges ${answer.status}`);
+      }
       const body: unknown = await answer.json();
-      const prefixes = isRecord(body) && Array.isArray(body.prefixes) ? body.prefixes : [];
+      if (!isRecord(body) || !Array.isArray(body.prefixes)) throw new Error("Stilebase's agent ranges have no prefixes list");
+      const prefixes: unknown[] = body.prefixes;
       this.ranges = prefixes.flatMap((p) => (typeof p === "string" ? [parseNetwork(p)].filter((n): n is Network => n !== null) : []));
     } catch (error) {
       this.report(error);
       this.ranges ??= []; // keep what we had (or none) and try again in an hour
     } finally {
       this.rangesAt = this.now();
-      this.rangesLoading = null;
     }
   }
 
@@ -261,7 +292,7 @@ class SiteGate implements Gate {
     const cached = this.cache.get(key);
     if (cached && cached.expires > now) return cached;
     const answer = await this.fetch(`${this.api}/v1/x402/requirements?${key}`, { signal: AbortSignal.timeout(REQUIREMENTS_TIMEOUT_MS) });
-    const body: unknown = answer.status === 200 ? await answer.json() : null;
+    const body: unknown = answer.status === 200 ? await answer.json() : (discard(answer), null);
     const maxAge = Math.min(Number(/max-age=(\d+)/.exec(answer.headers.get("cache-control") ?? "")?.[1] ?? 0), 300);
     const result = { status: answer.status, body, expires: now + maxAge * 1000 };
     if (maxAge > 0 && (answer.status === 204 || (answer.status === 200 && isRecord(body)))) {
@@ -283,7 +314,7 @@ class SiteGate implements Gate {
   private reportVisit(visit: unknown, waitUntil?: WaitUntil): void {
     if (this.pendingReports >= MAX_PENDING_REPORTS) return;
     this.pendingReports += 1;
-    const task = this.post("/v1/x402/visits", visit, REPORT_TIMEOUT_MS).finally(() => {
+    const task = this.post("/v1/x402/visits", visit, REPORT_TIMEOUT_MS).then(discard).finally(() => {
       this.pendingReports -= 1;
     });
     this.background(task, waitUntil);
@@ -337,10 +368,22 @@ function respond(status: number, headers: Record<string, string>, body: string):
   return { action: "respond", status, headers: { ...headers, "cache-control": "no-store" }, body };
 }
 
+/** A clientIp's answer: a string, or no address (a promise's rejection is handled, never left to stop the process). */
+export function addressOf(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (value && typeof (value as { then?: unknown }).then === "function") (value as PromiseLike<unknown>).then(undefined, () => undefined);
+  return null;
+}
+
 /** The visitor's address from a header your proxy sets: from a list (X-Forwarded-For) its last entry, the one your
  * proxy added; the ones before it are the visitor's to write. */
 export function addressFrom(headers: GateRequest["headers"], name: string): string | null {
   return headers.get(name)?.split(",").pop()?.trim() || null;
+}
+
+/** Releases an answer's body the gate doesn't read (on Node an unread body holds its connection). */
+function discard(answer: Response): void {
+  answer.body?.cancel().catch(() => undefined);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

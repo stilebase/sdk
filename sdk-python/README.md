@@ -87,7 +87,9 @@ GateMiddleware(
 
 **The visitor's address:** the connection's (ASGI) or `REMOTE_ADDR` (WSGI, Django); behind a proxy, make those the
 visitor's (`--proxy-headers`, `ProxyFix`), or name the header your proxy sets with `ip_header` (from a list such as
-`X-Forwarded-For`, its last entry). Never a header the visitor can set.
+`X-Forwarded-For`, its last entry). Never a header the visitor can set. The same settings tell the gate that
+visitors came over https behind a proxy that ends TLS (Django: `SECURE_PROXY_SSL_HEADER`): the browser checks run only
+for https.
 
 ## Undo
 

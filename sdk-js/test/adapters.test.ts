@@ -49,6 +49,26 @@ describe("express", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9");
   });
 
+  it("names an absolute-form target by its path, as Express routes it", async () => {
+    const { request: raw } = await import("node:http");
+    const base = new URL(await site());
+    await new Promise<void>((resolve, reject) => {
+      const req = raw({ host: base.hostname, port: base.port, path: "http://x/listings?a=1", headers: GPTBOT }, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings?a=1`);
+  });
+
+  it("handles a clientIp that returns a promise: no address, never an unhandled rejection", async () => {
+    const base = await site({ clientIp: (() => Promise.reject(new Error("lookup failed"))) as unknown as () => string });
+    expect((await fetch(`${base}/listings`, { headers: GPTBOT })).status).toBe(402);
+    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("");
+  });
+
   it("names the page by the gateway's domain and the path Express routes", async () => {
     await fetch(`${await site()}/listings?city=Haifa`, { headers: GPTBOT });
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings?city=Haifa`);

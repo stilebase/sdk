@@ -333,7 +333,9 @@ class Engine:
             if status != 200:
                 raise GateError(f"Stilebase answered the agent ranges {status}")
             prefixes = body.get("prefixes") if isinstance(body, dict) else None
-            self.ranges = parse_networks(prefixes if isinstance(prefixes, list) else [])
+            if not isinstance(prefixes, list):
+                raise GateError("Stilebase's agent ranges have no prefixes list")  # keep the last good ones
+            self.ranges = parse_networks(prefixes)
         finally:
             if self.ranges is None:
                 self.ranges = []

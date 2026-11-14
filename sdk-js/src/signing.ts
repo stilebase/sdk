@@ -40,8 +40,9 @@ export async function passToken(secret: string, userAgent: string, timestamp: nu
 
 /** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (its time at most a minute ahead). */
 export async function hasPass(cookieHeader: string, cookieName: string, secret: string, userAgent: string, nowMs: number, maxAgeSeconds: number): Promise<boolean> {
+  // At `,` too: the Fetch API joins repeated Cookie fields (HTTP/2 sends each cookie as its own) with ", ".
   const cookie = cookieHeader
-    .split(";")
+    .split(/[;,]/)
     .map((c) => c.trim())
     .find((c) => c.startsWith(`${cookieName}=`));
   const token = cookie?.slice(cookieName.length + 1) ?? "";

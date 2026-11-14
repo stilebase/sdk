@@ -2,7 +2,7 @@
 //   export default { fetch: withGate(handler) }       (Workers: STILEBASE_KEY as a secret, read from env)
 //   Deno.serve(withGate(handler))
 
-import { type Gate, type GateOptions, addressFrom, createGate } from "./core.js";
+import { type Gate, type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 
 export interface FetchGateOptions<Rest extends unknown[] = unknown[]> extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets). Default: on Cloudflare,
@@ -32,7 +32,7 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
     let ip: string | null | undefined = null;
     try {
       const header = options.ipHeader ?? (cf ? "cf-connecting-ip" : undefined);
-      ip = options.clientIp ? options.clientIp(request, ...rest) : header ? addressFrom(request.headers, header) : null;
+      ip = options.clientIp ? addressOf(options.clientIp(request, ...rest)) : header ? addressFrom(request.headers, header) : null;
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }

@@ -100,6 +100,9 @@ gate({
 `(request, server) => server.requestIP(request)?.address`; Deno: `(request, info) => info.remoteAddr.hostname`). Never a
 header the visitor can set.
 
+**Behind a proxy that ends TLS**, tell your framework (Express's `trust proxy`), so the gate sees that visitors came
+over https: the browser checks run only for https, as browsers send their tell-tale headers only there.
+
 ## Undo
 
 Remove the middleware, or press **Pause** on the gateway page.

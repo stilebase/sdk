@@ -11,8 +11,15 @@ library"), go here.
 - **Shared cases for the whole flow** (a 402, a free pass, a settlement, the visit reported), not only for the checks.
   *Waits:* each SDK tests the flow against a fake Stilebase.
 - **An end-to-end test against a running Stilebase API.** *Waits:* both SDKs pass the same conformance cases.
-- **A page with `..` in its path is named differently:** the JS SDK resolves it (`new URL`), the Python SDK keeps it.
-  Only the price lookup's page URL differs. *Waits:* rare; no page is freed by it.
+- **Some unusual paths are named differently by the two SDKs:** the JS SDK reads the path through `new URL` (it
+  resolves `..` and `%2e%2e`, turns `\` into `/`, encodes `"` `<` `>` `{` `}` `|`); the Python SDK keeps the path as the
+  server gave it. Only the page URL sent to Stilebase differs. *Waits:* rare; no page is freed by it.
+- **The address lists are scanned prefix by prefix** on each request with an address, as the Worker does. An index by
+  prefix length would be faster. *Waits:* the lists are short today.
+- **Python: the timeouts are per network step**, not a total deadline (httpx applies 3, 5 and 65 seconds to each of
+  connect, read and write), so a trickling answer can hold a request longer than in JS. *Waits:* the far end is
+  Stilebase's own API, which answers or fails fast; the Worker has no timeouts at all.
+- **Python: the sync and async drivers repeat their effect loop** and the request code. *Waits:* no behaviour changes.
 
 ## At Stilebase, not in the SDKs
 
