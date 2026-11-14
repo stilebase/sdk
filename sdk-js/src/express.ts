@@ -1,5 +1,7 @@
 // Express (4 and 5) middleware: `app.use(gate())`, before your routes.
 
+import { parse } from "node:url";
+
 import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 
 /** The parts of Express's request and response the gate uses (no dependency on Express's types). */
@@ -7,9 +9,7 @@ export interface ExpressRequest {
   method: string;
   protocol: string;
   originalUrl: string;
-  /** The path Express routes (its own parse of the target), and the path the app is mounted under. */
-  path: string;
-  baseUrl?: string | undefined;
+  url?: string | undefined;
   ip?: string | undefined;
   get(name: string): string | undefined;
 }
@@ -40,13 +40,10 @@ export function gate(options: ExpressGateOptions = {}) {
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }
-    // The page by the path Express itself routes (req.path: its own parse of the target, an absolute-form one
-    // included), under the path the app is mounted at, with the query as sent. The host doesn't matter: the gate names
-    // the page by the gateway's domain.
-    const routed = `${req.baseUrl ?? ""}${typeof req.path === "string" ? req.path : "/"}`;
-    const original = typeof req.originalUrl === "string" ? req.originalUrl : "";
-    const query = original.includes("?") ? original.slice(original.indexOf("?")) : "";
-    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${routed.startsWith("/") ? routed : `/${routed}`}${query}`;
+    // The page as the visitor asked for it (originalUrl: before any mount or rewrite), read with the parser Express
+    // itself routes by (Node's url.parse, through parseurl): an absolute-form target, a host it ends at "%", "//x" and
+    // "#" all name the page Express serves. The host doesn't matter: the gate names the page by the gateway's domain.
+    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${expressPath(req)}`;
     siteGate.check({ method: req.method, url, headers, ip: ip ?? null }).then(
       (decision) => {
         if (decision.action === "respond") {
@@ -69,6 +66,18 @@ export function gate(options: ExpressGateOptions = {}) {
       (error: unknown) => next(error),
     );
   };
+}
+
+/** The visitor's path and query as Express reads them; "/" only when there's nothing to read. */
+function expressPath(req: ExpressRequest): string {
+  const target = typeof req.originalUrl === "string" ? req.originalUrl : typeof req.url === "string" ? req.url : "/";
+  try {
+    const { pathname, search } = parse(target);
+    const path = pathname ?? "/";
+    return `${path.startsWith("/") ? path : `/${path}`}${search ?? ""}`;
+  } catch {
+    return "/";
+  }
 }
 
 export type { GateDecision, GateOptions } from "./core.js";

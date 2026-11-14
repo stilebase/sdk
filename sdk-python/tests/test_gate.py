@@ -390,3 +390,27 @@ def test_addresses_and_relative_paths_are_read_as_the_js_sdk_reads_them() -> Non
 
     assert normalize_ip("20.15.240.70\x85") == "20.15.240.70\x85"
     assert path_of("premium/x") == "/premium/x"
+
+
+# --- The review's cases (cycle 5) ---------------------------------------------------------------------------------
+
+
+def test_a_lone_surrogate_in_the_verification_value_is_written_as_u_fffd(make: Any, stilebase: FakeStilebase) -> None:
+    from stilebase_sdk.gate._core import _respond
+
+    assert _respond(200, {}, "tok\ud83d\n").body == "tok�\n".encode()
+
+
+def test_a_future_from_client_ip_is_left_to_its_owner() -> None:
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None: ...
+
+    async def run() -> None:
+        shared: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        middleware = GateMiddleware(app, client_ip=lambda scope: shared, key=KEY, api_url=API)  # type: ignore[arg-type,return-value]
+        assert middleware.request({"type": "http", "path": "/", "headers": []}).ip is None
+        assert not shared.cancelled()  # the app may be waiting on it too
+        shared.set_result("198.51.100.9")
+
+    asyncio.run(run())

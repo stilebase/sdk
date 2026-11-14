@@ -302,4 +302,14 @@ describe("the review's cases (cycle 4)", () => {
     await settled();
     expect((await g.check(request("/listings", GPTBOT))).action).toBe("respond");
   }, 15_000);
+
+  it("keep the last address lists when an older load fails after a newer one succeeded", async () => {
+    const g = gate();
+    await g.check(request("/", BROWSER, { ip: "20.15.240.70" })); // the lists, loaded
+    stilebase.ranges = new Error("connect ECONNREFUSED");
+    clock += 3_601_000;
+    await g.check(request("/", BROWSER, { ip: "20.15.240.70" })); // a refresh that fails
+    await settled();
+    expect((await g.check(request("/", BROWSER, { ip: "20.15.240.70" }))).action).toBe("respond"); // still caught
+  });
 });

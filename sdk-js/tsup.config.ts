@@ -16,7 +16,8 @@ export default defineConfig({
   dts: true,
   clean: true,
   target: "es2022",
-  platform: "neutral", // runs on Node, Workers, Deno and Bun: no Node built-ins
+  platform: "neutral", // runs on Node, Workers, Deno and Bun: no Node built-ins, but for the Express adapter's node:url
+  external: ["node:url"],
   define: { __GATE_VERSION__: JSON.stringify(version) },
   sourcemap: true,
 });

@@ -259,7 +259,8 @@ def _json(value: Any) -> str:
 
 def _respond(status: int, headers: dict[str, str], body: str) -> Respond:
     """An answer the gate makes itself, never kept by a cache in front of the site."""
-    return Respond(status, {**headers, "cache-control": "no-store"}, body.encode())
+    text = _LONE_SURROGATE.sub("\ufffd", body)  # as TextEncoder writes one (a verification value, say), never an error
+    return Respond(status, {**headers, "cache-control": "no-store"}, text.encode())
 
 
 def address_from(headers: dict[str, str], name: str | None, fallback: str | None) -> str | None:

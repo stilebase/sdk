@@ -91,6 +91,32 @@ describe("express", () => {
     expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/%2Fpremium%2Fx.html`);
   });
 
+  it("names the page the visitor asked for, mounted or rewritten, and never a query after a #", async () => {
+    const app = express();
+    app.use((req, _res, next) => {
+      if (req.url.startsWith("/en/")) req.url = req.url.slice(3); // a rewrite before the gate
+      next();
+    });
+    app.use("/blog", expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch }));
+    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch }));
+    server = app.listen(0);
+    await new Promise((resolve) => server!.once("listening", resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await fetch(`${base}/blog?x=1`, { headers: GPTBOT });
+    await fetch(`${base}/en/premium/x`, { headers: GPTBOT });
+    const { request: raw } = await import("node:http");
+    await new Promise<void>((resolve, reject) => {
+      const req = raw({ host: "127.0.0.1", port: (server!.address() as AddressInfo).port, path: "/a#b?c", headers: GPTBOT }, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    const urls = stilebase.to("/v1/x402/requirements").map((c) => c.query.get("url"));
+    expect(urls).toEqual([`https://${DOMAIN}/blog?x=1`, `https://${DOMAIN}/en/premium/x`, `https://${DOMAIN}/a`]);
+  });
+
   it("names a path starting with two slashes as Express routes it, the whole path", async () => {
     const { request: raw } = await import("node:http");
     const base = new URL(await site());
