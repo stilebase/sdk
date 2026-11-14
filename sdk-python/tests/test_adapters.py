@@ -264,3 +264,17 @@ def test_django_joins_a_script_name_ending_in_a_slash_as_django_does(
     named = middleware.request(SimpleNamespace(META=meta, scheme="https")).url
     middleware.gate.close()
     assert named == "https://shop.example.com/app/healthz"
+
+
+def test_django_on_asgi_takes_the_query_from_the_scope(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Django decodes META's QUERY_STRING as UTF-8 under ASGI: the scope's raw bytes name the page, as ASGI does."""
+    from types import SimpleNamespace
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    _django(stilebase, monkeypatch)
+    meta = {"PATH_INFO": "/s", "QUERY_STRING": "q=é", "HTTP_HOST": "shop.example.com", "REQUEST_METHOD": "GET"}
+    middleware = GateMiddleware(lambda request: None)
+    named = middleware.request(SimpleNamespace(scope={"query_string": b"q=\xc3\xa9"}, META=meta, scheme="https")).url
+    middleware.gate.close()
+    assert named == "https://shop.example.com/s?q=%C3%A9"

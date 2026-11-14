@@ -76,9 +76,11 @@ class GateMiddleware:
             await self.app(scope, receive, send)
             return
         try:
-            request = self.request(scope)
+            request: GateRequest | None = self.request(scope)
         except Exception as error:  # a scope this can't read (a nonconforming server): the request goes through
             self.gate.report(error)
+            request = None
+        if request is None:  # the app runs outside the except: its own errors are never chained to the gate's
             await self.app(scope, receive, send)
             return
         decision = await self.gate.check(request)
@@ -135,17 +137,18 @@ class GateMiddleware:
 def visitor_path(scope: Scope) -> str:
     """The path as the visitor sent it, percent-encoded, from the site's root: raw_path when the server gives it, else
     the decoded path encoded again; root_path in front unless it's in already (uvicorn puts it in both, Daphne and
-    Hypercorn in neither)."""
-    root = scope.get("root_path") or ""
+    Hypercorn in neither), by Starlette's rule: it's in when the path is the root or goes on from it with a "/"."""
     raw = scope.get("raw_path")
     if isinstance(raw, (bytes, bytearray)) and raw:
         # As sent, but percent-encoded where a URL must be (a raw byte over 0x7F, a space, `"`, `<`…), as JavaScript's
         # new URL writes it; the visitor's own %XX stay.
         path = quote(bytes(raw), safe=PATH_SAFE + "%")
-        prefix = quote(encode_path(root), safe=PATH_SAFE)
     else:
         path = quote(encode_path(scope.get("path") or "/"), safe=PATH_SAFE)
-        prefix = quote(encode_path(root), safe=PATH_SAFE)
-    if not prefix or path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+    prefix = quote(encode_path(scope.get("root_path") or ""), safe=PATH_SAFE)
+    if not prefix:
         return path
-    return prefix.rstrip("/") + path
+    mount = prefix.rstrip("/")
+    if path == prefix or (path.startswith(prefix) and path[len(prefix)] == "/"):
+        return (mount + path[len(prefix) :]) or "/"
+    return mount + path

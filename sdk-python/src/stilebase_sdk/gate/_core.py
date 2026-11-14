@@ -330,10 +330,6 @@ def decide(
     # treats it, and never bloats the price lookup past proxies' limits.
     # Lone surrogates in the URL as U+FFFD (headers get the same as they're read: GateRequest.header).
     request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url))
-    # A plain dict with names as sent ("User-Agent", e.g. dict(flask.request.headers)) is read case-insensitively too:
-    # lowercased once. A framework's own mapping is case-insensitive already and stays as given.
-    if type(request.headers) is dict and any(isinstance(n, str) and n != n.lower() for n in request.headers):
-        request = replace(request, headers={str(n).lower(): v for n, v in request.headers.items()})
     path, page_query = site_path(request.url)
     page = site_url(config.domain, path, page_query)
     if config.verification_path and config.verification_value and path == config.verification_path:

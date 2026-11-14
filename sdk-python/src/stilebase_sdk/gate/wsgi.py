@@ -12,7 +12,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from ._core import GateOptions, Respond, address_from
-from ._detect import PATH_SAFE, GateRequest, encode_path, encode_query, headers_of, request_url
+from ._detect import PATH_SAFE, GateRequest, encode_query, headers_of, pep3333_bytes, request_url
 from ._sync import SyncGate
 
 StartResponse = Callable[..., Any]
@@ -64,9 +64,11 @@ class GateMiddleware:
 
     def __call__(self, environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
         try:
-            request = self.request(environ)
+            request: GateRequest | None = self.request(environ)
         except Exception as error:  # an environ this can't read (a nonconforming server): the request goes through
             self.gate.report(error)
+            request = None
+        if request is None:  # the app runs outside the except: its own errors are never chained to the gate's
             return self.app(environ, start_response)
         decision = self.gate.check(request)
         if isinstance(decision, Respond):
@@ -94,8 +96,10 @@ def request_from_environ(
     *,
     scheme: str | None = None,
     path: str | None = None,
+    query: str | None = None,
 ) -> GateRequest:
-    """The request from a WSGI environ. `scheme` and `path` (percent-encoded) override environ's, for Django."""
+    """The request from a WSGI environ. `scheme`, `path` and `query` (both percent-encoded) override environ's, for
+    Django."""
     pairs = [(k[5:].replace("_", "-"), str(v)) for k, v in environ.items() if k.startswith("HTTP_")]
     for key, name in (("CONTENT_TYPE", "content-type"), ("CONTENT_LENGTH", "content-length")):
         if environ.get(key):
@@ -107,17 +111,12 @@ def request_from_environ(
         ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)
     host = headers.get("host") or f"{environ.get('SERVER_NAME', 'localhost')}:{environ.get('SERVER_PORT', '80')}"
     if path is None:
-        # PATH_INFO is the path's bytes decoded as latin-1 (PEP 3333): encode those same bytes again.
-        decoded = environ.get("SCRIPT_NAME", "") + environ.get("PATH_INFO", "/")
-        try:
-            raw = decoded.encode("latin-1")
-        except UnicodeEncodeError:
-            raw = encode_path(decoded)  # a server that went beyond PEP 3333
-        path = quote(raw, safe=PATH_SAFE)
-    query = environ.get("QUERY_STRING") or ""
-    try:
-        query_bytes = query.encode("latin-1")  # PEP 3333: the query's bytes as latin-1
-    except UnicodeEncodeError:
-        query_bytes = encode_path(query)  # a server (or Django) that decoded it as UTF-8
-    url = request_url(scheme or environ.get("wsgi.url_scheme", "http"), host, path, encode_query(query_bytes))
+        # PATH_INFO is the path's bytes decoded as latin-1 (PEP 3333): encode those same bytes again. Joined as Django
+        # and Werkzeug read them: an empty PATH_INFO is "/" (a SCRIPT_NAME a visitor could set on an old server never
+        # stands alone as a page), and SCRIPT_NAME's trailing "/" isn't doubled.
+        decoded = (environ.get("SCRIPT_NAME") or "").rstrip("/") + (environ.get("PATH_INFO") or "/")
+        path = quote(pep3333_bytes(decoded), safe=PATH_SAFE)
+    if query is None:
+        query = encode_query(pep3333_bytes(environ.get("QUERY_STRING") or ""))
+    url = request_url(scheme or environ.get("wsgi.url_scheme", "http"), host, path, query)
     return GateRequest(method=environ.get("REQUEST_METHOD", "GET"), url=url, headers=headers, ip=ip)

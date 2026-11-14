@@ -67,10 +67,24 @@ class AsyncGate(Engine):
                     break
                 await asyncio.wait(set(self._tasks))  # never cancels them, even if this is cancelled (a shutdown timeout)
         finally:
-            clients, self._http, self._reports_http = (self._http, self._reports_http), None, None
-            for client in clients:
+            http, reports, self._http, self._reports_http = self._http, self._reports_http, None, None
+            pending = {task for task in self._tasks if not task.done()}
+            if reports is not None and pending:
+                # Reports still sending (a shutdown that won't wait): their client closes once they're done, never
+                # under them.
+                self._spawn(self._close_after(reports, pending))
+                reports = None
+            for client in (http, reports):
                 if client is not None:
-                    await client.aclose()
+                    try:
+                        await client.aclose()
+                    except Exception as error:  # one client that fails to close never keeps the other open
+                        self.report(error)
+
+    @staticmethod
+    async def _close_after(client: httpx.AsyncClient, tasks: set[asyncio.Task[Any]]) -> None:
+        await asyncio.wait(tasks)
+        await client.aclose()
 
     async def _run(self, flow: Flow) -> Decision:
         value: Any = None

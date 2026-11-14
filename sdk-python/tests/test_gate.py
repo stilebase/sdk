@@ -941,7 +941,7 @@ def test_an_environ_the_adapter_cant_read_goes_through(stilebase: FakeStilebase)
     middleware = GateMiddleware(
         lambda environ, start: [b"the page"], key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None
     )
-    assert middleware({"REQUEST_METHOD": "GET", "PATH_INFO": None}, lambda *a: None) == [b"the page"]
+    assert middleware({"REQUEST_METHOD": "GET", "QUERY_STRING": 5}, lambda *a: None) == [b"the page"]
     middleware.gate.close()
 
 
@@ -974,3 +974,96 @@ def test_aclose_closes_its_clients_even_when_its_wait_is_cut_short(stilebase: Fa
         await asyncio.wait(reports)
 
     asyncio.run(run())
+
+
+# --- The review's cases (stilebase-sdk, cycle 6) ------------------------------------------------------------------
+
+
+def test_wsgi_joins_script_name_and_path_info_as_routers_read_them(make: Any) -> None:
+    """An empty PATH_INFO is "/": a SCRIPT_NAME an old server takes from a visitor's header never stands alone as a page."""
+    from stilebase_sdk.gate.wsgi import request_from_environ
+
+    spoofed = request_from_environ({"SCRIPT_NAME": "/healthz", "PATH_INFO": "", "HTTP_HOST": DOMAIN, "HTTP_USER_AGENT": GPTBOT})
+    assert spoofed.url == f"http://{DOMAIN}/healthz/"
+    assert isinstance(make(free=["/healthz"]).check(spoofed), Respond)
+    mounted = request_from_environ({"SCRIPT_NAME": "/app/", "PATH_INFO": "/healthz", "HTTP_HOST": DOMAIN})
+    assert mounted.url == f"http://{DOMAIN}/app/healthz"
+
+
+def test_a_raw_hash_in_an_asgi_query_is_never_free(make: Any, stilebase: FakeStilebase) -> None:
+    """h11 servers pass `/healthz?a#b` with the `#` in query_string: never free, named by the part before it, as JS."""
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None: ...
+
+    scope = {"type": "http", "path": "/healthz", "query_string": b"a#b", "headers": [(b"host", DOMAIN.encode())]}
+    url = GateMiddleware(app, key=KEY, api_url=API, transport=stilebase.transport).request(scope).url
+    assert url == f"http://{DOMAIN}/healthz?a#b"
+    assert isinstance(make(free=["/healthz"]).check(request("/", {"user-agent": GPTBOT}, url=url)), Respond)
+    assert stilebase.to("/v1/x402/requirements")[0].query["url"] == f"https://{DOMAIN}/healthz?a"
+
+
+def test_an_asgi_root_path_ending_in_a_slash_follows_starlettes_rule() -> None:
+    from stilebase_sdk.gate.asgi import visitor_path
+
+    assert visitor_path({"raw_path": b"/app//healthz", "root_path": "/app/"}) == "/app/healthz"  # uvicorn --root-path /app/
+    assert visitor_path({"raw_path": b"/healthz", "root_path": "/app/"}) == "/app/healthz"  # Daphne
+    assert visitor_path({"raw_path": b"/app/", "root_path": "/app/"}) == "/app"
+
+
+def test_an_apps_own_error_is_never_chained_to_the_gates(stilebase: FakeStilebase) -> None:
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        raise RuntimeError("the app's own")
+
+    middleware = GateMiddleware(app, key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None)
+    unreadable = {"type": "http", "method": "GET", "path": "/x", "headers": [("user-agent", "str, not bytes")]}
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(middleware(unreadable, None, None))  # type: ignore[arg-type]  # never called
+    assert raised.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        lambda h: __import__("collections").OrderedDict((k.title(), v) for k, v in h.items()),
+        lambda h: __import__("types").MappingProxyType({k.title(): v for k, v in h.items()}),
+        lambda h: {k.encode(): v.encode() for k, v in h.items()},
+    ],
+    ids=["OrderedDict", "MappingProxyType", "bytes"],
+)
+def test_names_as_sent_are_read_from_any_mapping(make: Any, mapping: Any) -> None:
+    headers = mapping(BROWSER)
+    assert make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")) == Pass()
+
+
+def test_names_that_differ_only_in_case_are_joined(make: Any) -> None:
+    token = pass_token(SECRET, CHROME, int(NOW) - 60)
+    headers = {"User-Agent": CHROME, "Accept": "*/*", "Cookie": f"stilebase_pass={token}", "COOKIE": "a=1"}
+    assert make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")) == Pass()
+
+
+def test_a_cut_short_aclose_leaves_the_reports_their_client(stilebase: FakeStilebase) -> None:
+    async def slow_reports(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/x402/visits":
+            await asyncio.sleep(0.2)
+        return stilebase.handle(request)
+
+    errors: list[Exception] = []
+
+    async def run() -> None:
+        gate = AsyncGate(key=KEY, api_url=API, transport=httpx.MockTransport(slow_reports), on_error=errors.append)
+        await gate.check(request("/listings", {"user-agent": GPTBOT}))
+        await asyncio.sleep(0.02)  # the report is sending
+        reports = gate._reports_http
+        assert reports is not None
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(gate.aclose(), 0.05)
+        assert not reports.is_closed  # still sending: closed only once it's done
+        while gate._tasks:
+            await asyncio.wait(set(gate._tasks))
+        assert gate._reports_http is None
+
+    asyncio.run(run())
+    assert len(stilebase.to("/v1/x402/visits")) == 1 and errors == []

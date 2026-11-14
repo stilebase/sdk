@@ -17,7 +17,7 @@ from django.conf import settings
 from django.http import HttpResponse
 
 from ._core import GateOptions, Respond
-from ._detect import PATH_SAFE, GateRequest, encode_path
+from ._detect import PATH_SAFE, GateRequest, encode_path, encode_query
 from ._sync import SyncGate
 from .wsgi import request_from_environ
 
@@ -37,9 +37,11 @@ class GateMiddleware:
 
     def __call__(self, request: Any) -> Any:
         try:
-            gate_request = self.request(request)
+            gate_request: GateRequest | None = self.request(request)
         except Exception as error:  # a request this can't read: it goes through
             self.gate.report(error)
+            gate_request = None
+        if gate_request is None:  # the view runs outside the except: its own errors are never chained to the gate's
             return self.get_response(request)
         decision = self.gate.check(gate_request)
         if isinstance(decision, Respond):
@@ -67,6 +69,10 @@ class GateMiddleware:
         # Joined as Django's request.path joins them: "/app/" and "/healthz" are "/app/healthz", never "/app//healthz".
         decoded = (meta.get("SCRIPT_NAME") or "").rstrip("/") + (meta.get("PATH_INFO") or "/")
         path = quote(encode_path(decoded), safe=PATH_SAFE + "%")
+        # Under ASGI, Django decoded META's QUERY_STRING as UTF-8: the scope's raw bytes, as the ASGI adapter reads them.
+        scope = getattr(request, "scope", None)
+        raw_query = scope.get("query_string") if isinstance(scope, dict) else None
+        query = encode_query(bytes(raw_query)) if isinstance(raw_query, (bytes, bytearray)) else None
         client_ip = self.client_ip
         by_request = (lambda _environ: client_ip(request)) if client_ip else None
-        return request_from_environ(meta, self.ip_header, by_request, scheme=scheme, path=path)
+        return request_from_environ(meta, self.ip_header, by_request, scheme=scheme, path=path, query=query)

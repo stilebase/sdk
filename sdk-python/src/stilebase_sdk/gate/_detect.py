@@ -10,6 +10,7 @@ import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -110,8 +111,11 @@ class GateRequest:
         """A header's value, "" when absent, read through the caller's own mapping (a framework's case-insensitive one
         too). A lone surrogate (a header decoded with surrogateescape) reads as U+FFFD, as JavaScript's TextEncoder
         writes it: the lookup, the pass token and the check page encode values as UTF-8, and an error there would let
-        the request through. Bytes read as latin-1; another value that isn't a string as its text."""
+        the request through. Bytes read as latin-1; another value that isn't a string as its text. A name is found
+        whatever its case."""
         value = self.headers.get(name)
+        if value is None and self._lowercased is not None:
+            value = self._lowercased.get(name)  # names as sent ("User-Agent") in a mapping that isn't case-insensitive
         if value is None:
             return ""
         if isinstance(value, (bytes, bytearray)):
@@ -119,6 +123,19 @@ class GateRequest:
         elif not isinstance(value, str):
             value = str(value)
         return without_surrogates(value)
+
+    @cached_property
+    def _lowercased(self) -> Mapping[str, Any] | None:
+        """None when every name is a lowercase string already (every adapter's headers_of); else the headers keyed by
+        lowercased name, repeated ones joined as headers_of joins them. Worked out on the first lookup that misses."""
+        names = list(self.headers)
+        if all(isinstance(name, str) and name == name.lower() for name in names):
+            return None
+        pairs = []
+        for name, value in self.headers.items():
+            text = name.decode("latin-1") if isinstance(name, (bytes, bytearray)) else str(name)
+            pairs.append((text, value.decode("latin-1") if isinstance(value, (bytes, bytearray)) else str(value)))
+        return headers_of(pairs)
 
 
 def headers_of(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
@@ -255,8 +272,18 @@ def form_quote(value: str | bytes, *_: Any) -> str:
 # only controls, a space, `"`, `#`, `<`, `>`, `?`, a backtick, `{`, `}` and bytes over 0x7F (`\\` is %5C here, as the
 # gate reads a backslash).
 PATH_SAFE = "/:@!$&'()*+,;=-._~[]^|"
-# The same for a query (WHATWG's special-query set: a space, `"`, `#`, `'`, `<`, `>` and bytes over 0x7F are encoded).
-QUERY_SAFE = "!$%&()*+,-./:;=?@[\\]^_`{|}~"
+# The same for a query (WHATWG's special-query set: a space, `"`, `'`, `<`, `>` and bytes over 0x7F are encoded). A raw
+# `#` (h11 servers pass one in the query) stays: such a URL is never free, and the page is named by the part before it.
+QUERY_SAFE = "!#$%&()*+,-./:;=?@[\\]^_`{|}~"
+
+
+def pep3333_bytes(text: str) -> bytes:
+    """A WSGI environ string's bytes: latin-1 as PEP 3333 decodes them, else (a server, or Django, that decoded them as
+    UTF-8) UTF-8, each escaped byte as sent."""
+    try:
+        return text.encode("latin-1")
+    except UnicodeEncodeError:
+        return encode_path(text)
 
 
 def encode_query(raw: bytes) -> str:
