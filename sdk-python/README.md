@@ -57,7 +57,7 @@ app.wsgi_app = GateMiddleware(app.wsgi_app)  # behind a proxy, wrap it in Werkze
 from stilebase_sdk.gate import GateRequest, Respond, SyncGate  # or AsyncGate, with `await gate.check(...)`
 
 gate = SyncGate()
-decision = gate.check(GateRequest(method, url, headers, ip=client_ip))  # headers: lowercased names
+decision = gate.check(GateRequest(method, url, headers, ip=client_ip))  # headers: a mapping of name -> value
 if isinstance(decision, Respond):
     ...  # send decision.status, decision.headers, decision.body instead
 elif decision.payment_response:
@@ -141,7 +141,9 @@ every hop trusted, the address is the first `X-Forwarded-For` entry, which the v
 operator address would get a free pass. For a list such as `X-Forwarded-For` the gate takes the last entry, the one your proxy added. Never use a
 header the visitor can set themselves. Under WSGI and Django, `ip_header` is read from the environ, where
 `CF-Connecting-IP` and a visitor's `CF_Connecting_IP` are the same key: use a server that drops headers with
-underscores (gunicorn 22 or later, Werkzeug, waitress, mod_wsgi), or have your proxy strip them.
+underscores (gunicorn 22 or later, Werkzeug, waitress, mod_wsgi), or have your proxy strip them. Older gunicorn
+also takes `SCRIPT_NAME` from a request header: a visitor can then move where the path starts, so use gunicorn 22 or
+later whatever the gate.
 
 ## Undo
 

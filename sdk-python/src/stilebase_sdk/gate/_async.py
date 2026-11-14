@@ -67,24 +67,27 @@ class AsyncGate(Engine):
                     break
                 await asyncio.wait(set(self._tasks))  # never cancels them, even if this is cancelled (a shutdown timeout)
         finally:
-            http, reports, self._http, self._reports_http = self._http, self._reports_http, None, None
+            clients = [c for c in (self._http, self._reports_http) if c is not None]
+            self._http = self._reports_http = None
             pending = {task for task in self._tasks if not task.done()}
-            if reports is not None and pending:
-                # Reports still sending (a shutdown that won't wait): their client closes once they're done, never
-                # under them.
-                self._spawn(self._close_after(reports, pending))
-                reports = None
-            for client in (http, reports):
-                if client is not None:
-                    try:
-                        await client.aclose()
-                    except Exception as error:  # one client that fails to close never keeps the other open
-                        self.report(error)
+            if pending:
+                # Work still running (a shutdown that won't wait): the clients close once it's done, never under it.
+                self._spawn(self._close_after(clients, pending))
+            else:
+                await self._close(clients)
 
-    @staticmethod
-    async def _close_after(client: httpx.AsyncClient, tasks: set[asyncio.Task[Any]]) -> None:
-        await asyncio.wait(tasks)
-        await client.aclose()
+    async def _close_after(self, clients: list[httpx.AsyncClient], tasks: set[asyncio.Task[Any]]) -> None:
+        try:
+            await asyncio.wait(tasks)
+        finally:  # cancelled too (the loop torn down): the clients still close
+            await self._close(clients)
+
+    async def _close(self, clients: list[httpx.AsyncClient]) -> None:
+        for client in clients:
+            try:
+                await client.aclose()
+            except Exception as error:  # one client that fails to close never keeps the other open
+                self.report(error)
 
     async def _run(self, flow: Flow) -> Decision:
         value: Any = None
@@ -126,7 +129,7 @@ class AsyncGate(Engine):
             # Stilebase slow: statistics can wait, memory can't grow without end.
             if self._reports < MAX_PENDING_REPORTS:
                 self._reports += 1
-                self._background(self._report(effect.path, effect.payload))
+                self._background(self._report(effect.path, effect.payload, self._reports_client()))
             return None
         if isinstance(effect, Settle):
             answer = await self._post("/v1/x402/settle", effect.payload, SETTLE_TIMEOUT)
@@ -176,12 +179,16 @@ class AsyncGate(Engine):
         finally:
             self.ranges_done()
 
-    async def _report(self, path: str, payload: dict[str, Any]) -> None:
+    def _reports_client(self) -> httpx.AsyncClient:
+        """The reports' client, taken when a report is started: one started before aclose() closes with that client."""
+        if self._reports_http is None:
+            limits = httpx.Limits(max_connections=REPORT_CONNECTIONS)
+            self._reports_http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False, limits=limits)
+        return self._reports_http
+
+    async def _report(self, path: str, payload: dict[str, Any], client: httpx.AsyncClient) -> None:
         try:
-            if self._reports_http is None:
-                limits = httpx.Limits(max_connections=REPORT_CONNECTIONS)
-                self._reports_http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False, limits=limits)
-            await self._post(path, payload, REPORT_TIMEOUT, self._reports_http)
+            await self._post(path, payload, REPORT_TIMEOUT, client)
         finally:
             self._reports -= 1
 

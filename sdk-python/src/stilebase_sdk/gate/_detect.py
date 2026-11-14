@@ -10,7 +10,6 @@ import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -101,21 +100,18 @@ class GateRequest:
 
     method: str
     url: str  # as the visitor asked for it: its scheme says whether they came over HTTPS
-    headers: Mapping[str, str]  # names lowercased (see headers_of)
+    headers: Mapping[str, str]  # names lowercased (headers_of); the gate lowercases a mapping that isn't (normalized_headers)
     ip: str | None = None  # the visitor's address, as far as it can be trusted (the ip_header option)
     http_protocol: str | None = None  # what the edge knows: "HTTP/1.1", "HTTP/2"…
     asn: int | None = None  # the network's AS number, from the edge
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def header(self, name: str) -> str:
-        """A header's value, "" when absent, read through the caller's own mapping (a framework's case-insensitive one
-        too). A lone surrogate (a header decoded with surrogateescape) reads as U+FFFD, as JavaScript's TextEncoder
-        writes it: the lookup, the pass token and the check page encode values as UTF-8, and an error there would let
-        the request through. Bytes read as latin-1; another value that isn't a string as its text. A name is found
-        whatever its case."""
-        value = self.headers.get(name)
-        if value is None and self._lowercased is not None:
-            value = self._lowercased.get(name)  # names as sent ("User-Agent") in a mapping that isn't case-insensitive
+        """A header's value by name (any case), "" when absent. A lone surrogate (a header decoded with surrogateescape)
+        reads as U+FFFD, as JavaScript's TextEncoder writes it: the lookup, the pass token and the check page encode
+        values as UTF-8, and an error there would let the request through. Bytes read as latin-1; another value that
+        isn't a string as its text."""
+        value = self.headers.get(name.lower())
         if value is None:
             return ""
         if isinstance(value, (bytes, bytearray)):
@@ -124,18 +120,25 @@ class GateRequest:
             value = str(value)
         return without_surrogates(value)
 
-    @cached_property
-    def _lowercased(self) -> Mapping[str, Any] | None:
-        """None when every name is a lowercase string already (every adapter's headers_of); else the headers keyed by
-        lowercased name, repeated ones joined as headers_of joins them. Worked out on the first lookup that misses."""
-        names = list(self.headers)
-        if all(isinstance(name, str) and name == name.lower() for name in names):
-            return None
-        pairs = []
-        for name, value in self.headers.items():
-            text = name.decode("latin-1") if isinstance(name, (bytes, bytearray)) else str(name)
-            pairs.append((text, value.decode("latin-1") if isinstance(value, (bytes, bytearray)) else str(value)))
-        return headers_of(pairs)
+
+def normalized_headers(headers: Mapping[Any, Any]) -> Mapping[str, Any]:
+    """`headers` keyed by lowercased name, as every adapter gives them (headers_of): as they are when they already are;
+    else (a caller's dict(flask.request.headers), a framework's own mapping, bytes names) a copy, repeated names joined
+    as headers_of joins them. One view of the headers for every read."""
+    if all(isinstance(name, str) and name == name.lower() for name in headers):
+        return headers
+    pairs = []
+    for name, value in headers.items():
+        text = name.decode("latin-1") if isinstance(name, (bytes, bytearray)) else str(name)
+        pairs.append((text, value.decode("latin-1") if isinstance(value, (bytes, bytearray)) else str(value)))
+    return headers_of(pairs)
+
+
+def join_script_name(script_name: str, path_info: str) -> str:
+    """SCRIPT_NAME and PATH_INFO as Django and Werkzeug join them: one "/" between, an empty PATH_INFO as "/". Never
+    "/robots." + "txt" as "/robots.txt" (old servers took SCRIPT_NAME from a visitor's header; the app routes "/txt")."""
+    path_info = path_info or "/"
+    return script_name.rstrip("/") + "/" + (path_info[1:] if path_info.startswith("/") else path_info)
 
 
 def headers_of(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:

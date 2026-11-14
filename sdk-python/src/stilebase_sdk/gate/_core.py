@@ -37,6 +37,7 @@ from ._detect import (
     is_script,
     literal_path,
     normalize_ip,
+    normalized_headers,
     parse_networks,
     site_path,
     site_url,
@@ -328,8 +329,14 @@ def decide(
     ip = normalize_ip(request.ip) if isinstance(request.ip, str) else None
     # No address is longer than 45 characters: anything longer (a header someone stuffed) counts as none, as Stilebase
     # treats it, and never bloats the price lookup past proxies' limits.
-    # Lone surrogates in the URL as U+FFFD (headers get the same as they're read: GateRequest.header).
-    request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url))
+    # Lone surrogates in the URL as U+FFFD (headers get the same as they're read: GateRequest.header); header names
+    # lowercased once when the caller's mapping isn't (one view for every read, request.headers included).
+    request = replace(
+        request,
+        ip=ip if ip and len(ip) <= 45 else None,
+        url=without_surrogates(request.url),
+        headers=normalized_headers(request.headers),
+    )
     path, page_query = site_path(request.url)
     page = site_url(config.domain, path, page_query)
     if config.verification_path and config.verification_value and path == config.verification_path:

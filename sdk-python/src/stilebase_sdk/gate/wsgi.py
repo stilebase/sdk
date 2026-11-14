@@ -12,7 +12,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from ._core import GateOptions, Respond, address_from
-from ._detect import PATH_SAFE, GateRequest, encode_query, headers_of, pep3333_bytes, request_url
+from ._detect import PATH_SAFE, GateRequest, encode_query, headers_of, join_script_name, pep3333_bytes, request_url
 from ._sync import SyncGate
 
 StartResponse = Callable[..., Any]
@@ -112,9 +112,8 @@ def request_from_environ(
     host = headers.get("host") or f"{environ.get('SERVER_NAME', 'localhost')}:{environ.get('SERVER_PORT', '80')}"
     if path is None:
         # PATH_INFO is the path's bytes decoded as latin-1 (PEP 3333): encode those same bytes again. Joined as Django
-        # and Werkzeug read them: an empty PATH_INFO is "/" (a SCRIPT_NAME a visitor could set on an old server never
-        # stands alone as a page), and SCRIPT_NAME's trailing "/" isn't doubled.
-        decoded = (environ.get("SCRIPT_NAME") or "").rstrip("/") + (environ.get("PATH_INFO") or "/")
+        # and Werkzeug read them (join_script_name).
+        decoded = join_script_name(environ.get("SCRIPT_NAME") or "", environ.get("PATH_INFO") or "")
         path = quote(pep3333_bytes(decoded), safe=PATH_SAFE)
     if query is None:
         query = encode_query(pep3333_bytes(environ.get("QUERY_STRING") or ""))

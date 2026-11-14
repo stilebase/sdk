@@ -17,7 +17,7 @@ from django.conf import settings
 from django.http import HttpResponse
 
 from ._core import GateOptions, Respond
-from ._detect import PATH_SAFE, GateRequest, encode_path, encode_query
+from ._detect import PATH_SAFE, GateRequest, encode_path, encode_query, join_script_name
 from ._sync import SyncGate
 from .wsgi import request_from_environ
 
@@ -67,7 +67,7 @@ class GateMiddleware:
         # prefix the site is mounted under (root_path, FORCE_SCRIPT_NAME), as free paths are written.
         meta = request.META
         # Joined as Django's request.path joins them: "/app/" and "/healthz" are "/app/healthz", never "/app//healthz".
-        decoded = (meta.get("SCRIPT_NAME") or "").rstrip("/") + (meta.get("PATH_INFO") or "/")
+        decoded = join_script_name(meta.get("SCRIPT_NAME") or "", meta.get("PATH_INFO") or "")
         path = quote(encode_path(decoded), safe=PATH_SAFE + "%")
         # Under ASGI, Django decoded META's QUERY_STRING as UTF-8: the scope's raw bytes, as the ASGI adapter reads them.
         scope = getattr(request, "scope", None)

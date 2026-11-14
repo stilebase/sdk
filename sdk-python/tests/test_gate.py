@@ -1067,3 +1067,53 @@ def test_a_cut_short_aclose_leaves_the_reports_their_client(stilebase: FakeStile
 
     asyncio.run(run())
     assert len(stilebase.to("/v1/x402/visits")) == 1 and errors == []
+
+
+# --- The review's cases (stilebase-sdk, cycle 7) ------------------------------------------------------------------
+
+
+def test_a_path_info_without_a_slash_never_completes_a_free_path(make: Any) -> None:
+    """Old gunicorn took SCRIPT_NAME from a visitor's header: "/robots." + "txt" is "/robots./txt" (Werkzeug routes "/txt")."""
+    from stilebase_sdk.gate.wsgi import request_from_environ
+
+    split = request_from_environ({"SCRIPT_NAME": "/robots.", "PATH_INFO": "txt", "HTTP_HOST": DOMAIN, "HTTP_USER_AGENT": GPTBOT})
+    assert split.url == f"http://{DOMAIN}/robots./txt"
+    assert isinstance(make(free=["/robots.txt"]).check(split), Respond)
+
+
+def test_names_as_sent_reach_the_settlement_and_the_visit_too(make: Any, stilebase: FakeStilebase) -> None:
+    headers = {"User-Agent": GPTBOT, "Payment-Signature": PAID["payment-signature"]}
+    assert make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")) == Pass(SETTLED_HEADER)
+    assert stilebase.to("/v1/x402/settle")[0].body["agent"]["user_agent"] == GPTBOT
+
+
+def test_a_lowercase_name_doesnt_hide_the_same_header_in_another_case(make: Any) -> None:
+    token = pass_token(SECRET, CHROME, int(NOW) - 60)
+    headers = {"user-agent": CHROME, "accept": "*/*", "cookie": "a=1", "Cookie": f"stilebase_pass={token}"}
+    assert make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")) == Pass()
+
+
+def test_header_finds_a_name_given_in_any_case() -> None:
+    assert GateRequest("GET", f"https://{DOMAIN}/", {"user-agent": "UA"}).header("User-Agent") == "UA"
+
+
+def test_both_clients_close_only_after_the_work_still_running(stilebase: FakeStilebase) -> None:
+    async def slow_reports(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/x402/visits":
+            await asyncio.sleep(0.2)
+        return stilebase.handle(request)
+
+    async def run() -> None:
+        gate = AsyncGate(key=KEY, api_url=API, transport=httpx.MockTransport(slow_reports), on_error=lambda e: None)
+        await gate.check(request("/listings", {"user-agent": GPTBOT}))
+        await asyncio.sleep(0.02)
+        http, reports = gate._http, gate._reports_http
+        assert http is not None and reports is not None
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(gate.aclose(), 0.05)
+        assert not http.is_closed and not reports.is_closed
+        while gate._tasks:
+            await asyncio.wait(set(gate._tasks))
+        assert http.is_closed and reports.is_closed
+
+    asyncio.run(run())
