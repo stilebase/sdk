@@ -12,7 +12,8 @@ The spec for `@stilebase/sdk`, `stilebase-sdk`, and a gate in any other language
 When Stilebase can't be reached, answers with an error, or has no live gateway for the site, **everyone gets the site
 as usual**. A gate keeps working on the last settings it fetched (section 3) and on the price lookups it has cached
 (at most 5 minutes); once those run out during an outage, agents pass too. Requests never wait on Stilebase for longer than the timeouts below. A person's request waits on it only
-in three cases: the gate's very first request waits for the settings (at most 3 seconds); the first request with an
+in three cases: the gate's first requests, until the first settings load ends, wait for it (its timeout is 3
+seconds; a gate may allow a little more for its own scheduling); the first request with an
 address waits for the operators' address lists (at most 5 seconds) while hidden agents are caught; and a browser that
 looks like a script (a *suspect*, section 5, step 5) waits on the price lookup (at most 5 seconds) unless it carries a valid
 pass cookie or that answer is cached.
@@ -89,7 +90,9 @@ gateway's page shows the site as **Connected** from it. The answer
 - `refresh_seconds`: how often to fetch them again. A gate uses 300 when it's missing, not a number or not positive,
   and never less than 30.
 
-**When.** On the first request, waiting at most 3 seconds. Then in the background every `refresh_seconds`, keeping
+**When.** On the first request (a free one too: it may be the verification file), with a 3-second timeout; requests
+arriving before it ends wait for the same load. Then in
+the background every `refresh_seconds`, keeping
 the last good settings on failure. With no settings yet it retries at most every 30 seconds and lets everyone through
 meanwhile. A **404** (the gateway was removed) drops the settings, and everyone passes. A **401** (the key was
 rotated, or this server's clock is more than 5 minutes off) keeps the last settings: agents are still asked to pay,
@@ -104,12 +107,12 @@ default it uses:
 - the address the framework gives, where the framework works it out from proxies the owner configured (Express's
   `req.ip`, an ASGI server's client address, WSGI's `REMOTE_ADDR`). Owners configure their actual proxies, never
   "trust every hop": then the first `X-Forwarded-For` entry wins, and the visitor wrote it. Where the gate can tell
-  that every hop is trusted (Express's `trust proxy: true`), it takes the last entry instead and warns;
-- on platforms that set a header themselves and overwrite the visitor's: `CF-Connecting-IP` on Cloudflare Workers,
-  `x-real-ip` on Vercel;
-- elsewhere (Bun, Deno, self-hosted Next.js, Hono on Node) no address, unless the owner names the header their proxy
-  sets. Without an address, free passes can't verify, per-agent prices don't apply, and hidden agents aren't caught by
-  address, so the packages' READMEs tell owners to name one.
+  that every hop is trusted (Express's `trust proxy` set to `true`, or to ranges or a function that trust any
+  address), it takes the last entry instead and warns;
+- on Cloudflare Workers, which sets `CF-Connecting-IP` itself and overwrites the visitor's: that header;
+- elsewhere (Vercel, Bun, Deno, Hono on Node) no address, unless the owner names the header their platform or proxy
+  sets (`x-real-ip` on Vercel). Without an address, free passes can't verify, per-agent prices don't apply, and hidden
+  agents aren't caught by address, so the packages' READMEs tell owners to name one.
 
 From a header holding a list, such as `X-Forwarded-For`, it takes the **last** entry, the one the owner's proxy added:
 the entries before it are the visitor's to write. An address over 45 characters counts as none.
@@ -119,7 +122,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
 1. **The verification file.** While `verification` is set, the gate answers requests for `path` with `value` as plain
    text.
 2. **Not live:** everyone passes.
-3. **A request with a payment** (`PAYMENT-SIGNATURE`, x402 v2, or `X-PAYMENT`, v1) skips steps 4 and 5: whoever
+3. **A request with a payment** (`PAYMENT-SIGNATURE`, x402 v2, else `X-PAYMENT`, v1; an empty header is no payment)
+   skips steps 4 and 5: whoever
    sends a payment is treated as an agent. It still goes through the price lookup (step 6), which names the requirement
    the payment must meet, and then to settlement (step 8). When the lookup brings no requirement (204, or an answer that
    lets the request pass), the request passes without settling.
@@ -131,7 +135,7 @@ the entries before it are the visitor's to write. An address over 45 characters 
    - it carries Web Bot Auth's `Signature-Agent` header.
 
    Scripts pay from anywhere, the machine itself included: a proxy on the same host makes every visitor look local.
-   Owners exempt their own health checks with `paths`, a user agent of their own, or by letting scripts through.
+   Owners exempt their own health checks with `free`, a user agent of their own, or by letting scripts through.
 5. **Scripts posing as browsers.** A GET or HEAD whose user agent starts with `Mozilla/` (case-sensitive) and doesn't
    match `known_bots` is scored on what a browser would send, with `browser_checks.weights`:
 
@@ -161,7 +165,8 @@ the entries before it are the visitor's to write. An address over 45 characters 
      suspect.
    - **200 for a suspect** (strict detection on): report it with `signals`, then answer 402. When the request asked for
      HTML (`Accept` contains `text/html`), the body is a small page whose script sets the pass cookie and reloads, so
-     a real browser goes straight through.
+     a real browser goes straight through. It reloads once: shown again within 30 seconds (the gate didn't find the
+     cookie), it asks the visitor to allow cookies instead of reloading forever.
    - **400, 413, 414, 422, 429, 431**: 402 with the last price (the rule at the top).
    - Anything else (a 200 that isn't a JSON object included), or no answer within 5 seconds: the request passes.
 
@@ -169,7 +174,11 @@ the entries before it are the visitor's to write. An address over 45 characters 
 7. **The pass cookie.** `<cookie>=<unix time>.<first 32 hex of HMAC-SHA256(secret, "stilebase-pass\n<unix time>\n<User-Agent>")>`,
    for `max_age_seconds`, `Path=/; SameSite=Lax; Secure`. The gate checks it itself, with no call to Stilebase: the
    time at most `max_age_seconds` old and at most a minute ahead, the HMAC for this user agent, compared in constant
-   time.
+   time. It splits the Cookie header at `;` and at `,` (a runtime may join several Cookie fields with `, `), and every
+   piece with the cookie's name is a candidate, tried from the last (the check page sets the real one just before it
+   reloads, so browsers usually send it after one planted earlier or on a longer path). Candidates that are well formed
+   (the time without leading zeros) and within those times are grouped by their time, and only the last 8 distinct
+   times get an HMAC (one each).
 8. **A payment.** A request with `PAYMENT-SIGNATURE` (x402 v2) or `X-PAYMENT` (v1) goes to a signed
    `POST <stilebase>/v1/x402/settle`, waiting up to 65 seconds (longer than Stilebase takes at most: giving up first
    would answer 503 for a payment that then settles):
@@ -188,10 +197,13 @@ the entries before it are the visitor's to write. An address over 45 characters 
    - `"success": true`: the request goes to the site, and the response gets `PAYMENT-RESPONSE: <header>`.
    - `"success": false`: answer 402 again, with `error` set to the `errorReason` and `PAYMENT-RESPONSE`.
    - No answer, or any other answer (Stilebase down, a timeout, a body that isn't a JSON object, a `success` that isn't
-     a boolean): 503 with
-     `Retry-After: 5`, and the page isn't served. **The outcome is unknown**: the payment may have settled after all
+     a boolean): 503 with `Retry-After: 5`, and the page isn't served. **The outcome is unknown**: the payment may have settled after all
      (an answer lost on the way), so a gate never tells the agent it wasn't charged. Sending the same payment again
      can never charge twice: each authorization is spent once, on-chain.
+
+   On both a paid and a refused answer, `header` is used only when it can be a header: a base64 string
+   (`A-Z a-z 0-9 + / = _ -`) of at most 8,192 characters. Otherwise the gate leaves `PAYMENT-RESPONSE` out (and still
+   serves a paid request, or answers the 402).
 9. **Visits** are reported with a signed `POST <stilebase>/v1/x402/visits`, the same body as settle without
    `payment` (plus `free_pass` or `signals`), in the background: a request never waits on it. A gate keeps a bounded
    number of reports in flight and drops the rest.
@@ -201,13 +213,35 @@ Every answer the gate makes itself (402, the browser check's page, 503, the veri
 
 ## 6. The page's name
 
-The page is named to Stilebase and to agents by the gateway's domain over https, with the request's path and query:
+The page is named to Stilebase and to agents by the gateway's domain over https, with the request's path and query
+(without anything from a `#` on, as Express and `new URL` read it; such a URL is never free):
 the Host header is the visitor's to write, and behind a proxy it's an internal name. The request URL is built from
-the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't move the path
-out of reach of the `paths` option. A URL the adapter can't parse is still gated.
+the Host header only when it's a host name (anything else becomes `localhost`), so a forged Host can't change the path
+the gate reads. An absolute-form request target (`GET http://host/path`) keeps its path as written: it's cut as text,
+never resolved by a URL parser. A URL the adapter can't parse is still gated.
 
-`paths` (prefixes, or a function) sees the path as routers and static file servers do: percent-decoded, lowercased,
-dot segments resolved. So `/LISTINGS/2`, `/%6Cistings/2` and `/x/..%2Flistings/2` are all gated like `/listings/2`.
+**Free paths.** A gate covers every path. The owner may list exact paths that stay free for everyone (`free`, for
+example `/healthz` and `/robots.txt`; full paths from the site's root). A request is free only when it's a GET or HEAD
+and its URL is **literal**:
+
+- `http` or `https`, a plain host (a name of letters, digits, `-`, `_` and `.`, or a bracketed IPv6 address), an
+  optional port, then `/`;
+- a path of letters, digits, `-` `.` `_` `~` and `/` only, with no empty, `.` or `..` segment (a trailing slash is
+  fine); a query may follow, nothing else (no `#`: only a forged Host or a raw request target puts one in a request URL);
+
+and that path is one of the free paths **character for character**, as the URL reaches the gate. There's no decoding
+and no resolving: `/HEALTHZ`, `/healthz/`, `/%68ealthz`, `//healthz`, `/x/../healthz` and a URL with a host like `x?`
+are all gated. Some router or file server reads each unusual spelling differently, so only spellings every parser
+reads the same way can be free. A free entry that isn't literal is reported once and never matches. Like any request,
+the first ones wait for the settings, free or not (section 3).
+
+A runtime that normalizes the URL before the gate sees it (Bun, Workers) hands the app the same normalized URL, so
+the two still agree. A framework that routes a different path than the one it shows the gate can't be gated safely by
+path at all: Next.js middleware sees a URL with a trailing `.rsc` stripped and `..` resolved while Next routes the
+original path, so the SDKs have no Next.js adapter yet.
+
+There's no option to gate only some paths: every way of predicting how routers and file servers read a path left some
+spelling of a gated page free.
 
 ## 7. Options every gate offers
 
@@ -216,7 +250,7 @@ dot segments resolved. So `/LISTINGS/2`, `/%6Cistings/2` and `/x/..%2Flistings/2
 | key | `STILEBASE_KEY` | The site key |
 | API URL | `STILEBASE_API_URL`, else `https://stilebase.com` | Where Stilebase is |
 | mode | live | `test`: only `test_mode_agents` are asked to pay |
-| paths | everything | Gate only these prefixes, or the paths a function accepts |
+| free | none | Exact paths that stay free for everyone (section 6) |
 | client IP / IP header | per platform (section 4) | Where the visitor's real address is: a header the owner's proxy sets, or a function (each package's README lists what its adapters take) |
 | catch HTTP clients | on | Off lets scripts with default user agents through |
 | catch hidden agents | on | Off skips the address lists and `Signature-Agent` |

@@ -16,7 +16,7 @@ customers. The SDKs talk only to Stilebase's public API.
 
 - `sdk-js/`: `@stilebase/sdk`, TypeScript, tsup, vitest, Node 20+, **no runtime dependencies** (WebCrypto, `fetch`).
   Entries `.` (the `gate` namespace, `VERSION`), `/gate` (`createGate`, framework-neutral), `/gate/express`,
-  `/gate/next`, `/gate/fetch` (Workers, Hono, Bun, Deno).
+  `/gate/fetch` (Workers, Hono, Bun, Deno). No Next.js adapter yet (TODO.md).
 - `sdk-python/`: `stilebase-sdk`, Python 3.10+, depends only on `httpx`, hatchling, typed (`py.typed`, mypy strict).
   `stilebase_sdk.gate`: `_core.decide` is one sans-IO decision generator that yields effects; `AsyncGate` and
   `SyncGate` drive it. Adapters `asgi`, `wsgi`, `django`.
@@ -56,6 +56,17 @@ These are what the reviews check first. Breaking one is a blocking finding.
 (a ruleset). A build job checks that the tag is the package's version and on `main`, runs the checks and builds; the
 publish job gets only the built files and waits for approval in the `release` environment, then publishes through
 trusted publishing (no stored tokens), with provenance. Bump the version and `CHANGELOG.md` in a pull request first.
+
+The first npm release can't use trusted publishing yet (npm configures it on an existing package). Push the
+`sdk-js-v0.1.0` tag and let the workflow build, check and smoke-test it; its publish step fails. Download that run's
+`npm-package` artifact, check its SHA-256 against the build job's output, and publish exactly that file by hand:
+`npm publish stilebase-sdk-0.1.0.tgz --access public --ignore-scripts` (logged in with 2FA). Then add the trusted
+publisher (`stilebase/sdk`, `release.yml`, environment `release`) and require 2FA with tokens disallowed. Every later
+release goes through the workflow.
+
+Approving a release in the `release` environment: check that the run's commit is the head of `main` (or on it) and
+that `release.yml` there is unchanged. The workflow checks it too, but that check lives in the tagged commit's own copy
+of the workflow.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`

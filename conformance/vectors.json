@@ -75,6 +75,72 @@
       "token": "1792756800.9e346ab6c57d7b03292bd60ab57013d3"
     }
   ],
+  "pass_cookies": {
+    "about": "The browser check's pass cookie (SPEC.md section 5, step 7), as the gate finds it in the Cookie header: split at ; and at , (a runtime may join several Cookie fields with \", \"), every piece named cookie_name a candidate, tried from the last (the real one is set just before the check page reloads, so browsers send it after one planted earlier or on a longer path), and the well-formed ones (no leading zeros) within the times are grouped by their time: only the last 8 distinct times get an HMAC. The token is pass_tokens[0]'s, checked at now (unix seconds) with max_age_seconds. has_pass: the request passes without the browser check.",
+    "cookie_name": "stilebase_pass",
+    "secret": "sbsec_test_secret",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "now": 1792756860,
+    "max_age_seconds": 43200,
+    "cases": [
+      {
+        "cookie": "a=1; stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": true
+      },
+      {
+        "cookie": "a=1, stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": true
+      },
+      {
+        "cookie": "prefs=x,stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": true
+      },
+      {
+        "cookie": "z=1,stilebase_pass=1792756800.00000000000000000000000000000000,stilebase_pass=1792756799.00000000000000000000000000000000,stilebase_pass=1792756798.00000000000000000000000000000000,stilebase_pass=1792756797.00000000000000000000000000000000,stilebase_pass=1792756796.00000000000000000000000000000000,stilebase_pass=1792756795.00000000000000000000000000000000,stilebase_pass=1792756794.00000000000000000000000000000000,stilebase_pass=1792756793.00000000000000000000000000000000; stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.00000000000000000000000000000000; a=1",
+        "has_pass": false
+      },
+      {
+        "cookie": "xstilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": false
+      },
+      {
+        "cookie": "stilebase_pass= 1792756800.1a3aa6e98ca3de4431a79f518f4e35afx",
+        "has_pass": false
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792756799.00000000000000000000000000000000; stilebase_pass=1792756798.00000000000000000000000000000000; stilebase_pass=1792756797.00000000000000000000000000000000; stilebase_pass=1792756796.00000000000000000000000000000000; stilebase_pass=1792756795.00000000000000000000000000000000; stilebase_pass=1792756794.00000000000000000000000000000000; stilebase_pass=1792756793.00000000000000000000000000000000; stilebase_pass=1792756792.00000000000000000000000000000000",
+        "has_pass": false
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000; stilebase_pass=1792756800.00000000000000000000000000000000",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk; stilebase_pass=junk",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792706800.00000000000000000000000000000000; stilebase_pass=1792706799.00000000000000000000000000000000; stilebase_pass=1792706798.00000000000000000000000000000000; stilebase_pass=1792706797.00000000000000000000000000000000; stilebase_pass=1792706796.00000000000000000000000000000000; stilebase_pass=1792760400.00000000000000000000000000000000; stilebase_pass=1792760401.00000000000000000000000000000000; stilebase_pass=1792760402.00000000000000000000000000000000; stilebase_pass=1792760403.00000000000000000000000000000000; stilebase_pass=1792760404.00000000000000000000000000000000",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792756799.00000000000000000000000000000000; stilebase_pass=1792756798.00000000000000000000000000000000; stilebase_pass=1792756797.00000000000000000000000000000000; stilebase_pass=1792756796.00000000000000000000000000000000; stilebase_pass=1792756795.00000000000000000000000000000000; stilebase_pass=1792756794.00000000000000000000000000000000; stilebase_pass=1792756793.00000000000000000000000000000000",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=1792756800.1a3aa6e98ca3de4431a79f518f4e35af; stilebase_pass=1792756799.00000000000000000000000000000000; stilebase_pass=1792756799.00000000000000000000000000000001; stilebase_pass=1792756799.00000000000000000000000000000002; stilebase_pass=1792756799.00000000000000000000000000000003; stilebase_pass=1792756799.00000000000000000000000000000004; stilebase_pass=1792756799.00000000000000000000000000000005; stilebase_pass=1792756799.00000000000000000000000000000006; stilebase_pass=1792756799.00000000000000000000000000000007; stilebase_pass=1792756799.00000000000000000000000000000008",
+        "has_pass": true
+      },
+      {
+        "cookie": "stilebase_pass=01792756800.1a3aa6e98ca3de4431a79f518f4e35af",
+        "has_pass": false
+      }
+    ]
+  },
   "agent_matching": {
     "about": "Against the lists in gate-config.example.json. agent: asked to pay as an AI agent (live mode); test_mode: asked to pay in test mode; script: asked to pay as a script (catchHttpClients).",
     "cases": [
@@ -359,6 +425,311 @@
       {
         "ip": "",
         "normalized": null
+      }
+    ]
+  },
+  "payment_headers": {
+    "about": "Which header is the payment (SPEC.md section 5, step 3): PAYMENT-SIGNATURE, else X-PAYMENT; an empty header is no payment. payment: what's sent to /v1/x402/settle, or null for an unpaid request.",
+    "cases": [
+      {
+        "headers": {
+          "payment-signature": "v2payment"
+        },
+        "payment": "v2payment"
+      },
+      {
+        "headers": {
+          "x-payment": "v1payment"
+        },
+        "payment": "v1payment"
+      },
+      {
+        "headers": {
+          "payment-signature": "v2payment",
+          "x-payment": "v1payment"
+        },
+        "payment": "v2payment"
+      },
+      {
+        "headers": {
+          "payment-signature": "",
+          "x-payment": "v1payment"
+        },
+        "payment": "v1payment"
+      },
+      {
+        "headers": {
+          "payment-signature": ""
+        },
+        "payment": null
+      }
+    ]
+  },
+  "free_paths": {
+    "about": "The `free` option (SPEC.md section 6): a request is free only when it's a GET or HEAD and its URL is literal (http or https, a plain host: a name of letters, digits, - _ and . or a bracketed IPv6 address, an optional port, then a path of letters, digits, - . _ ~ and / with no empty, . or .. segment; a query may follow, nothing else: no #) and the path is one of the free paths character for character. No decoding, no resolving: anything else is gated. method defaults to GET; url, when given, is the request URL instead of https://<domain><path>. free_request: the request passes (an AI agent isn't asked to pay).",
+    "cases": [
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/robots.txt",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/%68ealthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/listings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/HEALTHZ",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz/",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "//healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/x/../healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz/../listings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz%2F..%2Flistings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/robots.txt/..%2F..%2Flistings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz%5C..%5Clistings",
+        "free_request": false
+      },
+      {
+        "free": [],
+        "path": "/healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "method": "POST",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "method": "HEAD",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/"
+        ],
+        "path": "/",
+        "url": "http://x%2Fpremium%2Freport.html?",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "url": "http://a@x/healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/",
+          "/healthz"
+        ],
+        "path": "/",
+        "url": "http://x?/premium/report",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/",
+          "/healthz"
+        ],
+        "path": "/",
+        "url": "http://x#/premium/report",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/docs/intro"
+        ],
+        "path": "/docs%2Fintro",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/docs/intro"
+        ],
+        "path": "/docs/intro",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "url": "https://shop.example.com/healthz?probe=1",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/robots.txt"
+        ],
+        "path": "/healthz",
+        "url": "ftp://shop.example.com/healthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/%68ealthz"
+        ],
+        "path": "/%68ealthz",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/docs/"
+        ],
+        "path": "/docs/",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/docs/"
+        ],
+        "path": "/docs",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/~me/page"
+        ],
+        "path": "/~me/page",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/a/./b"
+        ],
+        "path": "/a/./b",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz"
+        ],
+        "path": "/healthz",
+        "url": "http://web_app:3000/healthz",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz"
+        ],
+        "path": "/healthz",
+        "url": "http://[::1]:8000/healthz",
+        "free_request": true
+      },
+      {
+        "free": [
+          "/healthz",
+          "/"
+        ],
+        "path": "/healthz",
+        "url": "https://shop.example.com/healthz#/listings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz",
+          "/"
+        ],
+        "path": "/",
+        "url": "https://shop.example.com/#/listings/1",
+        "free_request": false
+      },
+      {
+        "free": [
+          "/healthz"
+        ],
+        "path": "/healthz",
+        "url": "https://shop.example.com/healthz?a#/listings/1",
+        "free_request": false
       }
     ]
   }

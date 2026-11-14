@@ -1,0 +1,114 @@
+# Publishes a package when an admin pushes its release tag (only admins can create `sdk-*` tags: a ruleset).
+#   sdk-js-v<version>  ->  @stilebase/sdk on npm
+#
+# Each package has two jobs. The build job checks that the tag is the package's version and on main, runs every check
+# and builds; it has no publishing rights. The publish job runs none of the package's code: it gets the built files,
+# waits for approval in the `release` environment (which only these tags may use), and publishes through trusted
+# publishing (OIDC: no tokens stored anywhere), with provenance.
+
+name: Release
+
+on:
+  push:
+    tags: ["sdk-js-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  npm-build:
+    if: startsWith(github.ref_name, 'sdk-js-v')
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: sdk-js
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tagged commit is on main (merged through a green pull request)
+        working-directory: .
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4" # an LTS line CI tests on, pinned exactly
+      - name: The tag is the package's version
+        run: test "sdk-js-v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+      - run: npm ci --ignore-scripts # no dependency's install script runs where the published files are built
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      # Pack and hand over the tarball before anything else is installed, and record its hash: the smoke test installs
+      # third-party packages, and the publish job publishes only a tarball with exactly this hash.
+      - name: Pack the tarball that gets published
+        id: pack
+        run: |
+          mkdir -p ../release && npm pack --pack-destination ../release
+          echo "sha256=$(sha256sum ../release/*.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: release/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # The published tarball as users get it, in a job of its own: the smoke test installs third-party packages, which
+  # never run where the tarball is built or published.
+  npm-smoke:
+    needs: npm-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk-js
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: release
+      - name: The tarball is the one the build job packed
+        working-directory: .
+        env:
+          EXPECTED: ${{ needs.npm-build.outputs.sha256 }}
+        run: |
+          test -n "$EXPECTED" && test "$(ls release/*.tgz | wc -l)" = 1
+          echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --strict --check
+      - name: Install it in an empty project and import every entry (install scripts off)
+        run: SMOKE_TARBALL="$(ls ../release/*.tgz)" npm run smoke
+
+  npm-publish:
+    needs: [npm-build, npm-smoke]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance; this job only
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: release
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm 11.5 or later. An exact version, installed without its scripts: this job can mint
+      # the publishing token, so nothing in it may change between releases unnoticed.
+      - run: npm install -g npm@11.21.2 --ignore-scripts
+      - name: The tarball is the one the build job packed
+        env:
+          EXPECTED: ${{ needs.npm-build.outputs.sha256 }}
+        run: |
+          test -n "$EXPECTED" && test "$(ls release/*.tgz | wc -l)" = 1
+          echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --strict --check
+      - name: Publish the built tarball (no lifecycle scripts run here)
+        run: npm publish release/*.tgz --provenance --access public --ignore-scripts

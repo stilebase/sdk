@@ -47,3 +47,28 @@ jobs:
                   failed = True
           sys.exit(1 if failed else 0)
           PY
+
+  # @stilebase/sdk: checks, build, and the packed tarball installed as users get it.
+  sdk-js:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20.18.1", "22.23.4", "24.22.2"] # the oldest supported, and the LTS lines
+    defaults:
+      run:
+        working-directory: sdk-js
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk-js/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run smoke

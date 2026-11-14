@@ -14,7 +14,7 @@ If Stilebase can't be reached, everyone gets the site as usual: the gate never b
 
 | Package | Install | Works with |
 | --- | --- | --- |
-| [`@stilebase/sdk`](sdk-js) | `npm i @stilebase/sdk` | Express, Next.js, Cloudflare Workers, Hono, Bun, Deno (Node 20+, no dependencies) |
+| [`@stilebase/sdk`](sdk-js) | `npm i @stilebase/sdk` | Express, Cloudflare Workers, Hono, Bun, Deno (Node 20+, no dependencies) |
 | [`stilebase-sdk`](sdk-python) | `pip install stilebase-sdk` | FastAPI, Starlette, Litestar, Django, Flask, any ASGI or WSGI app (Python 3.10+) |
 
 ## Quick start
@@ -36,7 +36,7 @@ app.add_middleware(GateMiddleware)
 ```
 
 The gate fetches its settings (which agents to ask, which checks to run) from Stilebase, so new agents reach your
-site without a redeploy. Each package's README has every framework and option: test mode, gating only some paths, the
+site without a redeploy. Each package's README has every framework and option: test mode, paths that stay free, the
 visitor's address behind a proxy.
 
 ## In this repository
