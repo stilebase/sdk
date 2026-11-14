@@ -51,7 +51,7 @@ import { gate } from "@stilebase/sdk/gate/express";
 import { withGate } from "@stilebase/sdk/gate/fetch";
 import { createGate, type GateDecision } from "@stilebase/sdk/gate";
 const app = express();
-app.use(gate({ free: ["/healthz"], ipHeader: "cf-connecting-ip" }));
+app.use(gate({ ipHeader: "cf-connecting-ip" }));
 export default { fetch: withGate((request: Request) => new Response(request.url)) };
 export const decided: Promise<GateDecision> = createGate().check({ method: "GET", url: "https://a.example/", headers: new Headers() });`,
   );

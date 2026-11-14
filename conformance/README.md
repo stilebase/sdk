@@ -9,13 +9,13 @@ The cases every gate must agree on, whatever language it's written in:
 
 | File | What it is | Checked by |
 | --- | --- | --- |
-| `vectors.json` | Call signing, site keys, the browser check's pass token and how its cookie is found, agent and script matching, the browser-header checks, address ranges, address normalization, free paths, which header is the payment | Each SDK's conformance tests, and Stilebase's own |
+| `vectors.json` | Call signing, site keys, the browser check's pass token, agent and script matching, the browser-header checks, address ranges, address normalization | Each SDK's conformance tests, and Stilebase's own |
 | `gate-config.example.json` | The settings a gate fetches (`GET /v1/x402/sites/{id}/config`, [SPEC.md](../SPEC.md)), as Stilebase sends them | Each SDK's tests serve it from a fake Stilebase. Stilebase's tests fail when it no longer matches what Stilebase sends |
 
 Every key and secret here is made up, for a gateway that doesn't exist. None of them works against Stilebase.
 
-The browser-check cases in `vectors.json` state their own settings (a case "over plain http" is checked with *assume
-HTTPS* off); run each case with the settings it names, not the gate's defaults.
+The browser-check cases in `vectors.json` are checked against `gate-config.example.json`; a case "over plain http" is
+never scored, whatever its headers.
 
 ## Changing them
 

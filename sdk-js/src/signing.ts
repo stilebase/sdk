@@ -1,6 +1,5 @@
-// How a gate proves its calls come from the site (SPEC.md, "Signing calls to Stilebase"):
-// HMAC-SHA256 with the gateway's secret, over "v2\n<timestamp>\n<METHOD>\n<path>\n<hex SHA-256 of the body>". WebCrypto
-// only, so it runs on Node 20+, Workers, Deno and Bun alike.
+// How a gate proves its calls come from the site (SPEC.md, "Signing calls to Stilebase"), and the browser check's pass
+// token. HMAC-SHA256 with the gateway's secret; WebCrypto only, so it runs on Node 20+, Workers, Deno and Bun alike.
 
 const encoder = new TextEncoder();
 const keys = new Map<string, Promise<CryptoKey>>();
@@ -23,73 +22,37 @@ function hmacKey(secret: string): Promise<CryptoKey> {
   return key;
 }
 
-export async function hmacHex(secret: string, message: string): Promise<string> {
+async function hmacHex(secret: string, message: string): Promise<string> {
   return hex(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(message)));
 }
 
-export async function sha256Hex(body: Uint8Array): Promise<string> {
-  return hex(await crypto.subtle.digest("SHA-256", body));
-}
-
 /** The headers that prove a call to Stilebase's x402 API comes from your site. */
-export async function signedHeaders(
-  secret: string,
-  method: string,
-  path: string,
-  body: Uint8Array,
-  nowMs: number,
-): Promise<Record<string, string>> {
+export async function signedHeaders(secret: string, method: string, path: string, body: Uint8Array, nowMs: number): Promise<Record<string, string>> {
   const ts = String(Math.floor(nowMs / 1000));
-  const canonical = ["v2", ts, method.toUpperCase(), path, await sha256Hex(body)].join("\n");
+  const canonical = ["v2", ts, method.toUpperCase(), path, hex(await crypto.subtle.digest("SHA-256", body))].join("\n");
   return { "Stilebase-Timestamp": ts, "Stilebase-Signature": `v2=${await hmacHex(secret, canonical)}` };
 }
 
-/** The browser check's proof: when it was issued, and an HMAC of that time and the user agent with your secret. */
+/** The browser check's proof: when it was issued (unix seconds), and an HMAC of that time and the user agent. */
 export async function passToken(secret: string, userAgent: string, timestamp: number): Promise<string> {
   return `${timestamp}.${(await hmacHex(secret, `stilebase-pass\n${timestamp}\n${userAgent}`)).slice(0, 32)}`;
 }
 
-/** How many distinct times among one request's pass cookies are checked at most (SPEC.md, section 5, step 7). */
-export const MAX_PASS_CANDIDATES = 8;
-
-/** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (the time no more than a minute ahead). */
-export async function hasPass(
-  cookieHeader: string,
-  cookieName: string,
-  secret: string,
-  userAgent: string,
-  nowMs: number,
-  maxAgeSeconds: number,
-): Promise<boolean> {
-  // Split at `,` too: a runtime may join several Cookie fields (HTTP/2 sends each cookie as its own) with ", ". Every
-  // piece with the cookie's name is a candidate, tried from the last: the check page sets the real cookie just before
-  // it reloads, so browsers send it after any planted earlier or on a longer path (another cookie's value holding
-  // commas, a sibling subdomain's cookie), which mustn't hide it. Only the last few distinct, well-formed, in-time
-  // ones get an HMAC, so a Cookie header stuffed with them can't make one request cost hundreds.
-  const now = Math.floor(nowMs / 1000);
-  const prefix = `${cookieName}=`;
-  const candidates = new Map<number, Set<string>>(); // its time -> the tokens with that time (one HMAC each time)
-  const pieces = cookieHeader.split(/[;,]/);
-  for (let i = pieces.length - 1; i >= 0; i -= 1) {
-    const piece = pieces[i]!.trim();
-    if (!piece.startsWith(prefix)) continue;
-    const token = piece.slice(prefix.length);
-    if (!/^[1-9]\d{0,11}\.[0-9a-f]{32}$/.test(token)) continue;
-    const timestamp = Number(token.split(".")[0]);
-    const age = now - timestamp;
-    if (age < -60 || age > maxAgeSeconds) continue;
-    const tokens = candidates.get(timestamp);
-    if (tokens) tokens.add(token);
-    else if (candidates.size < MAX_PASS_CANDIDATES) candidates.set(timestamp, new Set([token]));
-  }
-  for (const [timestamp, tokens] of candidates) {
-    const expected = await passToken(secret, userAgent, timestamp);
-    for (const token of tokens) if (sameText(token, expected)) return true;
-  }
-  return false;
+/** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (its time at most a minute ahead). */
+export async function hasPass(cookieHeader: string, cookieName: string, secret: string, userAgent: string, nowMs: number, maxAgeSeconds: number): Promise<boolean> {
+  const cookie = cookieHeader
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(`${cookieName}=`));
+  const token = cookie?.slice(cookieName.length + 1) ?? "";
+  if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) return false;
+  const timestamp = Number(token.split(".")[0]);
+  const age = Math.floor(nowMs / 1000) - timestamp;
+  if (age < -60 || age > maxAgeSeconds) return false;
+  return sameText(token, await passToken(secret, userAgent, timestamp));
 }
 
-/** Equal strings, compared in time that doesn't depend on where they differ (no guessing a token one character at a time). */
+/** Equal strings, compared in time that doesn't depend on where they differ. */
 function sameText(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let difference = 0;

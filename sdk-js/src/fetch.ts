@@ -9,7 +9,7 @@ export interface FetchGateOptions<Rest extends unknown[] = unknown[]> extends Ga
    * CF-Connecting-IP; elsewhere none. Never a header anyone can set. */
   ipHeader?: string;
   /** Or work it out yourself, from the request and the handler's other arguments (Bun: `server.requestIP(request)?.address`;
-   * Deno: `info.remoteAddr.hostname`). It must return a string, synchronously (or null): anything else is no address. */
+   * Deno: `info.remoteAddr.hostname`). */
   clientIp?: (request: Request, ...rest: Rest) => string | null | undefined;
 }
 
@@ -22,34 +22,17 @@ interface CloudflareRequest extends Request {
 /** Wraps a fetch handler: AI agents pay per request with x402, settled through Stilebase; everyone else reaches it. */
 export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options: FetchGateOptions<Rest> = {}): Handler<Rest> {
   let siteGate: Gate | null = null;
-  let startFailed = false;
   return async (request: Request, ...rest: Rest): Promise<Response> => {
     // Workers have no process.env: the key and the API come from the Worker's env (the second argument) on first use.
-    try {
-      siteGate ??= createGate(
-        { ...options, key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"), apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL") },
-        "fetch",
-      );
-    } catch (error) {
-      // The gate couldn't start (e.g. no permission to read the environment): never break the site, and say so once.
-      if (!startFailed) {
-        startFailed = true;
-        const message = `[@stilebase/sdk] the gate couldn't start, so every request passes: ${error instanceof Error ? error.message : String(error)}`;
-        try {
-          if (options.onError) options.onError(new Error(message));
-          else console.warn(message);
-        } catch {
-          // a failing error handler must not break the request
-        }
-      }
-      return handler(request, ...rest);
-    }
+    siteGate ??= createGate(
+      { ...options, key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"), apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL") },
+      "fetch",
+    );
     const cf = (request as CloudflareRequest).cf;
     let ip: string | null | undefined = null;
     try {
-      ip = options.clientIp
-        ? addressOf(options.clientIp(request, ...rest))
-        : addressFrom(request.headers, options.ipHeader ?? (cf ? "cf-connecting-ip" : undefined), null);
+      const header = options.ipHeader ?? (cf ? "cf-connecting-ip" : undefined);
+      ip = options.clientIp ? addressOf(options.clientIp(request, ...rest)) : header ? addressFrom(request.headers, header) : null;
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }

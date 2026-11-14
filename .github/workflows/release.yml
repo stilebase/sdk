@@ -1,16 +1,18 @@
 # Publishes a package when an admin pushes its release tag (only admins can create `sdk-*` tags: a ruleset).
 #   sdk-js-v<version>  ->  @stilebase/sdk on npm
+#   sdk-py-v<version>  ->  stilebase-sdk on PyPI
 #
-# Each package has two jobs. The build job checks that the tag is the package's version and on main, runs every check
-# and builds; it has no publishing rights. The publish job runs none of the package's code: it gets the built files,
-# waits for approval in the `release` environment (which only these tags may use), and publishes through trusted
-# publishing (OIDC: no tokens stored anywhere), with provenance.
+# Each package has three jobs. The build job checks that the tag is the package's version and on main, runs every
+# check, builds and records the built files' hashes; it has no publishing rights. The smoke job installs exactly those
+# files as users get them, apart from where they were built. The publish job runs none of the package's code: it gets
+# the built files, checks their hashes, waits for approval in the `release` environment (which only these tags may
+# use), and publishes through trusted publishing (OIDC: no tokens stored anywhere), with provenance.
 
 name: Release
 
 on:
   push:
-    tags: ["sdk-js-v*"]
+    tags: ["sdk-js-v*", "sdk-py-v*"]
 
 permissions:
   contents: read
@@ -112,3 +114,98 @@ jobs:
           echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --strict --check
       - name: Publish the built tarball (no lifecycle scripts run here)
         run: npm publish release/*.tgz --provenance --access public --ignore-scripts
+
+  pypi-build:
+    if: startsWith(github.ref_name, 'sdk-py-v')
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.hashes.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: sdk-python
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tagged commit is on main (merged through a green pull request)
+        working-directory: .
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.10.10"
+      - name: The tag is the package's version
+        run: test "sdk-py-v$(sed -n 's/^VERSION = "\(.*\)"/\1/p' src/stilebase_sdk/_version.py)" = "${GITHUB_REF_NAME}"
+      - run: uv sync --frozen
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen mypy
+      - run: uv run --frozen pytest
+      - run: uv build --build-constraints build-constraints.txt --require-hashes # the backend exact and hashed
+      # Record the hashes of exactly the files that get published (the wheel and the sdist): the smoke and publish jobs
+      # take only files with exactly these hashes.
+      - name: Record the hashes of the files that get published
+        id: hashes
+        run: |
+          test "$(ls dist | wc -l)" = 2
+          echo "sha256=$(cd dist && sha256sum -- * | base64 -w0)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-package
+          path: sdk-python/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # The published wheel as users get it, in a job of its own: the smoke test installs third-party packages, which
+  # never run where the files are built or published.
+  pypi-smoke:
+    needs: pypi-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk-python
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.10.10"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-package
+          path: sdk-python/dist
+      - name: The files are the ones the build job built
+        env:
+          EXPECTED: ${{ needs.pypi-build.outputs.sha256 }}
+        run: |
+          test -n "$EXPECTED"
+          echo "$EXPECTED" | base64 -d > "$RUNNER_TEMP/expected.sha256"
+          cd dist
+          test "$(ls | sort)" = "$(cut -d' ' -f3- "$RUNNER_TEMP/expected.sha256" | sort)"
+          sha256sum --strict --check "$RUNNER_TEMP/expected.sha256"
+      - name: Install the wheel in a clean Python 3.10 and import every adapter
+        run: bash scripts/smoke.sh 3.10
+
+  pypi-publish:
+    needs: [pypi-build, pypi-smoke]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # PyPI trusted publishing and attestations; this job only
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-package
+          path: dist
+      - name: The files are the ones the build job built
+        env:
+          EXPECTED: ${{ needs.pypi-build.outputs.sha256 }}
+        run: |
+          test -n "$EXPECTED"
+          echo "$EXPECTED" | base64 -d > "$RUNNER_TEMP/expected.sha256"
+          cd dist
+          test "$(ls | sort)" = "$(cut -d' ' -f3- "$RUNNER_TEMP/expected.sha256" | sort)"
+          sha256sum --strict --check "$RUNNER_TEMP/expected.sha256"
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1

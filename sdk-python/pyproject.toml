@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling>=1.27"]  # license-files as a list (PEP 639)
+build-backend = "hatchling.build"
+
+[project]
+name = "stilebase-sdk"
+dynamic = ["version"]
+description = "Charge AI agents per request with x402 (USDC on Base), settled through Stilebase. People pass straight through. FastAPI, Starlette, Django, Flask, any ASGI or WSGI app."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27"]
+keywords = ["x402", "ai-agents", "crawlers", "paywall", "micropayments", "usdc", "base", "asgi", "wsgi", "django", "fastapi", "flask"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Framework :: FastAPI",
+    "Framework :: Flask",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: WSGI :: Middleware",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://stilebase.com"
+Source = "https://github.com/stilebase/sdk/tree/main/sdk-python"
+Issues = "https://github.com/stilebase/sdk/issues"
+Changelog = "https://github.com/stilebase/sdk/blob/main/sdk-python/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "starlette>=0.40",
+    "django>=4.2",
+    "flask>=3.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.hatch.version]
+path = "src/stilebase_sdk/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stilebase_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["django.*"]
+ignore_missing_imports = true

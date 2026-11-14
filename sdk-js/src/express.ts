@@ -1,22 +1,20 @@
 // Express (4 and 5) middleware: `app.use(gate())`, before your routes.
 
-import { type GateOptions, addressFrom, addressOf, createGate, quietThenable } from "./core.js";
-import { requestUrl } from "./detect.js";
+import { parse } from "node:url";
+
+import { type GateOptions, addressFrom, addressOf, createGate } from "./core.js";
 
 /** The parts of Express's request and response the gate uses (no dependency on Express's types). */
 export interface ExpressRequest {
   method: string;
   protocol: string;
   originalUrl: string;
+  url?: string | undefined;
   ip?: string | undefined;
   get(name: string): string | undefined;
-  /** For the "trust proxy" setting (see visitorAddress). */
-  app?: { get(setting: string): unknown } | undefined;
-  socket?: { remoteAddress?: string | undefined } | undefined;
 }
 
 export interface ExpressResponse {
-  headersSent: boolean;
   status(code: number): ExpressResponse;
   set(field: Record<string, string>): ExpressResponse;
   setHeader(name: string, value: string): unknown;
@@ -25,8 +23,7 @@ export interface ExpressResponse {
 
 export interface ExpressGateOptions extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets, e.g. "cf-connecting-ip"). Default:
-   * Express's req.ip, which honours the "trust proxy" setting; when that trusts every hop (`true`, or ranges or a
-   * function that trust any address), the last X-Forwarded-For entry instead. Never a header anyone can set. */
+   * Express's req.ip, which follows your "trust proxy" setting. Never a header anyone can set. */
   ipHeader?: string;
   /** Or work it out yourself. */
   clientIp?: (req: ExpressRequest) => string | null | undefined;
@@ -35,40 +32,25 @@ export interface ExpressGateOptions extends GateOptions {
 /** Express middleware: AI agents pay per request with x402, settled through Stilebase; everyone else passes. */
 export function gate(options: ExpressGateOptions = {}) {
   const siteGate = createGate(options, "express");
-  let warned = false;
-  const warnTrustAll = () => {
-    if (warned) return;
-    warned = true;
-    const error = new Error(
-      `Express's "trust proxy" trusts every hop, so req.ip is the first X-Forwarded-For entry, which visitors write: the gate uses ` +
-        `the last entry (the one your proxy added) instead. Set "trust proxy" to your proxies (e.g. 1 or "loopback").`,
-    );
-    try {
-      if (options.onError) options.onError(error);
-      else console.warn(`[@stilebase/sdk] ${error.message}`);
-    } catch {
-      // a failing error handler must not break the request
-    }
-  };
   return function stilebaseGate(req: ExpressRequest, res: ExpressResponse, next: (error?: unknown) => void): void {
     const headers = { get: (name: string) => req.get(name) ?? null };
     let ip: string | null | undefined = null;
     try {
-      ip = visitorAddress(req, headers, options, warnTrustAll);
+      ip = options.clientIp ? addressOf(options.clientIp(req)) : options.ipHeader ? addressFrom(headers, options.ipHeader) : req.ip;
     } catch {
       ip = null; // a clientIp that throws: no address (agents are still asked to pay by user agent)
     }
-    // Behind a proxy, set "trust proxy" so req.protocol is the visitor's.
-    const url = requestUrl(req.protocol, req.get("host"), req.originalUrl);
-    siteGate
-      .check({ method: req.method, url, headers, ip: ip ?? null })
-      .then((decision) => {
+    // The page as the visitor asked for it (originalUrl: before any mount or rewrite), read with the parser Express
+    // itself routes by (Node's url.parse, through parseurl): an absolute-form target, a host it ends at "%", "//x" and
+    // "#" all name the page Express serves. The host doesn't matter: the gate names the page by the gateway's domain.
+    const url = `${req.protocol === "https" ? "https" : "http"}://localhost${expressPath(req)}`;
+    siteGate.check({ method: req.method, url, headers, ip: ip ?? null }).then(
+      (decision) => {
         if (decision.action === "respond") {
           try {
             res.status(decision.status).set(decision.headers).send(decision.body);
           } catch (error) {
-            // The gate's own answer (a 402, a 503) couldn't be sent: an error, never the page.
-            next(error);
+            next(error); // the gate's own answer couldn't be sent: an error, never the page
           }
           return;
         }
@@ -76,67 +58,26 @@ export function gate(options: ExpressGateOptions = {}) {
           try {
             res.setHeader("PAYMENT-RESPONSE", decision.paymentResponse);
           } catch {
-            // The payment settled: serve the page the agent paid for, even without its receipt header.
+            // the payment settled: serve the page the agent paid for, even without its receipt header
           }
         }
         next();
-      })
-      .catch((error: unknown) => {
-        // check() itself never rejects; this is the decision above failing in an unexpected way. Never serve on it.
-        next(error);
-      });
+      },
+      (error: unknown) => next(error),
+    );
   };
 }
 
-/** Where the visitor's address comes from. A "trust proxy" that trusts every hop (`true`, a function or ranges that
- * trust any address) makes Express's req.ip the left-most X-Forwarded-For entry: the visitor's to write. A spoofed
- * operator address with an agent's user agent would get a free pass or that agent's price, so then the gate takes the
- * last entry, the one the nearest proxy added. */
-function visitorAddress(
-  req: ExpressRequest,
-  headers: { get(name: string): string | null },
-  options: ExpressGateOptions,
-  warnTrustAll: () => void,
-): string | null | undefined {
-  if (options.clientIp) return addressOf(options.clientIp(req));
-  if (options.ipHeader) return addressFrom(headers, options.ipHeader, null);
-  if (req.app && trustsEveryHop(req.app)) {
-    warnTrustAll();
-    return addressFrom(headers, "x-forwarded-for", null) ?? req.socket?.remoteAddress ?? null;
+/** The visitor's path and query as Express reads them; "/" only when there's nothing to read. */
+function expressPath(req: ExpressRequest): string {
+  const target = typeof req.originalUrl === "string" ? req.originalUrl : typeof req.url === "string" ? req.url : "/";
+  try {
+    const { pathname, search } = parse(target);
+    const path = pathname ?? "/";
+    return `${path.startsWith("/") ? path : `/${path}`}${search ?? ""}`;
+  } catch {
+    return "/";
   }
-  return req.ip;
-}
-
-// Addresses no proxy has (documentation ranges, far apart): a setting that trusts all of them, at a hop no chain
-// reaches, trusts every address. A hop count (`1`, `2`) trusts only that many hops and isn't caught here.
-const STRANGERS = [
-  ["192.0.2.1", "198.51.100.1", "203.0.113.1"],
-  ["2001:db8::1", "3fff:fff::1"],
-];
-
-/** Whether Express's "trust proxy" setting trusts every hop: `true`, or a function or ranges trusting any address at
- * any distance (`() => true`, ["0.0.0.0/1", "128.0.0.0/1"]). Express trusts a hop on any truthy answer, so any truthy
- * answer counts. Asked on every request (a function's answer can change once its own list loads), each address family
- * on its own. A function is asked as given; ranges through Express's compiled form ("trust proxy fn", in Express 4
- * and 5). */
-function trustsEveryHop(app: { get(setting: string): unknown }): boolean {
-  const setting = app.get("trust proxy");
-  if (setting === true) return true;
-  const trust = typeof setting === "function" ? setting : app.get("trust proxy fn");
-  if (typeof trust !== "function") return false;
-  return STRANGERS.some((family) => {
-    try {
-      return family.every((address) => {
-        const answer: unknown = trust(address, 1_000_000);
-        // Express counts a promise as trusting (it's truthy, as Express reads it); a rejected one mustn't crash the
-        // process unhandled.
-        quietThenable(answer);
-        return Boolean(answer);
-      });
-    } catch {
-      return false;
-    }
-  });
 }
 
 export type { GateDecision, GateOptions } from "./core.js";
