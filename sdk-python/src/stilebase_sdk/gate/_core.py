@@ -41,6 +41,7 @@ from ._detect import (
     site_path,
     site_url,
     suspect_signals,
+    without_surrogates,
 )
 from ._signing import b64, has_pass, parse_site_key, pass_token, signed_headers
 
@@ -255,7 +256,7 @@ class Engine:
         max_age = 0
         for part in cache_control.split(","):
             name, _, value = part.strip().partition("=")
-            if name == "max-age" and value.isdigit():
+            if name == "max-age" and value.isascii() and value.isdigit() and len(value) <= 9:
                 max_age = min(int(value), MAX_REQUIREMENTS_AGE)
         if status not in (200, 204) or max_age <= 0 or (status == 200 and not isinstance(body, dict)):
             return  # a 200 without a JSON object (cut short, an error page) is asked again next time, as in JS
@@ -326,7 +327,10 @@ def decide(
     ip = normalize_ip(request.ip) if isinstance(request.ip, str) else None
     # No address is longer than 45 characters: anything longer (a header someone stuffed) counts as none, as Stilebase
     # treats it, and never bloats the price lookup past proxies' limits.
-    request = replace(request, ip=ip if ip and len(ip) <= 45 else None)
+    # Lone surrogates (a header decoded with surrogateescape) as U+FFFD, once, here: the lookup, the pass token and
+    # the check page all encode these as UTF-8, and an error there would let the request through.
+    headers = {name: without_surrogates(value) for name, value in request.headers.items()}
+    request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url), headers=headers)
     path, page_query = site_path(request.url)
     page = site_url(config.domain, path, page_query)
     if config.verification_path and config.verification_value and path == config.verification_path:

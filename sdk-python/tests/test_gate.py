@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import pytest
 
-from stilebase_sdk.gate import AsyncGate, GateOptions, GateRequest, Pass, Respond, SyncGate, pass_token
+from stilebase_sdk.gate import AsyncGate, GateConfig, GateOptions, GateRequest, Pass, Respond, SyncGate, pass_token
 from stilebase_sdk.gate._signing import MAX_PASS_CANDIDATES
 from tests.fake_stilebase import (
     API,
@@ -750,3 +750,64 @@ def test_options_and_keywords_together_are_refused() -> None:
     for gate in (SyncGate, AsyncGate):
         with pytest.raises(TypeError):
             gate(GateOptions(key=KEY), free=["/healthz"])
+
+
+# --- The review's cases (stilebase-sdk, cycle 2) ------------------------------------------------------------------
+
+
+def test_a_lone_surrogate_in_a_suspects_user_agent_still_gets_the_check_page(make: Any) -> None:
+    decision = make().check(request("/listings", {**SCRIPT, "accept": "text/html", "user-agent": CHROME + "\udcff"}))
+    assert isinstance(decision, Respond) and decision.status == 402
+    assert decision.headers["content-type"].startswith("text/html")
+
+
+def test_a_max_age_in_other_digits_is_no_max_age_and_no_crash() -> None:
+    """A Cache-Control from Stilebase or a proxy between: digits int() refuses are no max-age, never an error."""
+    gate = SyncGate(key=KEY, api_url=API, on_error=lambda e: None)
+    for max_age in ("²", "9" * 5000):
+        gate.store_requirements("q", 200, REQUIRED, f"public, max-age={max_age}")
+        assert gate.cached_requirements("q") is None
+    gate.close()
+
+
+def test_a_whole_number_max_age_is_written_as_an_integer(make: Any, stilebase: FakeStilebase) -> None:
+    config = live_config()
+    config["pass"] = {**config["pass"], "max_age_seconds": 86400.0}
+    stilebase.config = (200, config, {})
+    decision = make().check(request("/listings", {**SCRIPT, "accept": "text/html"}))
+    assert isinstance(decision, Respond) and b"Max-Age=86400;" in decision.body
+
+
+def test_an_infinite_refresh_is_the_default_not_a_crash() -> None:
+    config = GateConfig.parse(live_config(refresh_seconds=float("inf")))  # JSON's 1e999
+    assert config is not None and config.refresh_seconds == 300
+
+
+def test_a_cancelled_load_never_raises_out_of_check(stilebase: FakeStilebase) -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(1)
+        return stilebase.handle(request)
+
+    async def run() -> Pass | Respond:
+        gate = AsyncGate(key=KEY, api_url=API, transport=httpx.MockTransport(slow), on_error=lambda e: None)
+        waiting = asyncio.ensure_future(gate.check(request("/listings", {"user-agent": GPTBOT})))
+        await asyncio.sleep(0.05)
+        assert gate._config_task is not None
+        gate._config_task.cancel()  # a shutdown cancelling the load
+        return await waiting
+
+    assert asyncio.run(run()) == Pass()
+
+
+def test_no_report_client_is_made_after_aclose(stilebase: FakeStilebase) -> None:
+    async def run() -> None:
+        gate = AsyncGate(key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None)
+        await gate.check(request("/", BROWSER))
+        await gate.aclose()
+        await gate.check(request("/listings", {"user-agent": GPTBOT}))  # a request still draining at shutdown
+        await asyncio.gather(*gate._tasks)
+        assert gate._reports_http is None
+        if gate._http is not None:
+            await gate._http.aclose()
+
+    asyncio.run(run())

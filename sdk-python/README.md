@@ -108,7 +108,9 @@ without a redeploy. Price changes and free passes on the gateway page apply with
 
 ## Options
 
-Every adapter takes the same keywords. In Django, put them in `STILEBASE_GATE = {...}` in settings.
+Every adapter takes the same keywords. In Django, put them in `STILEBASE_GATE = {...}` in settings. One differs by
+adapter: `client_ip`, a function that works out the visitor's address, is given the ASGI scope, the WSGI environ, or
+Django's request.
 
 ```python
 GateMiddleware(
@@ -117,6 +119,7 @@ GateMiddleware(
     mode="test",  # only Stilebase's test agent is asked to pay: try it with nobody affected
     free=["/healthz", "/robots.txt"],  # exact paths that stay free for everyone; every other path is gated
     ip_header="cf-connecting-ip",  # the visitor's address from a header your proxy sets
+    client_ip=lambda scope: ...,  # or work it out yourself (given the scope; WSGI: the environ; Django: the request)
     catch_http_clients=False,  # let curl & co. through (e.g. your own monitoring)
     catch_hidden_agents=False,  # only ask agents that name themselves
     check_browsers=False,  # no browser checks

@@ -81,9 +81,10 @@ def _is_number(value: Any) -> bool:
 
 
 def _number(value: Any) -> float:
+    """A finite number as JavaScript reads JSON: 86400.0 is 86400 (a cookie's Max-Age must be written as an integer)."""
     if not _is_number(value):
         raise TypeError("not a number")
-    return float(value) if isinstance(value, float) else int(value)
+    return int(value) if isinstance(value, float) and value.is_integer() else value
 
 
 def _strings(value: Any) -> tuple[str, ...]:
@@ -234,11 +235,17 @@ def form_quote(value: str | bytes, *_: Any) -> str:
     quote_via."""
     if isinstance(value, bytes):
         value = value.decode("utf-8", "surrogateescape")
-    value = _LONE_SURROGATE.sub("\ufffd", value)  # as URLSearchParams writes one (a header decoded with surrogateescape)
+    value = without_surrogates(value)  # as URLSearchParams writes one (a header decoded with surrogateescape)
     return quote_plus(value, safe="*").replace("~", "%7E")
 
 
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def without_surrogates(text: str) -> str:
+    """`text` with each lone surrogate (a header decoded with surrogateescape) as U+FFFD, as JavaScript's TextEncoder
+    and URLSearchParams write one: encoding it as UTF-8 then never raises."""
+    return _LONE_SURROGATE.sub("\ufffd", text) if _LONE_SURROGATE.search(text) else text
 
 
 def fit_encoded(value: str, max_encoded: int) -> str:
@@ -295,6 +302,6 @@ def in_networks(ip: str | None, networks: Sequence[Network] | NetworkIndex) -> b
 def _refresh_seconds(value: Any) -> int:
     """How often to fetch the settings again: 300 when it's missing, not a number or not positive (as @stilebase/sdk);
     the gate never refreshes more often than every 30 seconds whatever it says."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value <= 0:
-        return 300
+    if not _is_number(value) or value <= 0:
+        return 300  # infinity too (JSON's 1e999): never an OverflowError, as in JS
     return int(value)

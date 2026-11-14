@@ -44,6 +44,7 @@ class AsyncGate(Engine):
         super().__init__(options or GateOptions(**kwargs), adapter)
         self._http: httpx.AsyncClient | None = None
         self._reports_http: httpx.AsyncClient | None = None
+        self._closed = False  # after aclose(): no new reports (a request still draining at shutdown)
         self._config_task: asyncio.Task[None] | None = None
         self._ranges_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -60,6 +61,7 @@ class AsyncGate(Engine):
 
     async def aclose(self) -> None:
         """Wait for background reports, then close the HTTP client (e.g. at shutdown, or in tests)."""
+        self._closed = True
         while self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         for client in (self._http, self._reports_http):
@@ -85,15 +87,15 @@ class AsyncGate(Engine):
     async def _perform(self, effect: Effect) -> Any:
         if isinstance(effect, GetConfig):
             if not self.config_tried:
-                await self._wait(self._load("config"), CONFIG_TIMEOUT + 0.5)
+                await self._wait(self._config_load(), CONFIG_TIMEOUT + 0.5)
             elif self.config_due() and self.begin_refresh("config"):
-                self._background(self._load("config"), refresh="config")
+                self._background(self._config_load(), refresh="config")
             return self.config
         if isinstance(effect, GetRanges):
             if self.ranges is None:
-                await self._wait(self._load("ranges"), REQUIREMENTS_TIMEOUT + 0.5)
+                await self._wait(self._ranges_load(), REQUIREMENTS_TIMEOUT + 0.5)
             elif self.ranges_due() and self.begin_refresh("ranges"):
-                self._background(self._load("ranges"), refresh="ranges")
+                self._background(self._ranges_load(), refresh="ranges")
             return self.ranges if self.ranges is not None else NetworkIndex([])
         if isinstance(effect, GetRequirements):
             cached = self.cached_requirements(effect.query)
@@ -104,7 +106,8 @@ class AsyncGate(Engine):
             self.store_requirements(effect.query, answer.status_code, body, answer.headers.get("cache-control", ""))
             return answer.status_code, body
         if isinstance(effect, Report):
-            if self._reports < MAX_PENDING_REPORTS:  # Stilebase slow: statistics can wait, memory can't grow without end
+            # Stilebase slow: statistics can wait, memory can't grow without end. None after aclose().
+            if self._reports < MAX_PENDING_REPORTS and not self._closed:
                 self._reports += 1
                 self._background(self._report(effect.path, effect.payload))
             return None
@@ -119,17 +122,17 @@ class AsyncGate(Engine):
             self._http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False)
         return self._http
 
-    def _load(self, kind: str) -> asyncio.Task[None]:
-        """The one load of `kind` ("config", "ranges") in flight, as a task of its own: a request waiting on it that is
-        cancelled (its client gone) never cancels the load, so the gate never ends up having "tried" with nothing."""
-        task = self._config_task if kind == "config" else self._ranges_task
-        if task is None or task.done():
-            task = self._spawn(self._load_config() if kind == "config" else self._load_ranges())
-            if kind == "config":
-                self._config_task = task
-            else:
-                self._ranges_task = task
-        return task
+    # The one load of each kind in flight, as a task of its own: a request waiting on it that is cancelled (its client
+    # gone) never cancels the load, so the gate never ends up having "tried" with nothing.
+    def _config_load(self) -> asyncio.Task[None]:
+        if self._config_task is None or self._config_task.done():
+            self._config_task = self._spawn(self._load_config())
+        return self._config_task
+
+    def _ranges_load(self) -> asyncio.Task[None]:
+        if self._ranges_task is None or self._ranges_task.done():
+            self._ranges_task = self._spawn(self._load_ranges())
+        return self._ranges_task
 
     @staticmethod
     async def _wait(task: asyncio.Task[None], timeout: float) -> None:
@@ -138,6 +141,10 @@ class AsyncGate(Engine):
             await asyncio.wait_for(asyncio.shield(task), timeout)
         except asyncio.TimeoutError:
             pass  # the load goes on; this request goes on without it
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise  # this request itself was cancelled
+            # the load was (a shutdown): this request goes on without it
 
     async def _load_config(self) -> None:
         try:

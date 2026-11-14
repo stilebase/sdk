@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 from django.conf import settings
 from django.http import HttpResponse
@@ -18,7 +19,7 @@ from django.http import HttpResponse
 from ._core import GateOptions, Respond
 from ._detect import GateRequest
 from ._sync import SyncGate
-from .wsgi import request_from_environ
+from .wsgi import PATH_SAFE, request_from_environ
 
 
 class GateMiddleware:
@@ -54,6 +55,11 @@ class GateMiddleware:
             scheme = request.scheme  # honours SECURE_PROXY_SSL_HEADER
         except Exception:
             scheme = "http"
-        environ = {**request.META, "wsgi.url_scheme": scheme}
+        # Django has already decoded SCRIPT_NAME and PATH_INFO as UTF-8, a broken byte re-percented (%FF stays "%FF"):
+        # encode as UTF-8, keeping those %XX, as the WSGI and ASGI adapters name the same page.
+        meta = request.META
+        decoded = meta.get("SCRIPT_NAME", "") + meta.get("PATH_INFO", "/")
+        path = quote(decoded.encode("utf-8", "surrogatepass"), safe=PATH_SAFE + "%")
         client_ip = self.client_ip
-        return request_from_environ(environ, self.ip_header, (lambda _environ: client_ip(request)) if client_ip else None)
+        by_request = (lambda _environ: client_ip(request)) if client_ip else None
+        return request_from_environ(meta, self.ip_header, by_request, scheme=scheme, path=path)

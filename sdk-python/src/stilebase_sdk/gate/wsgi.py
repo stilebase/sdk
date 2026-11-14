@@ -82,9 +82,18 @@ class GateMiddleware:
         return request_from_environ(environ, self.ip_header, self.client_ip)
 
 
+PATH_SAFE = "/:@!$&'()*+,;=-._~"  # what stays as it is when a decoded path is percent-encoded again
+
+
 def request_from_environ(
-    environ: dict[str, Any], ip_header: str | None = None, client_ip: Callable[[dict[str, Any]], str | None] | None = None
+    environ: dict[str, Any],
+    ip_header: str | None = None,
+    client_ip: Callable[[dict[str, Any]], str | None] | None = None,
+    *,
+    scheme: str | None = None,
+    path: str | None = None,
 ) -> GateRequest:
+    """The request from a WSGI environ. `scheme` and `path` (percent-encoded) override environ's, for Django."""
     pairs = [(k[5:].replace("_", "-"), str(v)) for k, v in environ.items() if k.startswith("HTTP_")]
     for key, name in (("CONTENT_TYPE", "content-type"), ("CONTENT_LENGTH", "content-length")):
         if environ.get(key):
@@ -95,12 +104,13 @@ def request_from_environ(
     except Exception:
         ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)
     host = headers.get("host") or f"{environ.get('SERVER_NAME', 'localhost')}:{environ.get('SERVER_PORT', '80')}"
-    # PATH_INFO is the path's bytes decoded as latin-1 (PEP 3333): encode those same bytes again.
-    decoded = environ.get("SCRIPT_NAME", "") + environ.get("PATH_INFO", "/")
-    try:
-        raw = decoded.encode("latin-1")
-    except UnicodeEncodeError:
-        raw = decoded.encode()  # a server that went beyond PEP 3333
-    path = quote(raw, safe="/:@!$&'()*+,;=-._~")
-    url = request_url(environ.get("wsgi.url_scheme", "http"), host, path, environ.get("QUERY_STRING", ""))
+    if path is None:
+        # PATH_INFO is the path's bytes decoded as latin-1 (PEP 3333): encode those same bytes again.
+        decoded = environ.get("SCRIPT_NAME", "") + environ.get("PATH_INFO", "/")
+        try:
+            raw = decoded.encode("latin-1")
+        except UnicodeEncodeError:
+            raw = decoded.encode()  # a server that went beyond PEP 3333
+        path = quote(raw, safe=PATH_SAFE)
+    url = request_url(scheme or environ.get("wsgi.url_scheme", "http"), host, path, environ.get("QUERY_STRING", ""))
     return GateRequest(method=environ.get("REQUEST_METHOD", "GET"), url=url, headers=headers, ip=ip)

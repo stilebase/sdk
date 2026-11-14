@@ -87,7 +87,7 @@ def test_wsgi_answers_agents_serves_people_and_paid_requests(stilebase: FakeStil
 # --- Django -------------------------------------------------------------------------------------------------------
 
 
-def _django(stilebase: FakeStilebase, **gate: Any) -> Any:
+def _django(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch, **gate: Any) -> Any:
     """Django set up once per process; a new test Client loads the middleware again, with these STILEBASE_GATE."""
     from django.conf import settings
 
@@ -102,14 +102,14 @@ def _django(stilebase: FakeStilebase, **gate: Any) -> Any:
         import django
 
         django.setup()
-    settings.STILEBASE_GATE = {**options(stilebase), **gate}
+    monkeypatch.setattr(settings, "STILEBASE_GATE", {**options(stilebase), **gate}, raising=False)  # undone after
     from django.test import Client
 
     return Client(HTTP_HOST="shop.example.com")
 
 
-def test_django_answers_agents_serves_people_and_paid_requests(stilebase: FakeStilebase) -> None:
-    client = _django(stilebase)
+def test_django_answers_agents_serves_people_and_paid_requests(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _django(stilebase, monkeypatch)
     asked = client.get("/listings", HTTP_USER_AGENT=GPTBOT, secure=True)
     assert asked.status_code == 402 and asked["PAYMENT-REQUIRED"]
     person = client.get("/listings", secure=True, **{f"HTTP_{k.upper().replace('-', '_')}": v for k, v in BROWSER.items()})
@@ -139,18 +139,28 @@ def __getattr__(name: str) -> Any:  # Django's ROOT_URLCONF: this module, its ur
     raise AttributeError(name)
 
 
-def test_django_never_frees_a_path_it_routes_elsewhere(stilebase: FakeStilebase) -> None:
+def test_django_never_frees_a_path_it_routes_elsewhere(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch) -> None:
     """Django routes /premium/article/../../healthz to the premium view; the gate must not read it as /healthz."""
-    client = _django(stilebase, free=["/healthz"])
+    client = _django(stilebase, monkeypatch, free=["/healthz"])
     for path in ("/premium/article/%2E%2E/%2E%2E/healthz", "/premium/article/../../healthz"):
         answer = client.get(path, HTTP_USER_AGENT=GPTBOT, secure=True)
         assert answer.status_code == 402, (path, answer.content)
 
 
-def test_django_takes_a_client_ip_given_the_request(stilebase: FakeStilebase) -> None:
-    client = _django(stilebase, client_ip=lambda request: request.META.get("HTTP_X_TEST_IP"))
+def test_django_takes_a_client_ip_given_the_request(stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _django(stilebase, monkeypatch, client_ip=lambda request: request.META.get("HTTP_X_TEST_IP"))
     client.get("/listings", HTTP_USER_AGENT=GPTBOT, HTTP_X_TEST_IP="198.51.100.9", secure=True)
     assert stilebase.to("/v1/x402/requirements")[0].query["ip"] == "198.51.100.9"
+
+
+def test_django_names_a_non_ascii_page_as_the_other_adapters_do(
+    stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _django(stilebase, monkeypatch)
+    for path in ("/caf%C3%A9", "/x%FF"):
+        client.get(path, HTTP_USER_AGENT=GPTBOT, secure=True)
+    urls = [c.query["url"] for c in stilebase.to("/v1/x402/requirements")]
+    assert urls == ["https://shop.example.com/caf%C3%A9", "https://shop.example.com/x%FF"]
 
 
 # --- The review's cases (cycle 1) ---------------------------------------------------------------------------------
