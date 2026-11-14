@@ -239,7 +239,12 @@ def form_quote(value: str | bytes, *_: Any) -> str:
     return quote_plus(value, safe="*").replace("~", "%7E")
 
 
+PATH_SAFE = "/:@!$&'()*+,;=-._~"  # what stays as it is when a decoded path is percent-encoded again (every adapter)
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def has_surrogates(text: str) -> bool:
+    return _LONE_SURROGATE.search(text) is not None
 
 
 def without_surrogates(text: str) -> str:

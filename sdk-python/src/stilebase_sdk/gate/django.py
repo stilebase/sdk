@@ -17,9 +17,10 @@ from django.conf import settings
 from django.http import HttpResponse
 
 from ._core import GateOptions, Respond
-from ._detect import GateRequest
+from ._detect import PATH_SAFE, GateRequest
 from ._sync import SyncGate
-from .wsgi import PATH_SAFE, request_from_environ
+from .asgi import visitor_path
+from .wsgi import request_from_environ
 
 
 class GateMiddleware:
@@ -57,9 +58,15 @@ class GateMiddleware:
             scheme = "http"
         # Django has already decoded SCRIPT_NAME and PATH_INFO as UTF-8, a broken byte re-percented (%FF stays "%FF"):
         # encode as UTF-8, keeping those %XX, as the WSGI and ASGI adapters name the same page.
+        # Under ASGI the server decoded the path already (uvicorn replaces a broken byte): the scope's raw path, as the
+        # ASGI adapter reads it.
         meta = request.META
-        decoded = meta.get("SCRIPT_NAME", "") + meta.get("PATH_INFO", "/")
-        path = quote(decoded.encode("utf-8", "surrogatepass"), safe=PATH_SAFE + "%")
+        scope = getattr(request, "scope", None)
+        if isinstance(scope, dict) and scope.get("raw_path"):
+            path = visitor_path(scope)
+        else:
+            decoded = meta.get("SCRIPT_NAME", "") + meta.get("PATH_INFO", "/")
+            path = quote(decoded.encode("utf-8", "surrogatepass"), safe=PATH_SAFE + "%")
         client_ip = self.client_ip
         by_request = (lambda _environ: client_ip(request)) if client_ip else None
         return request_from_environ(meta, self.ip_header, by_request, scheme=scheme, path=path)

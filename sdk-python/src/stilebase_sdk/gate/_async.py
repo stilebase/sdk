@@ -44,7 +44,6 @@ class AsyncGate(Engine):
         super().__init__(options or GateOptions(**kwargs), adapter)
         self._http: httpx.AsyncClient | None = None
         self._reports_http: httpx.AsyncClient | None = None
-        self._closed = False  # after aclose(): no new reports (a request still draining at shutdown)
         self._config_task: asyncio.Task[None] | None = None
         self._ranges_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -60,8 +59,8 @@ class AsyncGate(Engine):
             return PASS
 
     async def aclose(self) -> None:
-        """Wait for background reports, then close the HTTP client (e.g. at shutdown, or in tests)."""
-        self._closed = True
+        """Wait for background reports, then close the HTTP clients (e.g. at shutdown, or in tests). A gate used
+        after this opens them again; close it again then."""
         while self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         for client in (self._http, self._reports_http):
@@ -106,8 +105,8 @@ class AsyncGate(Engine):
             self.store_requirements(effect.query, answer.status_code, body, answer.headers.get("cache-control", ""))
             return answer.status_code, body
         if isinstance(effect, Report):
-            # Stilebase slow: statistics can wait, memory can't grow without end. None after aclose().
-            if self._reports < MAX_PENDING_REPORTS and not self._closed:
+            # Stilebase slow: statistics can wait, memory can't grow without end.
+            if self._reports < MAX_PENDING_REPORTS:
                 self._reports += 1
                 self._background(self._report(effect.path, effect.payload))
             return None
@@ -142,9 +141,11 @@ class AsyncGate(Engine):
         except asyncio.TimeoutError:
             pass  # the load goes on; this request goes on without it
         except asyncio.CancelledError:
-            if not task.cancelled():
+            current = asyncio.current_task()
+            cancelling = getattr(current, "cancelling", None)  # Python 3.11+
+            if not task.cancelled() or (cancelling is not None and cancelling()):
                 raise  # this request itself was cancelled
-            # the load was (a shutdown): this request goes on without it
+            # only the load was (a shutdown): this request goes on without it
 
     async def _load_config(self) -> None:
         try:

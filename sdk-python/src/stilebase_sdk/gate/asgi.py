@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from ._async import AsyncGate
 from ._core import GateOptions, Respond, address_from
-from ._detect import GateRequest, headers_of, request_url
+from ._detect import PATH_SAFE, GateRequest, headers_of, request_url
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -122,11 +122,11 @@ class GateMiddleware:
         server = scope.get("server")
         host = headers.get("host") or (f"{server[0]}:{server[1]}" if server else None)
         query = scope.get("query_string", b"").decode("latin-1")
-        url = request_url(scope.get("scheme", "http"), host, _visitor_path(scope), query)
+        url = request_url(scope.get("scheme", "http"), host, visitor_path(scope), query)
         return GateRequest(method=scope.get("method", "GET"), url=url, headers=headers, ip=ip)
 
 
-def _visitor_path(scope: Scope) -> str:
+def visitor_path(scope: Scope) -> str:
     """The path as the visitor sent it, percent-encoded: raw_path when the server gives it (it is the whole path, also
     under a mount or a root path), else the decoded path encoded again, with root_path in front unless it's in already
     (servers differ)."""
@@ -135,4 +135,4 @@ def _visitor_path(scope: Scope) -> str:
         return bytes(raw).decode("latin-1")
     path, root = scope.get("path", "/"), scope.get("root_path", "")
     full = path if not root or path.startswith(root) else root + path
-    return quote(full, safe="/:@!$&'()*+,;=-._~")
+    return quote(full.encode("utf-8", "surrogatepass"), safe=PATH_SAFE)

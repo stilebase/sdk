@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -761,12 +762,18 @@ def test_a_lone_surrogate_in_a_suspects_user_agent_still_gets_the_check_page(mak
     assert decision.headers["content-type"].startswith("text/html")
 
 
-def test_a_max_age_in_other_digits_is_no_max_age_and_no_crash() -> None:
-    """A Cache-Control from Stilebase or a proxy between: digits int() refuses are no max-age, never an error."""
+def test_max_age_is_read_as_the_javascript_sdk_reads_it() -> None:
+    """The first max-age in ASCII digits, any length, at most 300 seconds; other digits are no max-age, never an error."""
     gate = SyncGate(key=KEY, api_url=API, on_error=lambda e: None)
-    for max_age in ("²", "9" * 5000):
-        gate.store_requirements("q", 200, REQUIRED, f"public, max-age={max_age}")
-        assert gate.cached_requirements("q") is None
+    for header, cached in (
+        ("public, max-age=\u00b2", False),
+        ("public, max-age=" + "9" * 5000, True),
+        ("max-age=9999999999", True),
+        ("max-age=300, max-age=0", True),
+        ("max-age=0, max-age=300", False),
+    ):
+        gate.store_requirements(header, 200, REQUIRED, header)
+        assert (gate.cached_requirements(header) is not None) is cached, header
     gate.close()
 
 
@@ -799,15 +806,59 @@ def test_a_cancelled_load_never_raises_out_of_check(stilebase: FakeStilebase) ->
     assert asyncio.run(run()) == Pass()
 
 
-def test_no_report_client_is_made_after_aclose(stilebase: FakeStilebase) -> None:
+def test_a_gate_used_after_aclose_still_reports(stilebase: FakeStilebase) -> None:
+    """A middleware that outlives one lifespan (Starlette caches it) keeps reporting visits; its clients reopen."""
+
     async def run() -> None:
         gate = AsyncGate(key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None)
         await gate.check(request("/", BROWSER))
         await gate.aclose()
-        await gate.check(request("/listings", {"user-agent": GPTBOT}))  # a request still draining at shutdown
-        await asyncio.gather(*gate._tasks)
-        assert gate._reports_http is None
-        if gate._http is not None:
-            await gate._http.aclose()
+        await gate.check(request("/listings", {"user-agent": GPTBOT}))
+        await gate.aclose()
 
     asyncio.run(run())
+    assert len(stilebase.to("/v1/x402/visits")) == 1
+
+
+# --- The review's cases (stilebase-sdk, cycle 3) ------------------------------------------------------------------
+
+
+def test_a_frameworks_case_insensitive_headers_are_kept_as_given(make: Any) -> None:
+    """SyncGate/AsyncGate used directly with a framework's headers (original-case names, case-insensitive lookups)."""
+    from werkzeug.datastructures import Headers
+
+    person = Headers([(k.title(), v) for k, v in BROWSER.items()])
+    as_given = GateRequest("GET", f"https://{DOMAIN}/listings", person, ip="203.0.113.7")  # type: ignore[arg-type]
+    assert make().check(as_given) == Pass()
+
+
+def test_a_header_value_that_isnt_a_string_doesnt_let_an_agent_through(make: Any) -> None:
+    headers: dict[str, Any] = {"user-agent": GPTBOT, "content-length": 0}
+    assert isinstance(make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")), Respond)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="Python 3.10 can't tell whose cancellation it is")
+def test_a_request_cancelled_with_its_load_stays_cancelled(stilebase: FakeStilebase) -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(1)
+        return stilebase.handle(request)
+
+    async def run() -> None:
+        gate = AsyncGate(key=KEY, api_url=API, transport=httpx.MockTransport(slow), on_error=lambda e: None)
+        waiting = asyncio.ensure_future(gate.check(request("/listings", {"user-agent": GPTBOT})))
+        await asyncio.sleep(0.05)
+        assert gate._config_task is not None
+        gate._config_task.cancel()
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+    asyncio.run(run())
+
+
+def test_a_lone_surrogate_in_a_decoded_path_is_encoded_not_an_error() -> None:
+    from stilebase_sdk.gate.asgi import visitor_path
+    from stilebase_sdk.gate.wsgi import request_from_environ
+
+    assert visitor_path({"path": "/x\udcff"}) == "/x%ED%B3%BF"
+    assert request_from_environ({"PATH_INFO": "/x\udcff", "HTTP_HOST": DOMAIN}).url == f"http://{DOMAIN}/x%ED%B3%BF"

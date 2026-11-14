@@ -151,6 +151,12 @@ What's known and not yet done, each with why it waits. Findings from code review
 - **Django names a page with an encoded `%` (`/a%25FF`) as `/a%FF`**: Django decodes the path before the middleware
   and re-percents only broken bytes, so the two read the same there. The WSGI and ASGI adapters and the JS SDK say
   `/a%25FF`. *Waits:* a `%25` in a page path is rare, and a price set for such a page is the only thing affected.
+- **A request still running after `aclose()`** (an ASGI lifespan shutdown while requests drain) may open a client or
+  start a refresh that nothing closes or waits for: a ResourceWarning at exit. A gate used again after `aclose()` is
+  fine (its clients reopen; close it again). *Waits:* only at process exit.
+- **A pass cookie's Max-Age is written as the settings give it**: a fraction (86400.5) in both SDKs, which browsers
+  ignore (a session cookie), and an enormous number in exponent form in JS only. *Waits:* Stilebase sends a whole
+  number of seconds.
 - **Cleanup:** the sync and async drivers repeat the effect loop and the load functions; the ASGI and WSGI middlewares
   list GateOptions' keywords by hand (Django takes STILEBASE_GATE as GateOptions plus `ip_header` and `client_ip`).
   *Waits:* no behaviour changes.

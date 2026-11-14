@@ -12,7 +12,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from ._core import GateOptions, Respond, address_from
-from ._detect import GateRequest, headers_of, request_url
+from ._detect import PATH_SAFE, GateRequest, headers_of, request_url
 from ._sync import SyncGate
 
 StartResponse = Callable[..., Any]
@@ -82,9 +82,6 @@ class GateMiddleware:
         return request_from_environ(environ, self.ip_header, self.client_ip)
 
 
-PATH_SAFE = "/:@!$&'()*+,;=-._~"  # what stays as it is when a decoded path is percent-encoded again
-
-
 def request_from_environ(
     environ: dict[str, Any],
     ip_header: str | None = None,
@@ -110,7 +107,7 @@ def request_from_environ(
         try:
             raw = decoded.encode("latin-1")
         except UnicodeEncodeError:
-            raw = decoded.encode()  # a server that went beyond PEP 3333
+            raw = decoded.encode("utf-8", "surrogatepass")  # a server that went beyond PEP 3333
         path = quote(raw, safe=PATH_SAFE)
     url = request_url(scheme or environ.get("wsgi.url_scheme", "http"), host, path, environ.get("QUERY_STRING", ""))
     return GateRequest(method=environ.get("REQUEST_METHOD", "GET"), url=url, headers=headers, ip=ip)

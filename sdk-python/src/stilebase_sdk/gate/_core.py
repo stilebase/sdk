@@ -31,6 +31,7 @@ from ._detect import (
     NetworkIndex,
     fit_encoded,
     form_quote,
+    has_surrogates,
     in_networks,
     is_ai_agent,
     is_literal_path,
@@ -56,6 +57,7 @@ MIN_REFRESH = 30.0
 RANGES_MAX_AGE = 3600.0
 REQUIREMENTS_CACHE_SIZE = 1000
 MAX_REQUIREMENTS_AGE = 300
+_MAX_AGE = re.compile(r"max-age=([0-9]+)")
 WARN_EVERY = 600.0
 WEB_BOT_AUTH_HEADERS = ("signature", "signature-input", "signature-agent")
 MAX_PATH = 2048  # Stilebase's limits for a URL or path, and a user agent
@@ -253,11 +255,11 @@ class Engine:
             return cached[1], cached[2]
 
     def store_requirements(self, key: str, status: int, body: Any, cache_control: str) -> None:
-        max_age = 0
-        for part in cache_control.split(","):
-            name, _, value = part.strip().partition("=")
-            if name == "max-age" and value.isascii() and value.isdigit() and len(value) <= 9:
-                max_age = min(int(value), MAX_REQUIREMENTS_AGE)
+        # As @stilebase/sdk reads it: the first max-age=<ASCII digits>, any length, at most MAX_REQUIREMENTS_AGE (a
+        # value too long for int() is over it anyway).
+        found = _MAX_AGE.search(cache_control)
+        digits = found.group(1) if found else "0"
+        max_age = MAX_REQUIREMENTS_AGE if len(digits) > 9 else min(int(digits), MAX_REQUIREMENTS_AGE)
         if status not in (200, 204) or max_age <= 0 or (status == 200 and not isinstance(body, dict)):
             return  # a 200 without a JSON object (cut short, an error page) is asked again next time, as in JS
         with self._lock:
@@ -327,10 +329,17 @@ def decide(
     ip = normalize_ip(request.ip) if isinstance(request.ip, str) else None
     # No address is longer than 45 characters: anything longer (a header someone stuffed) counts as none, as Stilebase
     # treats it, and never bloats the price lookup past proxies' limits.
+    request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url))
     # Lone surrogates (a header decoded with surrogateescape) as U+FFFD, once, here: the lookup, the pass token and
-    # the check page all encode these as UTF-8, and an error there would let the request through.
-    headers = {name: without_surrogates(value) for name, value in request.headers.items()}
-    request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url), headers=headers)
+    # the check page all encode these as UTF-8, and an error there would let the request through. Only then is the
+    # caller's mapping copied (names lowercased, as headers_of gives them); otherwise it's kept as given (a framework's
+    # case-insensitive headers), whatever its values.
+    if any(isinstance(value, str) and has_surrogates(value) for value in request.headers.values()):
+        cleaned = {
+            str(name).lower(): without_surrogates(value) if isinstance(value, str) else value
+            for name, value in request.headers.items()
+        }
+        request = replace(request, headers=cleaned)
     path, page_query = site_path(request.url)
     page = site_url(config.domain, path, page_query)
     if config.verification_path and config.verification_value and path == config.verification_path:
