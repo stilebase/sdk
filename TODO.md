@@ -7,7 +7,10 @@ What's known and not yet done, each with why it waits. Findings from code review
 
 - **Conformance cases for the newer rules:** the cut-to-fit of `url` and `ua` (WHATWG encoding, `~` and `*`), the
   refusals answered at the last price (429 included), `refresh_seconds` defaults, settle answers that aren't a JSON
-  object or whose `success` isn't a boolean. *Waits:* each SDK has its own tests for them; shared cases come next.
+  object or whose `success` isn't a boolean, how settings are read (odd `cloud_asns` entries dropped, numbers never
+  bools or strings, 86400.0 as 86400, an infinite `refresh_seconds` as 300, a `verification` that isn't an object
+  ignored), an empty `errorReason` kept, a 200 price answer without a JSON object never cached. *Waits:* each SDK has
+  its own tests for them; shared cases come next.
 - **A refused lookup for a suspect** (strict detection off) is answered at the last price, where a served suspect is
   the normal answer; and the last price lives in memory, so a fresh serverless instance has none. Put the gateway's
   base requirement in the signed settings, and serve suspects on a refusal. *Waits:* refusals no longer happen in
@@ -133,3 +136,27 @@ What's known and not yet done, each with why it waits. Findings from code review
   Cloudflare Worker meanwhile.
 - **An end-to-end test against a running Stilebase API.** *Waits:* the Python SDK has one in Stilebase's server
   suite, and both SDKs pass the same conformance cases.
+
+## stilebase-sdk
+
+- **Django's middleware is sync only.** Under Django on ASGI every request hops to a thread, and a settlement holds
+  one for up to 65 seconds. It needs an async middleware (`async_capable`). *Waits:* sync Django, the common case,
+  is fine.
+- **The ASGI middleware doesn't gate WebSocket connections.** *Waits:* few sites serve their content over WebSockets.
+- **It doesn't follow redirects**, so an API address that redirects (an old name) gives it no settings. *Waits:* the
+  default address doesn't redirect.
+- **WSGI servers that keep headers with underscores** (uWSGI, gunicorn before 22) let a visitor's `CF_Connecting_IP`
+  land on the same environ key as the proxy's `CF-Connecting-IP`, so `ip_header` can read the visitor's. The README
+  says which servers drop them. *Waits:* WSGI hides the raw header names; the common servers drop such headers.
+- **Django names a page with an encoded `%` (`/a%25FF`) as `/a%FF`**: Django decodes the path before the middleware
+  and re-percents only broken bytes, so the two read the same there. The WSGI and ASGI adapters and the JS SDK say
+  `/a%25FF`. *Waits:* a `%25` in a page path is rare, and a price set for such a page is the only thing affected.
+- **A request still running after `aclose()`** (an ASGI lifespan shutdown while requests drain) may open a client or
+  start a refresh that nothing closes or waits for: a ResourceWarning at exit. A gate used again after `aclose()` is
+  fine (its clients reopen; close it again). *Waits:* only at process exit.
+- **A pass cookie's Max-Age is written as the settings give it**: a fraction (86400.5) in both SDKs, which browsers
+  ignore (a session cookie), and an enormous number in exponent form in JS only. *Waits:* Stilebase sends a whole
+  number of seconds.
+- **Cleanup:** the sync and async drivers repeat the effect loop and the load functions; the ASGI and WSGI middlewares
+  list GateOptions' keywords by hand (Django takes STILEBASE_GATE as GateOptions plus `ip_header` and `client_ip`).
+  *Waits:* no behaviour changes.

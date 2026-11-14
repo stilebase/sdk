@@ -15,3 +15,10 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+  - package-ecosystem: uv
+    directory: /sdk-python
+    schedule:
+      interval: weekly
+    groups:
+      dev-dependencies:
+        dependency-type: development
