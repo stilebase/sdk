@@ -12,7 +12,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from ._core import GateOptions, Respond, address_from
-from ._detect import PATH_SAFE, GateRequest, encode_path, headers_of, request_url
+from ._detect import PATH_SAFE, GateRequest, encode_path, encode_query, headers_of, request_url
 from ._sync import SyncGate
 
 StartResponse = Callable[..., Any]
@@ -63,7 +63,12 @@ class GateMiddleware:
         self.gate = SyncGate(options, adapter="wsgi")
 
     def __call__(self, environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
-        decision = self.gate.check(self.request(environ))
+        try:
+            request = self.request(environ)
+        except Exception as error:  # an environ this can't read (a nonconforming server): the request goes through
+            self.gate.report(error)
+            return self.app(environ, start_response)
+        decision = self.gate.check(request)
         if isinstance(decision, Respond):
             status = f"{decision.status} {HTTPStatus(decision.status).phrase}"
             headers = [*decision.headers.items(), ("Content-Length", str(len(decision.body)))]
@@ -109,5 +114,10 @@ def request_from_environ(
         except UnicodeEncodeError:
             raw = encode_path(decoded)  # a server that went beyond PEP 3333
         path = quote(raw, safe=PATH_SAFE)
-    url = request_url(scheme or environ.get("wsgi.url_scheme", "http"), host, path, environ.get("QUERY_STRING", ""))
+    query = environ.get("QUERY_STRING") or ""
+    try:
+        query_bytes = query.encode("latin-1")  # PEP 3333: the query's bytes as latin-1
+    except UnicodeEncodeError:
+        query_bytes = encode_path(query)  # a server (or Django) that decoded it as UTF-8
+    url = request_url(scheme or environ.get("wsgi.url_scheme", "http"), host, path, encode_query(query_bytes))
     return GateRequest(method=environ.get("REQUEST_METHOD", "GET"), url=url, headers=headers, ip=ip)

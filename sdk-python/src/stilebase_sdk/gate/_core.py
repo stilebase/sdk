@@ -330,6 +330,10 @@ def decide(
     # treats it, and never bloats the price lookup past proxies' limits.
     # Lone surrogates in the URL as U+FFFD (headers get the same as they're read: GateRequest.header).
     request = replace(request, ip=ip if ip and len(ip) <= 45 else None, url=without_surrogates(request.url))
+    # A plain dict with names as sent ("User-Agent", e.g. dict(flask.request.headers)) is read case-insensitively too:
+    # lowercased once. A framework's own mapping is case-insensitive already and stays as given.
+    if type(request.headers) is dict and any(isinstance(n, str) and n != n.lower() for n in request.headers):
+        request = replace(request, headers={str(n).lower(): v for n, v in request.headers.items()})
     path, page_query = site_path(request.url)
     page = site_url(config.domain, path, page_query)
     if config.verification_path and config.verification_value and path == config.verification_path:
@@ -352,11 +356,11 @@ def decide(
 
     # Cut to Stilebase's limits: an over-long URL or user agent must never make its call fail (that would serve the page).
     site_request = {"method": request.method.upper(), "path": (path + (f"?{page_query}" if page_query else ""))[:MAX_PATH]}
-    given_user_agent = request.headers.get("user-agent")
+    signed = {h: value for h in WEB_BOT_AUTH_HEADERS if (value := request.header(h))}
     agent = {
         "ip": request.ip,
-        "user_agent": request.header("user-agent")[:MAX_USER_AGENT] if given_user_agent is not None else None,
-        "headers": {h: request.header(h) for h in WEB_BOT_AUTH_HEADERS if request.header(h)},
+        "user_agent": user_agent[:MAX_USER_AGENT] if request.headers.get("user-agent") is not None else None,
+        "headers": signed,
     }
     host = config.domain
     query = {

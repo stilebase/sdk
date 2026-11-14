@@ -249,3 +249,18 @@ def test_django_names_the_page_with_the_prefix_it_is_mounted_under(
     named = middleware.request(SimpleNamespace(scope=scope, META=meta, scheme="https")).url
     middleware.gate.close()
     assert named == "https://shop.example.com/app/healthz"
+
+
+def test_django_joins_a_script_name_ending_in_a_slash_as_django_does(
+    stilebase: FakeStilebase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    _django(stilebase, monkeypatch)
+    meta = {"SCRIPT_NAME": "/app/", "PATH_INFO": "/healthz", "HTTP_HOST": "shop.example.com", "REQUEST_METHOD": "GET"}
+    middleware = GateMiddleware(lambda request: None)
+    named = middleware.request(SimpleNamespace(META=meta, scheme="https")).url
+    middleware.gate.close()
+    assert named == "https://shop.example.com/app/healthz"

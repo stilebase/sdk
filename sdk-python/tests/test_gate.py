@@ -852,6 +852,7 @@ def test_a_request_cancelled_with_its_load_stays_cancelled(stilebase: FakeStileb
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiting
+        await gate.aclose()
 
     asyncio.run(run())
 
@@ -886,3 +887,90 @@ def test_a_surrogate_in_one_header_doesnt_change_how_the_others_read(make: Any) 
         headers = Headers([*given, *extra])
         as_given = GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")  # type: ignore[arg-type]
         assert site.check(as_given) == Pass(), extra
+
+
+# --- The review's cases (stilebase-sdk, cycle 5) ------------------------------------------------------------------
+
+
+def test_an_asgi_page_is_named_from_the_sites_root_on_every_server() -> None:
+    """root_path in front of raw_path unless it's in already: uvicorn puts it in, Daphne and Hypercorn don't."""
+    from stilebase_sdk.gate.asgi import visitor_path
+
+    assert visitor_path({"raw_path": b"/healthz", "root_path": "/app", "path": "/healthz"}) == "/app/healthz"
+    assert visitor_path({"raw_path": b"/app/healthz", "root_path": "/app", "path": "/app/healthz"}) == "/app/healthz"
+    assert visitor_path({"raw_path": b"/apple", "root_path": "/app", "path": "/apple"}) == "/app/apple"
+    assert visitor_path({"raw_path": b"/app", "root_path": "/app", "path": "/app"}) == "/app"
+    assert visitor_path({"path": "/healthz", "root_path": "/app/"}) == "/app/healthz"
+
+
+def test_a_path_keeps_each_escaped_byte_whatever_else_it_holds() -> None:
+    from stilebase_sdk.gate._detect import encode_path
+
+    assert encode_path("/x\udcff/\ud800") == b"/x\xff/\xed\xa0\x80"
+    assert encode_path("/café") == b"/caf\xc3\xa9"
+
+
+def test_a_query_is_encoded_as_new_url_writes_it(stilebase: FakeStilebase) -> None:
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    async def app(scope: Any, receive: Any, send: Any) -> None: ...
+
+    middleware = GateMiddleware(app, key=KEY, api_url=API, transport=stilebase.transport)
+    scope = {"type": "http", "path": "/listings", "query_string": b'q=\xc3\xa9&a="b c"', "headers": [(b"host", DOMAIN.encode())]}
+    assert middleware.request(scope).url == f"http://{DOMAIN}/listings?q=%C3%A9&a=%22b%20c%22"
+
+
+def test_a_scope_the_adapter_cant_read_goes_through(stilebase: FakeStilebase) -> None:
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    served: list[str] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        served.append(scope["path"])
+
+    middleware = GateMiddleware(app, key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None)
+    asyncio.run(
+        middleware({"type": "http", "method": "GET", "path": "/x", "headers": [("user-agent", "str, not bytes")]}, None, None)  # type: ignore[arg-type]  # never called
+    )
+    assert served == ["/x"]
+
+
+def test_an_environ_the_adapter_cant_read_goes_through(stilebase: FakeStilebase) -> None:
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    middleware = GateMiddleware(
+        lambda environ, start: [b"the page"], key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None
+    )
+    assert middleware({"REQUEST_METHOD": "GET", "PATH_INFO": None}, lambda *a: None) == [b"the page"]
+    middleware.gate.close()
+
+
+def test_header_values_in_bytes_read_as_text(make: Any) -> None:
+    site = make()
+    for user_agent in (GPTBOT.encode(), b""):  # an empty one is a script's, never the text "b''"
+        headers: dict[str, Any] = {"user-agent": user_agent, "accept": b"*/*"}
+        assert isinstance(site.check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")), Respond)
+
+
+def test_a_plain_dict_with_names_as_sent_is_read_case_insensitively(make: Any) -> None:
+    headers = {name.title(): value for name, value in BROWSER.items()}  # dict(flask.request.headers)
+    assert make().check(GateRequest("GET", f"https://{DOMAIN}/listings", headers, ip="203.0.113.7")) == Pass()
+
+
+def test_aclose_closes_its_clients_even_when_its_wait_is_cut_short(stilebase: FakeStilebase) -> None:
+    async def slow_reports(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/x402/visits":
+            await asyncio.sleep(0.3)
+        return stilebase.handle(request)
+
+    async def run() -> None:
+        gate = AsyncGate(key=KEY, api_url=API, transport=httpx.MockTransport(slow_reports), on_error=lambda e: None)
+        await gate.check(request("/listings", {"user-agent": GPTBOT}))  # a 402: its visit is reported, slowly
+        reports = set(gate._tasks)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(gate.aclose(), 0.05)  # a shutdown that won't wait
+        assert gate._http is None and gate._reports_http is None
+        assert not any(task.cancelled() for task in reports)  # the reports weren't cancelled
+        await asyncio.wait(reports)
+
+    asyncio.run(run())

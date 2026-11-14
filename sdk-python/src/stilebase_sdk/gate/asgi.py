@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from ._async import AsyncGate
 from ._core import GateOptions, Respond, address_from
-from ._detect import PATH_SAFE, GateRequest, encode_path, headers_of, request_url
+from ._detect import PATH_SAFE, GateRequest, encode_path, encode_query, headers_of, request_url
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -75,7 +75,13 @@ class GateMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        decision = await self.gate.check(self.request(scope))
+        try:
+            request = self.request(scope)
+        except Exception as error:  # a scope this can't read (a nonconforming server): the request goes through
+            self.gate.report(error)
+            await self.app(scope, receive, send)
+            return
+        decision = await self.gate.check(request)
         if isinstance(decision, Respond):
             reason = HTTPStatus(decision.status).phrase
             headers = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in decision.headers.items()]
@@ -121,20 +127,25 @@ class GateMiddleware:
             ip = address_from(headers, self.ip_header, client[0] if client else None)
         server = scope.get("server")
         host = headers.get("host") or (f"{server[0]}:{server[1]}" if server else None)
-        query = scope.get("query_string", b"").decode("latin-1")
+        query = encode_query(bytes(scope.get("query_string") or b""))
         url = request_url(scope.get("scheme", "http"), host, visitor_path(scope), query)
         return GateRequest(method=scope.get("method", "GET"), url=url, headers=headers, ip=ip)
 
 
 def visitor_path(scope: Scope) -> str:
-    """The path as the visitor sent it, percent-encoded: raw_path when the server gives it (it is the whole path, also
-    under a mount or a root path), else the decoded path encoded again, with root_path in front unless it's in already
-    (servers differ)."""
+    """The path as the visitor sent it, percent-encoded, from the site's root: raw_path when the server gives it, else
+    the decoded path encoded again; root_path in front unless it's in already (uvicorn puts it in both, Daphne and
+    Hypercorn in neither)."""
+    root = scope.get("root_path") or ""
     raw = scope.get("raw_path")
     if isinstance(raw, (bytes, bytearray)) and raw:
         # As sent, but percent-encoded where a URL must be (a raw byte over 0x7F, a space, `"`, `<`…), as JavaScript's
         # new URL writes it; the visitor's own %XX stay.
-        return quote(bytes(raw), safe=PATH_SAFE + "%[]^|")
-    path, root = scope.get("path", "/"), scope.get("root_path", "")
-    full = path if not root or path.startswith(root) else root + path
-    return quote(encode_path(full), safe=PATH_SAFE)
+        path = quote(bytes(raw), safe=PATH_SAFE + "%")
+        prefix = quote(encode_path(root), safe=PATH_SAFE)
+    else:
+        path = quote(encode_path(scope.get("path") or "/"), safe=PATH_SAFE)
+        prefix = quote(encode_path(root), safe=PATH_SAFE)
+    if not prefix or path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+        return path
+    return prefix.rstrip("/") + path

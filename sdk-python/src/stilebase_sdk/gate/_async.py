@@ -61,14 +61,16 @@ class AsyncGate(Engine):
     async def aclose(self) -> None:
         """Wait for background reports, then close the HTTP clients (e.g. at shutdown, or in tests). A gate used
         after this opens them again; close it again then."""
-        for _ in range(3):  # a few rounds, not "until none": requests still arriving keep adding reports
-            if not self._tasks:
-                break
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
-        for client in (self._http, self._reports_http):
-            if client is not None:
-                await client.aclose()
-        self._http = self._reports_http = None
+        try:
+            for _ in range(3):  # a few rounds, not "until none": requests still arriving keep adding reports
+                if not self._tasks:
+                    break
+                await asyncio.wait(set(self._tasks))  # never cancels them, even if this is cancelled (a shutdown timeout)
+        finally:
+            clients, self._http, self._reports_http = (self._http, self._reports_http), None, None
+            for client in clients:
+                if client is not None:
+                    await client.aclose()
 
     async def _run(self, flow: Flow) -> Decision:
         value: Any = None

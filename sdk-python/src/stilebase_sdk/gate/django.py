@@ -36,7 +36,12 @@ class GateMiddleware:
         self.gate = SyncGate(GateOptions(**options), adapter="django")
 
     def __call__(self, request: Any) -> Any:
-        decision = self.gate.check(self.request(request))
+        try:
+            gate_request = self.request(request)
+        except Exception as error:  # a request this can't read: it goes through
+            self.gate.report(error)
+            return self.get_response(request)
+        decision = self.gate.check(gate_request)
         if isinstance(decision, Respond):
             response = HttpResponse(decision.body, status=decision.status)
             for name, value in decision.headers.items():
@@ -59,7 +64,8 @@ class GateMiddleware:
         # encode as UTF-8, keeping those %XX, as the WSGI and ASGI adapters name the same page. SCRIPT_NAME keeps the
         # prefix the site is mounted under (root_path, FORCE_SCRIPT_NAME), as free paths are written.
         meta = request.META
-        decoded = meta.get("SCRIPT_NAME", "") + meta.get("PATH_INFO", "/")
+        # Joined as Django's request.path joins them: "/app/" and "/healthz" are "/app/healthz", never "/app//healthz".
+        decoded = (meta.get("SCRIPT_NAME") or "").rstrip("/") + (meta.get("PATH_INFO") or "/")
         path = quote(encode_path(decoded), safe=PATH_SAFE + "%")
         client_ip = self.client_ip
         by_request = (lambda _environ: client_ip(request)) if client_ip else None

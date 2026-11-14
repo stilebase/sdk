@@ -4,13 +4,14 @@ cases every implementation must agree on."""
 
 from __future__ import annotations
 
+import codecs
 import ipaddress
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 CHROME = re.compile(r"Chrome/\d")
@@ -109,11 +110,15 @@ class GateRequest:
         """A header's value, "" when absent, read through the caller's own mapping (a framework's case-insensitive one
         too). A lone surrogate (a header decoded with surrogateescape) reads as U+FFFD, as JavaScript's TextEncoder
         writes it: the lookup, the pass token and the check page encode values as UTF-8, and an error there would let
-        the request through. A value that isn't a string reads as its text."""
+        the request through. Bytes read as latin-1; another value that isn't a string as its text."""
         value = self.headers.get(name)
         if value is None:
             return ""
-        return without_surrogates(value if isinstance(value, str) else str(value))
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("latin-1")  # as ASGI's header bytes are read
+        elif not isinstance(value, str):
+            value = str(value)
+        return without_surrogates(value)
 
 
 def headers_of(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
@@ -246,7 +251,19 @@ def form_quote(value: str | bytes, *_: Any) -> str:
     return quote_plus(value, safe="*").replace("~", "%7E")
 
 
-PATH_SAFE = "/:@!$&'()*+,;=-._~"  # what stays as it is when a decoded path is percent-encoded again (every adapter)
+# What stays as it is when a path is percent-encoded (every adapter), as JavaScript's new URL leaves a path: it encodes
+# only controls, a space, `"`, `#`, `<`, `>`, `?`, a backtick, `{`, `}` and bytes over 0x7F (`\\` is %5C here, as the
+# gate reads a backslash).
+PATH_SAFE = "/:@!$&'()*+,;=-._~[]^|"
+# The same for a query (WHATWG's special-query set: a space, `"`, `#`, `'`, `<`, `>` and bytes over 0x7F are encoded).
+QUERY_SAFE = "!$%&()*+,-./:;=?@[\\]^_`{|}~"
+
+
+def encode_query(raw: bytes) -> str:
+    """A query as the visitor sent it, percent-encoded where a URL must be, as new URL writes it (its own %XX stay)."""
+    return quote(raw, safe=QUERY_SAFE)
+
+
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
@@ -257,12 +274,22 @@ def without_surrogates(text: str) -> str:
 
 
 def encode_path(decoded: str) -> bytes:
-    """A decoded path's bytes: a surrogate from surrogateescape decoding is the byte the visitor sent (%FF), any other
-    lone one is written as it is, never an error."""
-    try:
-        return decoded.encode("utf-8", "surrogateescape")
-    except UnicodeEncodeError:
-        return decoded.encode("utf-8", "surrogatepass")
+    """A decoded path's bytes: each surrogate from surrogateescape decoding is the byte the visitor sent (%FF), any other
+    lone one is written as it is (UTF-8), character by character; never an error."""
+    return decoded.encode("utf-8", "stilebase.path")
+
+
+def _path_errors(error: UnicodeError) -> tuple[bytes, int]:
+    if not isinstance(error, UnicodeEncodeError):
+        raise error
+    out = bytearray()
+    for char in error.object[error.start : error.end]:
+        code = ord(char)
+        out += bytes([code - 0xDC00]) if 0xDC80 <= code <= 0xDCFF else char.encode("utf-8", "surrogatepass")
+    return bytes(out), error.end
+
+
+codecs.register_error("stilebase.path", _path_errors)
 
 
 def fit_encoded(value: str, max_encoded: int) -> str:
