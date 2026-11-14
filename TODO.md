@@ -133,3 +133,12 @@ What's known and not yet done, each with why it waits. Findings from code review
   Cloudflare Worker meanwhile.
 - **An end-to-end test against a running Stilebase API.** *Waits:* the Python SDK has one in Stilebase's server
   suite, and both SDKs pass the same conformance cases.
+
+## stilebase-sdk
+
+- **Django's middleware is sync only.** Under Django on ASGI every request hops to a thread, and a settlement holds
+  one for up to 65 seconds. It needs an async middleware (`async_capable`). *Waits:* sync Django, the common case,
+  is fine.
+- **The ASGI middleware doesn't gate WebSocket connections.** *Waits:* few sites serve their content over WebSockets.
+- **It doesn't follow redirects**, so an API address that redirects (an old name) gives it no settings. *Waits:* the
+  default address doesn't redirect.
