@@ -7,13 +7,19 @@
 # files as users get them, apart from where they were built. The publish job runs none of the package's code: it gets
 # the built files, checks their hashes, and publishes through trusted publishing (OIDC: no tokens stored anywhere), with
 # provenance. Pushing the tag is the release: there's no approval step. The publish jobs run in the `release`
-# environment, which only these tags may use, and npm and PyPI accept a publish only from it: a branch can't publish.
+# environment, which only these tags may use; the trusted publishers accept only that environment. CLAUDE.md
+# ("Releases") has what to check before pushing a tag.
 
 name: Release
 
 on:
   push:
     tags: ["sdk-js-v*", "sdk-py-v*"]
+
+# One release of each package at a time, in the order the tags were pushed (no approval step puts them in order).
+concurrency:
+  group: release-${{ startsWith(github.ref_name, 'sdk-js-v') && 'npm' || 'pypi' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
