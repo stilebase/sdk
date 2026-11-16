@@ -59,17 +59,23 @@ These are what the reviews check first. Breaking one is a blocking finding.
 `.github/workflows/release.yml`, on tags `sdk-js-v<version>` and `sdk-py-v<version>`. Only admins can create those tags
 (a ruleset). A build job checks that the tag is the package's version and on `main`, runs the checks and builds; the
 publish job gets only the built files and publishes them through trusted publishing (no stored tokens), with
-provenance. Pushing the tag is the release: there's no approval step after it, so check before you push that the tagged
-commit is on `main` and that `release.yml` there is the one you expect. Bump the version and `CHANGELOG.md` in a pull
-request first.
+provenance. Pushing the tag is the release: there's no approval step after it. The publish jobs run in the `release`
+environment, which has no reviewers and only one rule: only `sdk-js-v*` and `sdk-py-v*` tags may use it. npm and PyPI
+trust a publish only from that environment, so a branch (an edited `release.yml` included) can't publish. Bump the
+version and `CHANGELOG.md` in a pull request first.
+
+Before pushing a tag, check that the tagged commit is on `main` and look at that commit's own `release.yml`: it's the
+copy that runs, and its "on main" check is part of it.
 
 The first npm release can't use trusted publishing yet (npm configures it on an existing package). Push the
 `sdk-js-v0.1.0` tag and let the workflow build, check and smoke-test it; its publish step fails. Download that run's
 `npm-package` artifact, check its SHA-256 against the build job's output, and publish exactly that file by hand:
 `npm publish stilebase-sdk-0.1.0.tgz --access public --ignore-scripts` (logged in with 2FA). Then add the trusted
-publisher (`stilebase/sdk`, `release.yml`, no environment) and require 2FA with tokens disallowed. Every later release
-goes through the workflow. PyPI's trusted publisher is registered the same way: owner `stilebase`, repo `sdk`,
-workflow `release.yml`, no environment.
+publisher (`stilebase/sdk`, `release.yml`, environment `release`) and require 2FA with tokens disallowed. Every later
+release goes through the workflow.
+
+PyPI: before the first `sdk-py-v*` tag, register a pending trusted publisher for project `stilebase-sdk` (owner
+`stilebase`, repo `sdk`, workflow `release.yml`, environment `release`); the first tag then creates the project.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`
