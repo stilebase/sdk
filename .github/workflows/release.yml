@@ -5,8 +5,8 @@
 # Each package has three jobs. The build job checks that the tag is the package's version and on main, runs every
 # check, builds and records the built files' hashes; it has no publishing rights. The smoke job installs exactly those
 # files as users get them, apart from where they were built. The publish job runs none of the package's code: it gets
-# the built files, checks their hashes, waits for approval in the `release` environment (which only these tags may
-# use), and publishes through trusted publishing (OIDC: no tokens stored anywhere), with provenance.
+# the built files, checks their hashes, and publishes through trusted publishing (OIDC: no tokens stored anywhere), with
+# provenance. Pushing the tag is the release: there's no approval step after it.
 
 name: Release
 
@@ -90,7 +90,6 @@ jobs:
   npm-publish:
     needs: [npm-build, npm-smoke]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: read
       id-token: write # npm trusted publishing and provenance; this job only
@@ -190,7 +189,6 @@ jobs:
   pypi-publish:
     needs: [pypi-build, pypi-smoke]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: read
       id-token: write # PyPI trusted publishing and attestations; this job only
