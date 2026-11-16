@@ -37,6 +37,14 @@ library"), go here.
   lone surrogate sent through the gate rather than `_respond`, and a `client_ip` Future that fails later (its error
   retrieved). *Waits:* the behaviour is covered at one level below.
 
+## Releases
+
+- **One environment for both packages:** `release` admits both tag patterns, so the npm and PyPI trusted publishers
+  are tied to the same environment, and only `release.yml`'s `if:` conditions keep an `sdk-js-v*` run from publishing
+  to PyPI. Two environments (`release-npm` for `sdk-js-v*`, `release-pypi` for `sdk-py-v*`), each publisher registered
+  to its own, would tie each package to its own tags. *Waits:* the tagged commit's `release.yml` is checked before
+  every tag (CLAUDE.md, "Releases"); register the publishers first.
+
 ## At Stilebase, not in the SDKs
 
 - **Price unusual page URLs conservatively** (percent-encoding, dot segments, a `#`): a router may serve another page
