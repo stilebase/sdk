@@ -1,57 +1,61 @@
-// A stand-in for Stilebase's x402 API, answering the calls a gate makes, recording them.
+// A stand-in for Stilebase's gate API, answering the calls a gate makes, recording them.
 
-import example from "../../conformance/gate-config.example.json";
-import type { GateConfig } from "../src/detect.js";
+import example from "../../conformance/settings.example.json";
+import type { GateRequest, GateSettings } from "../src/protocol.js";
 
 export const GATEWAY_ID = "8f14e45f-ceea-467a-9575-1e2a5e4c8a01";
 export const KEY = `sbk_${GATEWAY_ID.replaceAll("-", "")}_${"ab".repeat(32)}`;
 export const API = "https://stilebase.test";
-export const DOMAIN = "shop.example.com";
 export const NOW = 1_792_756_800_000;
-export const REQUIRED = {
-  x402Version: 2,
-  error: "PAYMENT-SIGNATURE header is required",
-  resource: { url: `https://${DOMAIN}/listings` },
-  accepts: [{ scheme: "exact", network: "eip155:8453", amount: "10000", payTo: "0xPlatform" }],
-};
+export const DECIDE = `/v1/gate/sites/${GATEWAY_ID}/decide`;
+export const SETTLE = `/v1/gate/sites/${GATEWAY_ID}/settle`;
+export const SETTINGS = `/v1/gate/sites/${GATEWAY_ID}/settings`;
+export const CAPTURES = `/v1/gate/sites/${GATEWAY_ID}/captures`;
+export const PAYMENT_REQUIRED = { action: "respond", status: 402, headers: { "content-type": "application/json", "payment-required": "e30=" }, body: "{}" };
 
 export interface Call {
   method: string;
   path: string;
-  query: URLSearchParams;
   headers: Headers;
-  body: unknown;
+  body: Record<string, unknown> | null;
 }
 
-export function liveConfig(overrides: Partial<GateConfig> = {}): GateConfig {
-  const config = structuredClone(example) as GateConfig;
-  return { ...config, gateway: { ...config.gateway, domain: DOMAIN, live: true, reason: null }, verification: null, ...overrides };
-}
+type Reply = { status: number; body?: unknown; delayMs?: number } | Error;
 
-type Answer = { status: number; body?: unknown; headers?: Record<string, string> } | Error;
+export function settings(overrides: Partial<GateSettings> = {}): GateSettings {
+  return { ...(structuredClone(example) as GateSettings), ...overrides };
+}
 
 export class FakeStilebase {
   calls: Call[] = [];
-  config: Answer = { status: 200, body: liveConfig() };
-  requirements: (query: URLSearchParams) => Answer = () => ({ status: 200, body: REQUIRED, headers: { "cache-control": "public, max-age=300" } });
-  settle: Answer = { status: 200, body: { success: true, transaction: "0xabc", network: "eip155:8453", header: "eyJzdWNjZXNzIjp0cnVlfQ==" } };
-  ranges: Answer = { status: 200, body: { prefixes: ["20.15.240.64/28", "2600:1f28:365:80b0::/60"] } };
+  settings: Reply = { status: 200, body: settings() };
+  decide: (body: Record<string, unknown>) => Reply = (body) => (isAgent(body) ? { status: 200, body: PAYMENT_REQUIRED } : { status: 200, body: { action: "pass", remember: { seconds: 600 } } });
+  settle: Reply = { status: 200, body: { action: "pass", response_headers: { "payment-response": "eyJzdWNjZXNzIjp0cnVlfQ==" } } };
 
   readonly fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     const raw = init?.body ? new TextDecoder().decode(init.body as Uint8Array) : "";
-    const call: Call = { method: init?.method ?? "GET", path: url.pathname, query: url.searchParams, headers: new Headers(init?.headers), body: raw ? JSON.parse(raw) : null };
-    this.calls.push(call);
-    let answer: Answer;
-    if (url.pathname === `/v1/x402/sites/${GATEWAY_ID}/config`) answer = this.config;
-    else if (url.pathname === "/v1/x402/requirements") answer = this.requirements(url.searchParams);
-    else if (url.pathname === "/v1/x402/agent-ranges") answer = this.ranges;
-    else if (url.pathname === "/v1/x402/settle") answer = this.settle;
-    else if (url.pathname === "/v1/x402/visits") answer = { status: 204 };
-    else answer = { status: 404 };
-    if (answer instanceof Error) throw answer;
-    const body = answer.status === 204 || answer.body === undefined ? null : JSON.stringify(answer.body);
-    return new Response(body, { status: answer.status, headers: { "content-type": "application/json", ...answer.headers } });
+    const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    this.calls.push({ method: init?.method ?? "GET", path: url.pathname, headers: new Headers(init?.headers), body });
+    let reply: Reply;
+    if (url.pathname === SETTINGS) reply = this.settings;
+    else if (url.pathname === DECIDE) reply = this.decide(body ?? {});
+    else if (url.pathname === SETTLE) reply = this.settle;
+    else if (url.pathname === CAPTURES) reply = { status: 204 };
+    else reply = { status: 404 };
+    if (reply instanceof Error) throw reply;
+    if (reply.delayMs) {
+      const signal = init?.signal;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, reply.delayMs);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("timed out", "TimeoutError"));
+        });
+      });
+    }
+    const text = reply.status === 204 || reply.body === undefined ? null : typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body);
+    return new Response(text, { status: reply.status, headers: { "content-type": "application/json" } });
   };
 
   to(path: string): Call[] {
@@ -59,24 +63,17 @@ export class FakeStilebase {
   }
 }
 
+function isAgent(body: Record<string, unknown>): boolean {
+  const headers = (body.headers as Array<[string, string]> | undefined) ?? [];
+  return headers.some(([n, v]) => n === "user-agent" && /GPTBot|curl/.test(v));
+}
+
 /** A request as an adapter hands it to the gate. */
-export function request(path: string, headers: Record<string, string> = {}, extra: { method?: string; ip?: string; url?: string } = {}) {
-  return {
-    method: extra.method ?? "GET",
-    url: extra.url ?? `https://${DOMAIN}${path}`,
-    headers: new Headers(headers),
-    ip: extra.ip ?? "203.0.113.7",
-  };
+export function request(path: string, headers: Record<string, string> = {}, extra: Partial<GateRequest> = {}): GateRequest {
+  return { method: "GET", path, scheme: "https", headers: Object.entries(headers), ip: "203.0.113.7", ...extra };
 }
 
 export const GPTBOT = { "user-agent": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)" };
-export const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-export const BROWSER = {
-  "user-agent": CHROME_UA,
-  accept: "text/html,application/xhtml+xml",
-  "accept-language": "en-US,en;q=0.9",
-  "sec-fetch-mode": "navigate",
-  "sec-fetch-site": "none",
-  "sec-fetch-dest": "document",
-  "sec-ch-ua": '"Chromium";v="130"',
-};
+export const BROWSER = { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36", accept: "text/html" };
+export const PAYMENT = "eyJ4NDAyVmVyc2lvbiI6Mn0=";
+export const PAID = { ...GPTBOT, "payment-signature": PAYMENT };

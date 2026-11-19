@@ -1,55 +1,115 @@
-"""The gate for async sites (ASGI: FastAPI, Starlette, Litestar…): `decide`'s questions answered with httpx's
-AsyncClient, refreshes and visit reports in background tasks."""
+"""The gate for async sites (ASGI: FastAPI, Starlette, Litestar…): the calls to Stilebase with httpx's AsyncClient,
+the settings refreshed and the captures sent in background tasks."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from typing import Any
 
 import httpx
 
 from ._core import (
-    CONFIG_TIMEOUT,
-    MAX_PENDING_REPORTS,
+    CAPTURE_QUEUE,
+    CAPTURE_TIMEOUT,
     PASS,
-    REPORT_TIMEOUT,
-    REQUIREMENTS_TIMEOUT,
-    SETTLE_TIMEOUT,
+    SETTINGS_TIMEOUT,
+    UNUSABLE,
+    Answer,
+    Capture,
+    Copy,
     Decision,
-    Effect,
     Engine,
-    Flow,
     GateOptions,
-    GetConfig,
-    GetRanges,
-    GetRequirements,
-    Report,
-    Settle,
+    Hold,
+    Settings,
+    capture_body,
+    decide_body,
+    delivery,
     json_body,
+    read_answer,
+    remember_key,
+    too_large,
+    unknown_payment,
 )
-from ._detect import GateRequest
+from ._request import GateRequest
 
 
 class AsyncGate(Engine):
-    """`await gate.check(request)` tells you what to do with a request. Never raises."""
+    """`await gate.check(request)` says what to do with a request; `await gate.settle(...)` settles a held answer;
+    `gate.capture(...)` sends a copy. None of them raises."""
 
     def __init__(self, options: GateOptions | None = None, adapter: str = "async", **kwargs: Any) -> None:
         super().__init__(options or GateOptions(**kwargs), adapter)
         self._http: httpx.AsyncClient | None = None
-        self._config_task: asyncio.Task[None] | None = None
-        self._ranges_task: asyncio.Task[None] | None = None
+        self._settings_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._reports = 0
+        self._asking: dict[str, asyncio.Future[Answer]] = {}  # same remember key, no payment: one question at a time
+        self._captures: asyncio.Queue[dict[str, Any]] | None = None
+        self._capturing: asyncio.Task[None] | None = None
 
     async def check(self, request: GateRequest) -> Decision:
-        if self.site is None:
+        if not self.active:
             return PASS
         try:
-            return await self._run(self.flow(request))
+            settings = await self._settings()
+            decision = self.before_asking(request, settings)
+            if decision is not None or settings is None:
+                return decision or PASS
+            body = decide_body(request, settings, self.options.assume_https)
+            if request.payment is not None:
+                answer = await self._ask("decide", body, settings.settle_timeout)
+                return self.after_asking(request, settings, body, answer)
+            key = remember_key(request, settings)
+            asking = self._asking.get(key)
+            if asking is not None:  # another request like this one is being asked about: its answer is ours
+                try:
+                    answer = await asyncio.wait_for(asyncio.shield(asking), settings.timeout)
+                except Exception:
+                    answer = UNUSABLE
+                return self.after_asking(request, settings, body, answer) if answer.usable else PASS
+            future: asyncio.Future[Answer] = asyncio.get_running_loop().create_future()
+            self._asking[key] = future
+            answer = UNUSABLE
+            try:
+                answer = await self._ask("decide", body, settings.timeout)
+            finally:
+                self._asking.pop(key, None)
+                if not future.done():
+                    future.set_result(answer)
+            return self.after_asking(request, settings, body, answer)
         except Exception as error:
             self.report(error)
-            return PASS
+            return unknown_payment() if request.payment is not None else PASS
+
+    async def settle(self, hold: Hold, status: int, body: bytes) -> Decision:
+        """The site answered a paid request (`body` its whole body, held): settle it (SPEC.md, section 7). `Pass`: send
+        the held answer with its `response_headers`; anything else: send that instead."""
+        if len(body) > hold.max_bytes:
+            return too_large()
+        try:
+            settings = self.settings or Settings()
+            url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
+            answer = await asyncio.wait_for(self.http.post(url, content=data, headers=headers), settings.settle_timeout)
+            return self.settled(answer.status_code, json_body(answer.content))
+        except Exception as error:
+            self.report(error)
+            return unknown_payment()
+
+    def capture(self, order: Capture, status: int, headers: Sequence[tuple[str, str]], copy: Copy, ttfb_ms: int) -> None:
+        """Send a copy of the site's answer in the background (SPEC.md, section 9): one at a time, at most
+        CAPTURE_QUEUE waiting, the rest and any failure dropped."""
+        try:
+            payload = capture_body(order.token, status, headers, copy.body, copy.size, copy.truncated, ttfb_ms)
+            if self._captures is None:
+                self._captures = asyncio.Queue(CAPTURE_QUEUE)
+            self._captures.put_nowait(payload)
+            if self._capturing is None or self._capturing.done():
+                self._capturing = self._spawn(self._send_captures())
+        except asyncio.QueueFull:
+            pass
+        except Exception as error:
+            self.report(error)
 
     async def aclose(self) -> None:
         """Wait for background work, then close the HTTP client (e.g. at shutdown, or in tests)."""
@@ -65,96 +125,48 @@ class AsyncGate(Engine):
             self._http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False)
         return self._http
 
-    async def _run(self, flow: Flow) -> Decision:
-        value: Any = None
-        error: Exception | None = None
-        while True:
-            try:
-                effect = flow.throw(error) if error is not None else flow.send(value)
-            except StopIteration as stop:
-                result: Decision = stop.value
-                return result
-            value, error = None, None
-            try:
-                value = await self._perform(effect)
-            except Exception as exc:
-                self.report(exc)
-                error = exc
-
-    async def _perform(self, effect: Effect) -> Any:
-        if isinstance(effect, GetConfig):
-            if not self.config_at:
-                await self._wait(self._config_load(), CONFIG_TIMEOUT + 0.5)
-            elif self.config_due() and (self._config_task is None or self._config_task.done()):
-                self._config_load()
-            return self.config
-        if isinstance(effect, GetRanges):
-            if self.ranges is None:
-                await self._wait(self._ranges_load(), REQUIREMENTS_TIMEOUT + 0.5)
-            elif self.ranges_due() and (self._ranges_task is None or self._ranges_task.done()):
-                self._ranges_load()
-            return self.ranges or []
-        if isinstance(effect, GetRequirements):
-            cached = self.cached_requirements(effect.query)
-            if cached is not None:
-                return cached
-            answer = await self.http.get(f"{self.api}/v1/x402/requirements?{effect.query}", timeout=REQUIREMENTS_TIMEOUT)
-            body = json_body(answer.content) if answer.status_code == 200 else None
-            self.store_requirements(effect.query, answer.status_code, body, answer.headers.get("cache-control", ""))
-            return answer.status_code, body
-        if isinstance(effect, Report):
-            if self._reports < MAX_PENDING_REPORTS:  # Stilebase slow: statistics can wait, memory can't grow without end
-                self._reports += 1
-                self._spawn(self._report(effect.payload))
-            return None
-        if isinstance(effect, Settle):
-            body, headers = self.signed_post("/v1/x402/settle", effect.payload)
-            answer = await self.http.post(f"{self.api}/v1/x402/settle", content=body, headers=headers, timeout=SETTLE_TIMEOUT)
-            return answer.status_code, json_body(answer.content)
-        raise TypeError(f"Unknown effect {effect!r}")
-
-    # Each load runs as a task of its own: a request waiting on it that is cancelled (its client gone) never cancels it.
-    def _config_load(self) -> asyncio.Task[None]:
-        if self._config_task is None or self._config_task.done():
-            self._config_task = self._spawn(self._load_config())
-        return self._config_task
-
-    def _ranges_load(self) -> asyncio.Task[None]:
-        if self._ranges_task is None or self._ranges_task.done():
-            self._ranges_task = self._spawn(self._load_ranges())
-        return self._ranges_task
-
-    @staticmethod
-    async def _wait(task: asyncio.Task[None], timeout: float) -> None:
-        """This request's own deadline for a load; asyncio.wait never cancels the load nor raises when it ends."""
-        await asyncio.wait({task}, timeout=timeout)
-
-    async def _load_config(self) -> None:
+    async def _ask(self, name: str, body: dict[str, Any], budget: float) -> Answer:
+        """One call to Stilebase within `budget` seconds, connecting included; anything wrong is UNUSABLE."""
         try:
-            answer = await self.http.get(self.api + self.config_path(), headers=self.config_headers(), timeout=CONFIG_TIMEOUT)
-            self.take_config(answer.status_code, json_body(answer.content))
+            url, data, headers = self.signed_post(name, body)
+            answer = await asyncio.wait_for(self.http.post(url, content=data, headers=headers, timeout=budget), budget)
+            return read_answer(answer.status_code, json_body(answer.content))
         except Exception as error:
-            self.config_at = self.options.now()
+            self.report(error)
+            return UNUSABLE
+
+    async def _settings(self) -> Settings | None:
+        if not self.settings_at:
+            await asyncio.wait({self._load()}, timeout=SETTINGS_TIMEOUT)  # this request's deadline, never the load's
+        elif self.settings_due():
+            self._load()
+        return self.settings
+
+    # The load runs as a task of its own: a request waiting on it that is cancelled (its client gone) never cancels it.
+    def _load(self) -> asyncio.Task[None]:
+        if self._settings_task is None or self._settings_task.done():
+            self._settings_task = self._spawn(self._load_settings())
+        return self._settings_task
+
+    async def _load_settings(self) -> None:
+        try:
+            answer = await self.http.get(
+                self.api + self.path("settings"), headers=self.settings_headers(), timeout=SETTINGS_TIMEOUT
+            )
+            self.take_settings(answer.status_code, json_body(answer.content))
+        except Exception as error:
+            self.settings_at = self.options.now()
             self.report(error)  # keep the last good settings, if any
 
-    async def _load_ranges(self) -> None:
-        try:
-            answer = await self.http.get(f"{self.api}/v1/x402/agent-ranges", timeout=REQUIREMENTS_TIMEOUT)
-            self.take_ranges(answer.status_code, json_body(answer.content))
-        except Exception as error:
-            if self.ranges is None:
-                self.ranges = []
-            self.ranges_at = self.options.now()
-            self.report(error)
-
-    async def _report(self, payload: dict[str, Any]) -> None:
-        try:
-            body, headers = self.signed_post("/v1/x402/visits", payload)
-            await self.http.post(f"{self.api}/v1/x402/visits", content=body, headers=headers, timeout=REPORT_TIMEOUT)
-        except Exception as error:
-            self.report(error)
-        finally:
-            self._reports -= 1
+    async def _send_captures(self) -> None:
+        assert self._captures is not None
+        while not self._captures.empty():
+            payload = self._captures.get_nowait()
+            try:
+                url, data, headers = self.signed_post("captures", payload)
+                await asyncio.wait_for(self.http.post(url, content=data, headers=headers), CAPTURE_TIMEOUT)
+            except Exception as error:
+                self.report(error)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         task = asyncio.get_running_loop().create_task(work)

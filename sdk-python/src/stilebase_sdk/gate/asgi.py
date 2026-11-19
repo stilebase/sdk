@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, MutableMapping
+import time
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote
 
 from ._async import AsyncGate
-from ._core import GateOptions, Respond, address_from
-from ._detect import GateRequest, headers_of
+from ._core import Capture, Copy, GateOptions, Pass, Respond, too_large
+from ._request import GateRequest, address_from, headers_of
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -27,7 +28,8 @@ ASGIApp = Callable[[Any, Any, Any], Awaitable[None]]
 
 
 class GateMiddleware:
-    """AI agents pay per request with x402, settled through Stilebase; everyone else reaches your app.
+    """Forwards each request to Stilebase and does what it says: AI agents pay per request with x402, everyone else
+    reaches your app.
 
     `ip_header`: read the visitor's address from this header (one your proxy or CDN sets, e.g. "cf-connecting-ip").
     Default: the connection's address (behind a proxy, run uvicorn with --proxy-headers so it's the visitor's). Never a
@@ -40,9 +42,8 @@ class GateMiddleware:
         *,
         key: str | None = None,
         api_url: str | None = None,
-        catch_http_clients: bool = True,
-        catch_hidden_agents: bool = True,
-        check_browsers: bool = True,
+        disabled: bool | None = None,
+        assume_https: bool = True,
         on_error: Callable[[Exception], None] | None = None,
         ip_header: str | None = None,
         client_ip: Callable[[Scope], str | None] | None = None,
@@ -53,13 +54,7 @@ class GateMiddleware:
         self.ip_header = ip_header
         self.client_ip = client_ip
         options = GateOptions(
-            key=key,
-            api_url=api_url,
-            catch_http_clients=catch_http_clients,
-            catch_hidden_agents=catch_hidden_agents,
-            check_browsers=check_browsers,
-            on_error=on_error,
-            transport=transport,
+            key=key, api_url=api_url, disabled=disabled, assume_https=assume_https, on_error=on_error, transport=transport
         )
         self.gate = AsyncGate(options, adapter="asgi")
 
@@ -69,29 +64,86 @@ class GateMiddleware:
             return
         decision = await self.gate.check(self.request(scope))
         if isinstance(decision, Respond):
-            headers = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in decision.headers.items()]
-            headers.append((b"content-length", str(len(decision.body)).encode()))
-            reason = HTTPStatus(decision.status).phrase
-            await send({"type": "http.response.start", "status": decision.status, "headers": headers, "reason": reason})
-            await send({"type": "http.response.body", "body": decision.body})
+            await _send_response(send, decision)
             return
-        receipt = decision.payment_response
-        if not receipt:
+        if decision.hold is not None:
+            await self._held(scope, receive, send, decision)
+            return
+        if not decision.response_headers and decision.capture is None:
             await self.app(scope, receive, send)
             return
+        await self.app(scope, receive, self._passing(send, decision))
 
-        async def with_receipt(message: Message) -> None:
+    def _passing(self, send: Send, decision: Pass) -> Send:
+        """`send`, adding the answer's headers and copying the site's answer as it goes out (never delaying it)."""
+        added = _raw(decision.response_headers)
+        order = decision.capture
+        copy = Copy(order.max_bytes) if order is not None else None
+        started = time.monotonic()
+        seen: dict[str, Any] = {}
+
+        async def wrapped(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), (b"payment-response", receipt.encode())]}
+                if added:
+                    message = {**message, "headers": [*message.get("headers", []), *added]}
+                seen["status"], seen["headers"] = message.get("status", 200), message.get("headers", [])
+                seen["ttfb"] = int((time.monotonic() - started) * 1000)
+            elif message["type"] == "http.response.body" and order is not None and copy is not None and "status" in seen:
+                try:
+                    copy.add(bytes(message.get("body", b"")))
+                    if not message.get("more_body", False) and not seen.get("sent"):
+                        seen["sent"] = True
+                        self.gate.capture(order, int(seen["status"]), _text(seen["headers"]), copy, seen["ttfb"])
+                except Exception as error:
+                    self.gate.report(error)
             await send(message)
 
-        await self.app(scope, receive, with_receipt)
+        return wrapped
+
+    async def _held(self, scope: Scope, receive: Receive, send: Send, decision: Pass) -> None:
+        """A paid request: the site's answer is held, settled, and only then sent (SPEC.md, section 7)."""
+        hold = decision.hold
+        assert hold is not None
+        started = time.monotonic()
+        held: dict[str, Any] = {"parts": [], "size": 0}
+
+        async def holding(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                held["start"] = message
+                held["ttfb"] = int((time.monotonic() - started) * 1000)
+            elif message["type"] == "http.response.body":
+                chunk = bytes(message.get("body", b""))
+                held["size"] += len(chunk)
+                if held["size"] <= hold.max_bytes:
+                    held["parts"].append(chunk)
+                else:
+                    held["parts"] = []  # too large to be paid for: nothing is kept
+
+        await self.app(scope, receive, holding)  # an app that raises: nothing was settled, nothing sent
+        start = held.get("start")
+        if start is None:
+            return
+        if held["size"] > hold.max_bytes:
+            await _send_response(send, too_large())
+            return
+        status = int(start.get("status", 200))
+        body = b"".join(held["parts"])
+        outcome = await self.gate.settle(hold, status, body)
+        if isinstance(outcome, Respond):
+            await _send_response(send, outcome)
+            return
+        headers = [*start.get("headers", []), *_raw(decision.response_headers), *_raw(outcome.response_headers)]
+        await send({**start, "headers": headers})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+        if decision.capture is not None:
+            _capture_whole(self.gate, decision.capture, status, _text(headers), body, held["ttfb"])
 
     def request(self, scope: Scope) -> GateRequest:
-        headers = headers_of((k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", []))
+        pairs = tuple((k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", []))
         client = scope.get("client")
         try:
-            ip = self.client_ip(scope) if self.client_ip else address_from(headers, self.ip_header, client[0] if client else None)
+            fallback = client[0] if client else None
+            ip = self.client_ip(scope) if self.client_ip else address_from(headers_of(pairs), self.ip_header, fallback)
             if inspect.isawaitable(ip):  # an async client_ip: no address (a sync function is what it takes)
                 if inspect.iscoroutine(ip):
                     ip.close()
@@ -99,13 +151,40 @@ class GateMiddleware:
                     ip.add_done_callback(lambda done: done.cancelled() or done.exception())  # retrieved, never logged
                 ip = None
         except Exception:
-            ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)
+            ip = None  # a client_ip that raises: no address
         raw = scope.get("raw_path")
-        path = (
-            raw.decode("latin-1")
-            if isinstance(raw, bytes) and raw
-            else quote(scope.get("root_path", "") + scope.get("path", "/"))
-        )
+        if isinstance(raw, bytes) and raw:
+            path = raw.decode("latin-1")
+        else:
+            path = quote(scope.get("root_path", "") + scope.get("path", "/"))
         query = scope.get("query_string", b"").decode("latin-1")
-        url = f"{scope.get('scheme', 'http')}://localhost{path}{'?' + query if query else ''}"
-        return GateRequest(scope.get("method", "GET"), url, headers, ip=ip)
+        target = f"{path}?{query}" if query else path
+        return GateRequest(scope.get("method", "GET"), target, pairs, scheme=scope.get("scheme", "http"), ip=ip)
+
+
+def _raw(headers: Mapping[str, str]) -> list[tuple[bytes, bytes]]:
+    return [(k.lower().encode("latin-1", "replace"), v.encode("latin-1", "replace")) for k, v in headers.items()]
+
+
+def _text(headers: Any) -> list[tuple[str, str]]:
+    return [(bytes(k).decode("latin-1"), bytes(v).decode("latin-1")) for k, v in headers]
+
+
+def _capture_whole(gate: AsyncGate, order: Capture, status: int, headers: list[tuple[str, str]], body: bytes, ttfb: int) -> None:
+    try:
+        copy = Copy(order.max_bytes)
+        copy.add(body)
+        gate.capture(order, status, headers, copy, ttfb)
+    except Exception as error:
+        gate.report(error)
+
+
+async def _send_response(send: Send, decision: Respond) -> None:
+    headers = [(k.lower().encode("latin-1", "replace"), v.encode("latin-1", "replace")) for k, v in decision.headers.items()]
+    headers.append((b"content-length", str(len(decision.body)).encode()))
+    try:
+        reason = HTTPStatus(decision.status).phrase
+    except ValueError:
+        reason = ""
+    await send({"type": "http.response.start", "status": decision.status, "headers": headers, "reason": reason})
+    await send({"type": "http.response.body", "body": decision.body})

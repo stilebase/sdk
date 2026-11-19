@@ -1,3 +1,5 @@
+// The adapters: the same gate, through Express and the Fetch API, end to end against a fake Stilebase.
+
 import type { AddressInfo } from "node:net";
 
 import express from "express";
@@ -5,14 +7,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { gate as expressGate } from "../src/express.js";
 import { withGate } from "../src/fetch.js";
-import { API, BROWSER, DOMAIN, FakeStilebase, GPTBOT, KEY, REQUIRED } from "./fake-stilebase.js";
+import { API, BROWSER, CAPTURES, DECIDE, FakeStilebase, GPTBOT, KEY, PAID, SETTLE } from "./fake-stilebase.js";
 
-const PAID = { ...GPTBOT, "payment-signature": "eyJ4NDAyVmVyc2lvbiI6Mn0=" };
 let stilebase: FakeStilebase;
+const BIG = "x".repeat(2000);
 
 beforeEach(() => {
   stilebase = new FakeStilebase();
 });
+
+const holding = (max = 1000) => () => ({ status: 200, body: { action: "pass", settle_after: { max_bytes: max } } });
 
 describe("express", () => {
   let server: ReturnType<ReturnType<typeof express>["listen"]> | undefined;
@@ -20,157 +24,125 @@ describe("express", () => {
 
   async function site(options: Parameters<typeof expressGate>[0] = {}) {
     const app = express();
-    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, ...options }));
+    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined, ...options }));
     app.get("/listings", (_req, res) => {
-      res.send("the listings");
+      res.set("x-site", "yes").send("the listings");
+    });
+    app.get("/stream", (_req, res) => {
+      res.status(200);
+      res.write("part one, ");
+      res.end("part two");
+    });
+    app.get("/big", (_req, res) => {
+      res.send(BIG);
+    });
+    app.get("/broken", (_req, res) => {
+      res.status(500).send("oops");
     });
     server = app.listen(0);
     await new Promise((resolve) => server!.once("listening", resolve));
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }
 
-  it("answers agents 402, serves people, and serves paid requests with PAYMENT-RESPONSE", async () => {
+  it("answers what Stilebase says, serves people, and forwards the request line and headers", async () => {
     const base = await site();
-    const asked = await fetch(`${base}/listings`, { headers: GPTBOT });
-    expect(asked.status).toBe(402);
-    expect(JSON.parse(atob(asked.headers.get("payment-required")!))).toEqual(REQUIRED);
-    const person = await fetch(`${base}/listings`, { headers: BROWSER });
+    expect((await fetch(`${base}/listings`, { headers: GPTBOT })).status).toBe(402);
+    const person = await fetch(`${base}/listings?x=1`, { headers: { ...BROWSER, cookie: "s=1; stilebase_pass=abc" } });
     expect([person.status, await person.text()]).toEqual([200, "the listings"]);
-    const paid = await fetch(`${base}/listings`, { headers: PAID });
-    expect([paid.status, await paid.text(), paid.headers.get("payment-response")]).toEqual([200, "the listings", "eyJzdWNjZXNzIjp0cnVlfQ=="]);
+    const body = stilebase.to(DECIDE)[1]!.body!;
+    expect(body).toMatchObject({ request: { method: "GET", scheme: "https", path: "/listings?x=1" }, cookies: { stilebase_pass: "abc" }, credentials: true });
+    expect((body.headers as Array<[string, string]>).some(([n]) => n === "cookie")).toBe(false);
+  });
+
+  it("holds a paid answer and sends it with the receipt once settled", async () => {
+    stilebase.decide = holding();
+    const base = await site();
+    const paid = await fetch(`${base}/stream`, { headers: PAID });
+    expect([paid.status, await paid.text(), paid.headers.get("payment-response")]).toEqual([200, "part one, part two", "eyJzdWNjZXNzIjp0cnVlfQ=="]);
+    expect(stilebase.to(SETTLE)[0]!.body).toMatchObject({ delivery: { status: 200, size: 18 } });
+  });
+
+  it("never sends a held answer the settlement refused, or one too large to hold", async () => {
+    stilebase.decide = holding();
+    stilebase.settle = { status: 200, body: { action: "respond", status: 402, headers: { "content-type": "text/plain" }, body: "refused" } };
+    const base = await site();
+    const refused = await fetch(`${base}/listings`, { headers: PAID });
+    expect([refused.status, await refused.text(), refused.headers.get("x-site")]).toEqual([402, "refused", null]);
+    const big = await fetch(`${base}/big`, { headers: PAID });
+    expect(big.status).toBe(502);
+    expect(stilebase.to(SETTLE)).toHaveLength(1); // the big one wasn't settled
+  });
+
+  it("reports what the site answered a paid request, so a failure isn't charged", async () => {
+    stilebase.decide = holding();
+    stilebase.settle = { status: 200, body: { action: "pass", response_headers: { "payment-response": "bm90" } } };
+    const base = await site();
+    const broken = await fetch(`${base}/broken`, { headers: PAID });
+    expect([broken.status, await broken.text()]).toEqual([500, "oops"]);
+    expect(stilebase.to(SETTLE)[0]!.body).toMatchObject({ delivery: { status: 500, size: 4 } });
+  });
+
+  it("copies an answer for capture without changing it", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", capture: { token: "t", max_bytes: 8 } } });
+    const base = await site();
+    const served = await fetch(`${base}/stream`, { headers: BROWSER });
+    expect(await served.text()).toBe("part one, part two");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(stilebase.to(CAPTURES)[0]!.body).toMatchObject({ token: "t", status: 200, body: btoa("part one"), size: 18, truncated: true });
   });
 
   it("takes the visitor's address from req.ip, or the header you name (its last entry)", async () => {
-    await fetch(`${await site()}/listings`, { headers: { ...GPTBOT, "cf-connecting-ip": "198.51.100.9" } });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("127.0.0.1"); // a header anyone can send isn't trusted
+    await fetch(`${await site()}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70" } });
+    expect(stilebase.to(DECIDE)[0]!.body!.client_ip).toBe("127.0.0.1");
     server?.close();
     stilebase = new FakeStilebase();
     await fetch(`${await site({ ipHeader: "x-forwarded-for" })}/listings`, { headers: { ...GPTBOT, "x-forwarded-for": "20.15.240.70, 198.51.100.9" } });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("198.51.100.9");
-  });
-
-  it("names an absolute-form target by its path, as Express routes it", async () => {
-    const { request: raw } = await import("node:http");
-    const base = new URL(await site());
-    await new Promise<void>((resolve, reject) => {
-      const req = raw({ host: base.hostname, port: base.port, path: "http://x/listings?a=1", headers: GPTBOT }, (res) => {
-        res.resume();
-        res.on("end", resolve);
-      });
-      req.on("error", reject);
-      req.end();
-    });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings?a=1`);
-  });
-
-  it("names an absolute-form target new URL can't read (a port too large) by its path, as Express routes it", async () => {
-    const { request: raw } = await import("node:http");
-    const base = new URL(await site());
-    await new Promise<void>((resolve, reject) => {
-      const req = raw({ host: base.hostname, port: base.port, path: "http://host:99999/listings", headers: GPTBOT }, (res) => {
-        res.resume();
-        res.on("end", resolve);
-      });
-      req.on("error", reject);
-      req.end();
-    });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings`);
-  });
-
-  it("names a target whose host Express's parser ends early by the path Express routes", async () => {
-    const { request: raw } = await import("node:http");
-    const base = new URL(await site());
-    await new Promise<void>((resolve, reject) => {
-      const req = raw({ host: base.hostname, port: base.port, path: "http://h%2Fpremium%2Fx.html", headers: GPTBOT }, (res) => {
-        res.resume();
-        res.on("end", resolve);
-      });
-      req.on("error", reject);
-      req.end();
-    });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/%2Fpremium%2Fx.html`);
-  });
-
-  it("names the page the visitor asked for, mounted or rewritten, and never a query after a #", async () => {
-    const app = express();
-    app.use((req, _res, next) => {
-      if (req.url.startsWith("/en/")) req.url = req.url.slice(3); // a rewrite before the gate
-      next();
-    });
-    app.use("/blog", expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch }));
-    app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch }));
-    server = app.listen(0);
-    await new Promise((resolve) => server!.once("listening", resolve));
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    await fetch(`${base}/blog?x=1`, { headers: GPTBOT });
-    await fetch(`${base}/en/premium/x`, { headers: GPTBOT });
-    const { request: raw } = await import("node:http");
-    await new Promise<void>((resolve, reject) => {
-      const req = raw({ host: "127.0.0.1", port: (server!.address() as AddressInfo).port, path: "/a#b?c", headers: GPTBOT }, (res) => {
-        res.resume();
-        res.on("end", resolve);
-      });
-      req.on("error", reject);
-      req.end();
-    });
-    const urls = stilebase.to("/v1/x402/requirements").map((c) => c.query.get("url"));
-    expect(urls).toEqual([`https://${DOMAIN}/blog?x=1`, `https://${DOMAIN}/en/premium/x`, `https://${DOMAIN}/a`]);
-  });
-
-  it("names a path starting with two slashes as Express routes it, the whole path", async () => {
-    const { request: raw } = await import("node:http");
-    const base = new URL(await site());
-    await new Promise<void>((resolve, reject) => {
-      const req = raw({ host: base.hostname, port: base.port, path: "//premium/article.html", headers: GPTBOT }, (res) => {
-        res.resume();
-        res.on("end", resolve);
-      });
-      req.on("error", reject);
-      req.end();
-    });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}//premium/article.html`);
-  });
-
-  it("handles a clientIp that returns a promise: no address, never an unhandled rejection", async () => {
-    const base = await site({ clientIp: (() => Promise.reject(new Error("lookup failed"))) as unknown as () => string });
-    expect((await fetch(`${base}/listings`, { headers: GPTBOT })).status).toBe(402);
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("");
-  });
-
-  it("names the page by the gateway's domain and the path Express routes", async () => {
-    await fetch(`${await site()}/listings?city=Haifa`, { headers: GPTBOT });
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("url")).toBe(`https://${DOMAIN}/listings?city=Haifa`);
+    expect(stilebase.to(DECIDE)[0]!.body!.client_ip).toBe("198.51.100.9");
   });
 });
 
-describe("fetch (Workers, Hono, Bun, Deno)", () => {
-  const handler = (_request: Request, _env?: unknown, _ctx?: unknown) => new Response("the page");
-  const env = { STILEBASE_KEY: KEY, STILEBASE_API_URL: API };
+describe("fetch", () => {
+  const handler = async (request: Request, ..._rest: unknown[]) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/big") return new Response(BIG);
+    if (path === "/broken") return new Response("oops", { status: 500 });
+    return new Response("the listings", { headers: { "x-site": "yes" } });
+  };
+  const site = (options = {}) => withGate(handler, { key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined, ...options });
 
-  it("on Workers: the key from env, the address from CF-Connecting-IP, reports kept alive with waitUntil", async () => {
+  it("answers what Stilebase says and serves people", async () => {
+    const wrapped = site();
+    expect((await wrapped(new Request("https://shop.example.com/listings", { headers: GPTBOT }))).status).toBe(402);
+    const person = await wrapped(new Request("https://shop.example.com/listings", { headers: BROWSER }));
+    expect(await person.text()).toBe("the listings");
+  });
+
+  it("holds and settles a paid answer; refuses too large ones", async () => {
+    stilebase.decide = holding();
+    const wrapped = site();
+    const paid = await wrapped(new Request("https://shop.example.com/listings", { headers: PAID }));
+    expect([paid.status, await paid.text(), paid.headers.get("payment-response"), paid.headers.get("x-site")]).toEqual([200, "the listings", "eyJzdWNjZXNzIjp0cnVlfQ==", "yes"]);
+    expect((await wrapped(new Request("https://shop.example.com/big", { headers: PAID }))).status).toBe(502);
+    stilebase.settle = { status: 200, body: { action: "unknown_payment", retry_after: 5 } };
+    expect((await wrapped(new Request("https://shop.example.com/listings", { headers: PAID }))).status).toBe(503);
+  });
+
+  it("copies an answer for capture while the visitor gets it whole", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", capture: { token: "t", max_bytes: 3 } } });
     const waits: Promise<unknown>[] = [];
-    const ctx = { waitUntil: (task: Promise<unknown>) => waits.push(task) };
-    const worker = withGate(handler, { fetch: stilebase.fetch });
-    const request = new Request(`https://${DOMAIN}/listings`, { headers: { ...GPTBOT, "cf-connecting-ip": "20.15.240.70" } });
-    Object.assign(request, { cf: { httpProtocol: "HTTP/2", asn: 8075 } });
-    const asked = await worker(request, env, ctx);
-    expect(asked.status).toBe(402);
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("20.15.240.70");
+    const wrapped = site();
+    const served = await wrapped(new Request("https://shop.example.com/listings", { headers: BROWSER }), {}, { waitUntil: (p: Promise<unknown>) => waits.push(p) });
+    expect(await served.text()).toBe("the listings");
     await Promise.all(waits);
-    expect(stilebase.to("/v1/x402/visits")).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stilebase.to(CAPTURES)[0]!.body).toMatchObject({ body: btoa("the"), size: 12, truncated: true });
   });
 
-  it("serves people, and paid requests with PAYMENT-RESPONSE", async () => {
-    const worker = withGate(handler, { fetch: stilebase.fetch });
-    const person = await worker(new Request(`https://${DOMAIN}/listings`, { headers: BROWSER }), env, {});
-    expect([person.status, await person.text()]).toEqual([200, "the page"]);
-    const paid = await worker(new Request(`https://${DOMAIN}/listings`, { headers: PAID }), env, {});
-    expect([paid.status, await paid.text(), paid.headers.get("payment-response")]).toEqual([200, "the page", "eyJzdWNjZXNzIjp0cnVlfQ=="]);
-  });
-
-  it("outside Cloudflare, reads no address unless told where", async () => {
-    const worker = withGate(handler, { fetch: stilebase.fetch, key: KEY, apiUrl: API });
-    await worker(new Request(`https://${DOMAIN}/x`, { headers: { ...GPTBOT, "cf-connecting-ip": "20.15.240.70" } }));
-    expect(stilebase.to("/v1/x402/requirements")[0]?.query.get("ip")).toBe("");
+  it("reads the Worker's env and Cloudflare's edge facts", async () => {
+    const wrapped = withGate(handler, { apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
+    const request = new Request("https://shop.example.com/listings", { headers: { ...GPTBOT, "cf-connecting-ip": "198.51.100.9" } });
+    Object.defineProperty(request, "cf", { value: { asn: 16509, httpProtocol: "HTTP/2" } });
+    await wrapped(request, { STILEBASE_KEY: KEY }, {});
+    expect(stilebase.to(DECIDE)[0]!.body).toMatchObject({ client_ip: "198.51.100.9", edge: { asn: 16509, http_protocol: "HTTP/2" } });
   });
 });

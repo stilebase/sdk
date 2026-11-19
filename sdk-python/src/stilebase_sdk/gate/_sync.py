@@ -1,61 +1,105 @@
-"""The gate for sync sites (WSGI: Flask, Django…): `decide`'s questions answered with httpx's Client, refreshes and visit
-reports on background threads."""
+"""The gate for sync sites (WSGI: Flask, Django…): the calls to Stilebase with httpx's Client, the settings refreshed
+and the captures sent on background threads.
+
+Unlike the async gate, concurrent requests like each other aren't folded into one question: each thread asks on its
+own (a WSGI server's threads would wait on each other's locks, inside their own budget, for little gain)."""
 
 from __future__ import annotations
 
 import queue
 import threading
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 
 from ._core import (
-    CONFIG_TIMEOUT,
-    MAX_PENDING_REPORTS,
+    CAPTURE_QUEUE,
+    CAPTURE_TIMEOUT,
     PASS,
-    REPORT_TIMEOUT,
-    REQUIREMENTS_TIMEOUT,
-    SETTLE_TIMEOUT,
+    SETTINGS_TIMEOUT,
+    UNUSABLE,
+    Answer,
+    Capture,
+    Copy,
     Decision,
-    Effect,
     Engine,
-    Flow,
     GateOptions,
-    GetConfig,
-    GetRanges,
-    GetRequirements,
-    Report,
-    Settle,
+    Hold,
+    Settings,
+    capture_body,
+    decide_body,
+    delivery,
     json_body,
+    read_answer,
+    too_large,
+    unknown_payment,
 )
-from ._detect import GateRequest
+from ._request import GateRequest
 
 
 class SyncGate(Engine):
-    """`gate.check(request)` tells you what to do with a request. Never raises. Safe to share between threads."""
+    """`gate.check(request)` says what to do with a request; `gate.settle(...)` settles a held answer; `gate.capture(...)`
+    sends a copy. None of them raises. Safe to share between threads."""
 
     def __init__(self, options: GateOptions | None = None, adapter: str = "sync", **kwargs: Any) -> None:
         super().__init__(options or GateOptions(**kwargs), adapter)
         self._http = httpx.Client(transport=self.options.transport, follow_redirects=False)
-        self._config_lock = threading.Lock()
-        self._ranges_lock = threading.Lock()
-        self._refreshing: set[str] = set()
-        self._reports: queue.Queue[dict[str, Any]] = queue.Queue(MAX_PENDING_REPORTS)
-        self._worker: threading.Thread | None = None
+        self._settings_lock = threading.Lock()
+        self._refreshing = False
+        self._captures: queue.Queue[dict[str, Any]] = queue.Queue(CAPTURE_QUEUE)
+        self._capturing = False
+        self._state = threading.Lock()
         self._busy = threading.Condition()
         self._pending = 0
 
     def check(self, request: GateRequest) -> Decision:
-        if self.site is None:
+        if not self.active:
             return PASS
         try:
-            return self._run(self.flow(request))
+            settings = self._settings()
+            decision = self.before_asking(request, settings)
+            if decision is not None or settings is None:
+                return decision or PASS
+            body = decide_body(request, settings, self.options.assume_https)
+            budget = settings.settle_timeout if request.payment is not None else settings.timeout
+            return self.after_asking(request, settings, body, self._ask("decide", body, budget))
         except Exception as error:
             self.report(error)
-            return PASS
+            return unknown_payment() if request.payment is not None else PASS
+
+    def settle(self, hold: Hold, status: int, body: bytes) -> Decision:
+        """The site answered a paid request (`body` its whole body, held): settle it (SPEC.md, section 7). `Pass`: send
+        the held answer with its `response_headers`; anything else: send that instead."""
+        if len(body) > hold.max_bytes:
+            return too_large()
+        try:
+            settings = self.settings or Settings()
+            url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
+            answer = self._http.post(url, content=data, headers=headers, timeout=settings.settle_timeout)
+            return self.settled(answer.status_code, json_body(answer.content))
+        except Exception as error:
+            self.report(error)
+            return unknown_payment()
+
+    def capture(self, order: Capture, status: int, headers: Sequence[tuple[str, str]], copy: Copy, ttfb_ms: int) -> None:
+        """Send a copy of the site's answer in the background (SPEC.md, section 9): one at a time, at most
+        CAPTURE_QUEUE waiting, the rest and any failure dropped."""
+        try:
+            payload = capture_body(order.token, status, headers, copy.body, copy.size, copy.truncated, ttfb_ms)
+            self._captures.put_nowait(payload)
+            with self._state:
+                if self._capturing:
+                    return
+                self._capturing = True
+            self._background(self._send_captures)
+        except queue.Full:
+            pass
+        except Exception as error:
+            self.report(error)
 
     def wait(self, timeout: float = 10.0) -> None:
-        """Wait for background refreshes and reports to finish (tests, shutdown)."""
+        """Wait for background refreshes and captures to finish (tests, shutdown)."""
         with self._busy:
             self._busy.wait_for(lambda: self._pending == 0, timeout)
 
@@ -63,133 +107,74 @@ class SyncGate(Engine):
         self.wait()
         self._http.close()
 
-    def _run(self, flow: Flow) -> Decision:
-        value: Any = None
-        error: Exception | None = None
-        while True:
-            try:
-                effect = flow.throw(error) if error is not None else flow.send(value)
-            except StopIteration as stop:
-                result: Decision = stop.value
-                return result
-            value, error = None, None
-            try:
-                value = self._perform(effect)
-            except Exception as exc:
-                self.report(exc)
-                error = exc
-
-    def _perform(self, effect: Effect) -> Any:
-        if isinstance(effect, GetConfig):
-            if not self.config_at:
-                self._load_config(wait=True)
-            elif self.config_due():
-                self._in_background("config", self._load_config)
-            return self.config
-        if isinstance(effect, GetRanges):
-            if self.ranges is None:
-                self._load_ranges(wait=True)
-            elif self.ranges_due():
-                self._in_background("ranges", self._load_ranges)
-            return self.ranges or []
-        if isinstance(effect, GetRequirements):
-            cached = self.cached_requirements(effect.query)
-            if cached is not None:
-                return cached
-            answer = self._http.get(f"{self.api}/v1/x402/requirements?{effect.query}", timeout=REQUIREMENTS_TIMEOUT)
-            body = json_body(answer.content) if answer.status_code == 200 else None
-            self.store_requirements(effect.query, answer.status_code, body, answer.headers.get("cache-control", ""))
-            return answer.status_code, body
-        if isinstance(effect, Report):
-            self._report_visit(effect.payload)
-            return None
-        if isinstance(effect, Settle):
-            body, headers = self.signed_post("/v1/x402/settle", effect.payload)
-            answer = self._http.post(f"{self.api}/v1/x402/settle", content=body, headers=headers, timeout=SETTLE_TIMEOUT)
-            return answer.status_code, json_body(answer.content)
-        raise TypeError(f"Unknown effect {effect!r}")
-
-    def _load_config(self, wait: bool = False) -> None:
-        # The first load: requests arriving meanwhile wait for it (at most its timeout) instead of loading again.
-        if not self._config_lock.acquire(blocking=wait, timeout=CONFIG_TIMEOUT + 0.5 if wait else -1):
-            return
+    def _ask(self, name: str, body: dict[str, Any], budget: float) -> Answer:
+        """One call to Stilebase within `budget` seconds for each step (connect, write, read); anything wrong is
+        UNUSABLE."""
         try:
-            if wait and self.config_at:
-                return  # another request loaded them while this one waited
-            answer = self._http.get(self.api + self.config_path(), headers=self.config_headers(), timeout=CONFIG_TIMEOUT)
-            self.take_config(answer.status_code, json_body(answer.content))
+            url, data, headers = self.signed_post(name, body)
+            answer = self._http.post(url, content=data, headers=headers, timeout=budget)
+            return read_answer(answer.status_code, json_body(answer.content))
         except Exception as error:
-            self.config_at = self.options.now()
-            self.report(error)  # keep the last good settings, if any
-        finally:
-            self._config_lock.release()
-
-    def _load_ranges(self, wait: bool = False) -> None:
-        if not self._ranges_lock.acquire(blocking=wait, timeout=REQUIREMENTS_TIMEOUT + 0.5 if wait else -1):
-            return
-        try:
-            if wait and self.ranges is not None:
-                return
-            answer = self._http.get(f"{self.api}/v1/x402/agent-ranges", timeout=REQUIREMENTS_TIMEOUT)
-            self.take_ranges(answer.status_code, json_body(answer.content))
-        except Exception as error:
-            if self.ranges is None:
-                self.ranges = []
-            self.ranges_at = self.options.now()
             self.report(error)
-        finally:
-            self._ranges_lock.release()
+            return UNUSABLE
 
-    def _in_background(self, name: str, work: Any) -> None:
-        """A refresh on a short-lived thread of its own, one per kind at a time: never queued behind visit reports."""
+    def _settings(self) -> Settings | None:
+        if not self.settings_at:
+            if self._settings_lock.acquire(timeout=SETTINGS_TIMEOUT):  # one thread loads; the others wait for it
+                try:
+                    if not self.settings_at:
+                        self._load_settings()
+                finally:
+                    self._settings_lock.release()
+        elif self.settings_due():
+            with self._state:
+                if self._refreshing:
+                    return self.settings
+                self._refreshing = True
+            self._background(self._refresh)
+        return self.settings
+
+    def _refresh(self) -> None:
+        try:
+            self._load_settings()
+        finally:
+            with self._state:
+                self._refreshing = False
+
+    def _load_settings(self) -> None:
+        try:
+            answer = self._http.get(self.api + self.path("settings"), headers=self.settings_headers(), timeout=SETTINGS_TIMEOUT)
+            self.take_settings(answer.status_code, json_body(answer.content))
+        except Exception as error:
+            self.settings_at = self.options.now()
+            self.report(error)  # keep the last good settings, if any
+
+    def _send_captures(self) -> None:
+        while True:
+            with self._state:  # checked and released together: a copy queued meanwhile is never left behind
+                try:
+                    payload = self._captures.get_nowait()
+                except queue.Empty:
+                    self._capturing = False
+                    return
+            try:
+                url, data, headers = self.signed_post("captures", payload)
+                self._http.post(url, content=data, headers=headers, timeout=CAPTURE_TIMEOUT)
+            except Exception as error:
+                self.report(error)
+
+    def _background(self, work: Any) -> None:
         with self._busy:
-            if name in self._refreshing:
-                return
-            self._refreshing.add(name)
             self._pending += 1
 
         def run() -> None:
             try:
                 work()
-            finally:
-                with self._busy:
-                    self._refreshing.discard(name)
-                    self._pending -= 1
-                    self._busy.notify_all()
-
-        try:
-            threading.Thread(target=run, name=f"stilebase-sdk-{name}", daemon=True).start()
-        except Exception as error:  # no thread to be had: undo, so the next due request tries again
-            with self._busy:
-                self._refreshing.discard(name)
-                self._pending -= 1
-                self._busy.notify_all()
-            self.report(error)
-
-    def _report_visit(self, payload: dict[str, Any]) -> None:
-        """One worker thread posts the visits; dropped when too many are waiting (Stilebase slow)."""
-        with self._busy:
-            try:
-                self._reports.put_nowait(payload)
-            except queue.Full:
-                return
-            self._pending += 1
-            if self._worker is None or not self._worker.is_alive():
-                self._worker = threading.Thread(target=self._drain, name="stilebase-sdk", daemon=True)
-                try:
-                    self._worker.start()
-                except Exception as error:  # no thread to be had: statistics wait for the next visit's try
-                    self.report(error)
-
-    def _drain(self) -> None:
-        while True:
-            payload = self._reports.get()
-            try:
-                body, headers = self.signed_post("/v1/x402/visits", payload)
-                self._http.post(f"{self.api}/v1/x402/visits", content=body, headers=headers, timeout=REPORT_TIMEOUT)
             except Exception as error:
                 self.report(error)
             finally:
                 with self._busy:
                     self._pending -= 1
                     self._busy.notify_all()
+
+        threading.Thread(target=run, daemon=True, name="stilebase-gate").start()

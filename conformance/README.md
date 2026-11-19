@@ -9,13 +9,13 @@ The cases every gate must agree on, whatever language it's written in:
 
 | File | What it is | Checked by |
 | --- | --- | --- |
-| `vectors.json` | Call signing, site keys, the browser check's pass token, agent and script matching, the browser-header checks, address ranges, address normalization | Each SDK's conformance tests, and Stilebase's own |
-| `gate-config.example.json` | The settings a gate fetches (`GET /v1/x402/sites/{id}/config`, [SPEC.md](../SPEC.md)), as Stilebase sends them | Each SDK's tests serve it from a fake Stilebase. Stilebase's tests fail when it no longer matches what Stilebase sends |
+| `vectors.json` | Call signing, site keys, address normalization, remember keys, skipped paths, the decide body a gate sends, and what it does with each answer | Each SDK's conformance tests, and Stilebase's own |
+| `settings.example.json` | The settings a gate fetches (`GET /v1/gate/sites/{id}/settings`, [SPEC.md](../SPEC.md)), as Stilebase sends them | Each SDK's tests serve it from a fake Stilebase. Stilebase's tests fail when it no longer matches what Stilebase sends |
 
 Every key and secret here is made up, for a gateway that doesn't exist. None of them works against Stilebase.
 
-The browser-check cases in `vectors.json` are checked against `gate-config.example.json`; a case "over plain http" is
-never scored, whatever its headers.
+The decide-body cases are checked against `settings.example.json`'s `strip_headers` and `forward_cookies`; the
+skipped-path cases carry their own `skip_paths`.
 
 ## Changing them
 

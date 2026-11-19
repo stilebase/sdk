@@ -9,22 +9,25 @@ The key comes from STILEBASE_KEY (the environment, or STILEBASE_GATE["key"]).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from django.conf import settings
 from django.http import HttpResponse
 
-from ._core import GateOptions, Respond, address_from
-from ._detect import GateRequest, headers_of
+from ._core import Capture, Copy, GateOptions, Pass, Respond, too_large
+from ._request import GateRequest, address_from, headers_of
 from ._sync import SyncGate
 
 
 class GateMiddleware:
-    """AI agents pay per request with x402, settled through Stilebase; everyone else reaches your views.
+    """Forwards each request to Stilebase and does what it says: AI agents pay per request with x402, everyone else
+    reaches your views.
 
     The visitor's address is REMOTE_ADDR, unless STILEBASE_GATE["ip_header"] names a header your proxy or CDN sets
-    (e.g. "cf-connecting-ip"). Never a header anyone can set."""
+    (e.g. "cf-connecting-ip"). Never a header anyone can set. An async streaming response (Django's async iterators)
+    is never held or copied: a paid one is answered 502, not charged."""
 
     def __init__(self, get_response: Callable[[Any], Any]) -> None:
         self.get_response = get_response
@@ -35,17 +38,94 @@ class GateMiddleware:
     def __call__(self, request: Any) -> Any:
         decision = self.gate.check(self.request(request))
         if isinstance(decision, Respond):
-            response = HttpResponse(decision.body, status=decision.status)
-            for name, value in decision.headers.items():
-                response[name] = value
-            return response
+            return _response(decision)
+        started = time.monotonic()
         response = self.get_response(request)
-        if decision.payment_response:
-            response["PAYMENT-RESPONSE"] = decision.payment_response
+        ttfb = int((time.monotonic() - started) * 1000)
+        if decision.hold is not None:
+            return self._held(response, decision, ttfb)
+        for name, value in decision.response_headers.items():
+            response[name] = value
+        if decision.capture is not None:
+            self._copy(response, decision.capture, ttfb)
         return response
 
+    def _held(self, response: Any, decision: Pass, ttfb: int) -> Any:
+        """A paid request: the view's answer is held, settled, and only then sent (SPEC.md, section 7)."""
+        hold = decision.hold
+        assert hold is not None
+        if getattr(response, "is_async", False):
+            return _response(too_large())
+        if getattr(response, "streaming", False):
+            parts: list[bytes] = []
+            size = 0
+            try:
+                for chunk in response.streaming_content:
+                    size += len(chunk)
+                    if size <= hold.max_bytes:
+                        parts.append(bytes(chunk))
+                    else:
+                        parts = []
+            finally:
+                response.close()
+            if size > hold.max_bytes:
+                return _response(too_large())
+            body = b"".join(parts)
+            held = HttpResponse(body, status=response.status_code)
+            for name, value in response.items():
+                if name.lower() != "content-length":
+                    held[name] = value
+            response = held
+        else:
+            body = bytes(response.content)
+            if len(body) > hold.max_bytes:
+                return _response(too_large())
+        outcome = self.gate.settle(hold, response.status_code, body)
+        if isinstance(outcome, Respond):
+            return _response(outcome)
+        for name, value in {**decision.response_headers, **outcome.response_headers}.items():
+            response[name] = value
+        if decision.capture is not None:
+            self._copy(response, decision.capture, ttfb)
+        return response
+
+    def _copy(self, response: Any, order: Capture, ttfb: int) -> None:
+        """A copy of the view's answer for Stilebase, never delaying or changing it."""
+        try:
+            if getattr(response, "is_async", False):
+                return
+            headers = list(response.items())
+            copy = Copy(order.max_bytes)
+            if not getattr(response, "streaming", False):
+                copy.add(bytes(response.content))
+                self.gate.capture(order, response.status_code, headers, copy, ttfb)
+                return
+            original = response.streaming_content
+            gate = self.gate
+
+            def copying() -> Iterator[bytes]:
+                try:
+                    for chunk in original:
+                        try:
+                            copy.add(bytes(chunk))
+                        except Exception as error:
+                            gate.report(error)
+                        yield chunk
+                finally:
+                    gate.capture(order, response.status_code, headers, copy, ttfb)
+
+            response.streaming_content = copying()
+        except Exception as error:
+            self.gate.report(error)
+
     def request(self, request: Any) -> GateRequest:
-        headers = headers_of(request.headers.items())
-        ip = address_from(headers, self.ip_header, request.META.get("REMOTE_ADDR"))
-        url = f"{request.scheme}://localhost{request.get_full_path()}"
-        return GateRequest(request.method, url, headers, ip=ip)
+        pairs = tuple((str(k), str(v)) for k, v in request.headers.items())
+        ip = address_from(headers_of(pairs), self.ip_header, request.META.get("REMOTE_ADDR"))
+        return GateRequest(request.method, request.get_full_path(), pairs, scheme=request.scheme, ip=ip)
+
+
+def _response(decision: Respond) -> HttpResponse:
+    response = HttpResponse(decision.body, status=decision.status)
+    for name, value in decision.headers.items():
+        response[name] = value
+    return response

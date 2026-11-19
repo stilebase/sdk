@@ -2,7 +2,7 @@
 
 The official [Stilebase](https://stilebase.com) SDKs for JavaScript/TypeScript and Python.
 
-Their first module is **the gate**, a thin connector that does what Stilebase's Cloudflare Worker does, from inside
+Their first module is **the gate**, a thin connector that asks Stilebase about each request and does what it says, from inside
 your app. It answers AI agents (GPTBot, ClaudeBot, PerplexityBot…) with
 `402 Payment Required` in the open [x402](https://x402.org) format. An agent that pays (USDC on Base) gets the page.
 People, search engines and link previews see no change. Stilebase supplies the price, checks each payment and settles

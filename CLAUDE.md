@@ -16,11 +16,11 @@ customers. The SDKs talk only to Stilebase's public API.
 
 - `sdk-js/`: `@stilebase/sdk`, TypeScript, tsup, vitest, Node 20+, **no runtime dependencies** (WebCrypto, `fetch`).
   Entries `.` (the `gate` namespace, `VERSION`), `/gate` (`createGate`, framework-neutral), `/gate/express`,
-  `/gate/fetch` (Workers, Hono, Bun, Deno).
+  `/gate/fetch` (Workers, Hono, Bun, Deno). `protocol.ts` builds and reads the calls; `core.ts` is the gate.
 - `sdk-python/`: `stilebase-sdk`, Python 3.10+, depends only on `httpx`, hatchling, typed (`py.typed`, mypy strict).
   `stilebase_sdk.gate`: `_core.decide` is one sans-IO decision generator that yields effects; `AsyncGate` and
   `SyncGate` drive it. Adapters `asgi`, `wsgi`, `django`.
-- `conformance/`: `vectors.json` and `gate-config.example.json`, the cases every gate must pass. Both SDKs test
+- `conformance/`: `vectors.json` and `settings.example.json`, the cases every gate must pass. Both SDKs test
   against them, and so does Stilebase. They describe what Stilebase does: change them only together with it
   (`conformance/README.md`).
 
@@ -39,16 +39,17 @@ runs all of it, the Python suite on 3.10 to 3.13.
 
 These are what the reviews check first. Breaking one is a blocking finding.
 
-- **A connector, not a library.** A gate does what Stilebase's Cloudflare Worker does, plus fetching its settings with
-  the site key, and nothing more: no options or defences the Worker doesn't have. The logic lives at Stilebase. A
-  review finding that the Worker shares goes to TODO.md, not into an SDK; only where an SDK differs from the Worker, or
-  breaks a rule below, is it fixed.
-- **Never break the site.** When Stilebase can't be reached or errors, everyone gets the site. The only exceptions
-  are the two in SPEC.md, each because the alternative lets agents read free.
+- **Forward, obey, fail open.** A gate has no logic of its own (SPEC.md): it forwards each request to Stilebase, does
+  what the answer says, and passes the request when anything goes wrong. Who's an agent, the browser checks, prices
+  and payments are Stilebase's: none of it goes into an SDK. The only things a gate decides are mechanical: skipped
+  paths, remembered answers, the circuit breaker, holding a paid answer and copying a captured one.
+- **Never break the site.** When Stilebase can't be reached, errors or answers late, everyone gets the site. The one
+  exception is in SPEC.md: a request carrying a payment gets `503` rather than a page whose payment can't be told.
+- **Never delay or change the visitor's answer** for a capture (SPEC.md section 9).
 - **Never tell an agent it wasn't charged when the outcome is unknown** (a settlement without an answer).
 - **Never trust a header the visitor can set** for their address (SPEC.md, "The visitor's address"). A spoofed
   operator address would get a free pass.
-- **Cut what's sent to Stilebase to its limits** (SPEC.md, "The price"): a refused call would serve the page unpaid.
+- **Never send the request body, cookies other than `forward_cookies`, or `strip_headers`** to Stilebase.
 - **Both SDKs behave the same.** A change to how a gate behaves is made to both in the same pull request, with a
   conformance case when it's observable. Changes to one package only (an adapter, its docs) are its own pull request.
 - **Secrets stay on the server.** The site key never reaches an agent, a browser, a log line or an error message.

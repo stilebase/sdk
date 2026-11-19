@@ -1,416 +1,259 @@
-"""The gate's decisions, for both drivers: every test runs with SyncGate and with AsyncGate."""
+"""The gates (SyncGate, AsyncGate) against a fake Stilebase: forward, obey, fail open (SPEC.md)."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import json
-from collections.abc import Iterator
+import hashlib
 from typing import Any
 
-import httpx
 import pytest
 
-from stilebase_sdk.gate import AsyncGate, GateConfig, GateOptions, GateRequest, Pass, Respond, SyncGate, pass_token
+from stilebase_sdk.gate import AsyncGate, Capture, Copy, GateOptions, GateRequest, Hold, Pass, Respond, SyncGate
 from tests.fake_stilebase import (
     API,
-    BROWSER,
     CHROME,
-    DOMAIN,
-    GATEWAY_ID,
     GPTBOT,
     KEY,
-    NOW,
-    REQUIRED,
-    SECRET,
-    SETTLED_HEADER,
+    PAID,
+    PAYMENT,
+    RECEIPT,
+    REMEMBER,
+    REQUIRED_402,
+    SETTLE_AFTER,
     FakeStilebase,
-    live_config,
+    settings,
 )
 
-CONFIG_PATH = f"/v1/x402/sites/{GATEWAY_ID}/config"
-PAID = {"user-agent": GPTBOT, "payment-signature": "eyJ4NDAyVmVyc2lvbiI6Mn0="}
-SCRIPT = {"user-agent": CHROME, "accept": "*/*"}  # a script posing as Chrome: a suspect
+PERSON = GateRequest("GET", "/listings/2?x=1", (("User-Agent", CHROME), ("Cookie", "s=1; stilebase_pass=t")), ip="203.0.113.7")
+AGENT = GateRequest("GET", "/listings/2", (("User-Agent", GPTBOT),), ip="20.15.240.70")
+PAYING = GateRequest("GET", "/listings/2", (("User-Agent", GPTBOT), ("PAYMENT-SIGNATURE", PAYMENT)), ip="20.15.240.70")
 
 
-def request(
-    path: str, headers: dict[str, str] | None = None, ip: str | None = "203.0.113.7", url: str | None = None
-) -> GateRequest:
-    return GateRequest("GET", url or f"https://{DOMAIN}{path}", dict(headers or {}), ip=ip)
+class Clock:
+    def __init__(self) -> None:
+        self.at = 1_792_756_800.0
+
+    def __call__(self) -> float:
+        return self.at
 
 
-class Site:
-    """A gate of either kind, with a clock and the errors it reported."""
-
-    def __init__(self, kind: str, stilebase: FakeStilebase, **options: Any) -> None:
-        self.clock = NOW
-        self.errors: list[Exception] = []
-        settings: dict[str, Any] = {
-            "key": KEY,
-            "api_url": API,
-            "transport": stilebase.transport,
-            "now": lambda: self.clock,
-            "on_error": self.errors.append,
-            **options,
-        }
-        self.loop = asyncio.new_event_loop() if kind == "async" else None
-        self.gate: SyncGate | AsyncGate = (AsyncGate if kind == "async" else SyncGate)(GateOptions(**settings), adapter="test")
-
-    def check(self, req: GateRequest) -> Pass | Respond:
-        if isinstance(self.gate, AsyncGate):
-            assert self.loop is not None
-            return self.loop.run_until_complete(self.gate.check(req))
-        return self.gate.check(req)
-
-    def settle(self) -> None:
-        """Let background reports and refreshes finish."""
-        if isinstance(self.gate, AsyncGate):
-            assert self.loop is not None
-            if self.gate._tasks:
-                self.loop.run_until_complete(asyncio.wait(set(self.gate._tasks)))
-        else:
-            self.gate.wait()
-
-    def close(self) -> None:
-        if isinstance(self.gate, AsyncGate):
-            assert self.loop is not None
-            self.loop.run_until_complete(self.gate.aclose())
-            self.loop.close()
-        else:
-            self.gate.close()
-
-
-@pytest.fixture
-def stilebase() -> FakeStilebase:
-    return FakeStilebase()
-
-
-@pytest.fixture(params=["sync", "async"])
-def make(request: pytest.FixtureRequest, stilebase: FakeStilebase) -> Iterator[Any]:
-    sites: list[Site] = []
-
-    def build(**options: Any) -> Site:
-        site = Site(str(request.param), stilebase, **options)
-        sites.append(site)
-        return site
-
-    yield build
-    for site in sites:
-        site.close()
-
-
-def decoded(decision: Pass | Respond) -> dict[str, Any]:
-    assert isinstance(decision, Respond)
-    return dict(json.loads(base64.b64decode(decision.headers["PAYMENT-REQUIRED"])))
-
-
-# --- People -------------------------------------------------------------------------------------------------------
-
-
-def test_people_pass_and_stilebase_is_asked_only_for_settings_and_lists_once(make: Any, stilebase: FakeStilebase) -> None:
-    site = make()
-    assert site.check(request("/listings", BROWSER)) == Pass()
-    assert site.check(request("/listings", BROWSER)) == Pass()
-    assert [c.path for c in stilebase.calls] == [CONFIG_PATH, "/v1/x402/agent-ranges"]
-
-
-@pytest.mark.parametrize("kind", ["sync", "async"])
-def test_without_a_key_everyone_passes_and_it_says_so(kind: str, stilebase: FakeStilebase) -> None:
+def sync_gate(stilebase: FakeStilebase, clock: Clock | None = None, **options: Any) -> SyncGate:
     errors: list[Exception] = []
-    gate_type = AsyncGate if kind == "async" else SyncGate
-    gate = gate_type(GateOptions(key="", transport=stilebase.transport, on_error=errors.append))
-    decision = (
-        asyncio.run(gate.check(request("/", {"user-agent": GPTBOT})))
-        if isinstance(gate, AsyncGate)
-        else gate.check(request("/", {"user-agent": GPTBOT}))
+    gate = SyncGate(
+        GateOptions(key=KEY, api_url=API, transport=stilebase.transport, on_error=errors.append, now=clock or Clock(), **options)
     )
-    assert decision == Pass() and "not set" in str(errors[0]) and stilebase.calls == []
+    gate.errors = errors  # type: ignore[attr-defined]
+    return gate
 
 
-# --- AI agents ----------------------------------------------------------------------------------------------------
-
-
-def test_agents_get_the_402_with_the_price_and_the_visit_is_reported(make: Any, stilebase: FakeStilebase) -> None:
-    site = make()
-    decision = site.check(request("/listings?city=Haifa", {"user-agent": GPTBOT}))
-    assert isinstance(decision, Respond) and decision.status == 402
-    assert json.loads(decision.body) == REQUIRED and decoded(decision) == REQUIRED
-    assert decision.headers["cache-control"] == "no-store"
-    lookup = stilebase.to("/v1/x402/requirements")[0].query
-    assert lookup == {"host": DOMAIN, "url": f"https://{DOMAIN}/listings?city=Haifa", "ua": GPTBOT, "ip": "203.0.113.7"}
-    site.settle()
-    assert stilebase.to("/v1/x402/visits")[0].body == {
-        "host": DOMAIN,
-        "request": {"method": "GET", "path": "/listings?city=Haifa"},
-        "agent": {"ip": "203.0.113.7", "user_agent": GPTBOT, "headers": {}},
-    }
-
-
-def test_a_free_pass_reads_free_and_is_reported_as_one(make: Any, stilebase: FakeStilebase) -> None:
-    stilebase.requirements = lambda q: (204, None, {})
-    site = make()
-    assert site.check(request("/listings", {"user-agent": GPTBOT})) == Pass()
-    site.settle()
-    assert stilebase.to("/v1/x402/visits")[0].body["free_pass"] is True
-
-
-def test_the_price_is_asked_once_while_stilebase_says_it_holds(make: Any, stilebase: FakeStilebase) -> None:
-    site = make()
-    site.check(request("/listings", {"user-agent": GPTBOT}))
-    site.check(request("/listings", {"user-agent": GPTBOT}))
-    assert len(stilebase.to("/v1/x402/requirements")) == 1
-    site.clock += 301
-    site.check(request("/listings", {"user-agent": GPTBOT}))
-    assert len(stilebase.to("/v1/x402/requirements")) == 2
-
-
-@pytest.mark.parametrize("answer", [(500, None, {}), httpx.ConnectError("refused")], ids=["500", "down"])
-def test_agents_pass_when_the_price_lookup_fails(make: Any, stilebase: FakeStilebase, answer: Any) -> None:
-    stilebase.requirements = lambda q: answer
-    assert make().check(request("/listings", {"user-agent": GPTBOT})) == Pass()
-
-
-def test_the_url_and_user_agent_are_cut_to_stilebases_limits(make: Any, stilebase: FakeStilebase) -> None:
-    make().check(request("/" + "x" * 5000, {"user-agent": "GPTBot/1.0 " + "(" * 2000}))
-    lookup = stilebase.to("/v1/x402/requirements")[0].query
-    assert len(lookup["url"]) <= 2048 and len(lookup["ua"]) <= 1536 // 3 + 20
-
-
-def test_the_page_is_named_by_the_gateways_domain(make: Any, stilebase: FakeStilebase) -> None:
-    make().check(request("/a", {"user-agent": GPTBOT}, url="http://app:3000/a?b=1"))
-    assert stilebase.to("/v1/x402/requirements")[0].query["url"] == f"https://{DOMAIN}/a?b=1"
-
-
-# --- Scripts and hidden agents ------------------------------------------------------------------------------------
-
-
-def test_scripts_pay_unless_let_through(make: Any) -> None:
-    assert isinstance(make().check(request("/", {"user-agent": "curl/8.4.0"})), Respond)
-    assert isinstance(make().check(request("/", {})), Respond)
-    assert make(catch_http_clients=False).check(request("/", {"user-agent": "curl/8.4.0"})) == Pass()
-
-
-def test_hidden_agents_pay_by_address_or_web_bot_auth(make: Any) -> None:
-    assert isinstance(make().check(request("/", BROWSER, ip="20.15.240.70")), Respond)
-    assert isinstance(make().check(request("/", BROWSER, ip="::ffff:20.15.240.70")), Respond)
-    assert isinstance(make().check(request("/", {**BROWSER, "signature-agent": "https://chatgpt.com"})), Respond)
-    assert make(catch_hidden_agents=False).check(request("/", BROWSER, ip="20.15.240.70")) == Pass()
-
-
-# --- Browser-looking requests that don't act like a browser --------------------------------------------------------
-
-
-def test_suspects_are_counted_while_strict_detection_is_off(make: Any, stilebase: FakeStilebase) -> None:
-    stilebase.requirements = lambda q: (204, None, {})
-    site = make()
-    assert site.check(request("/listings", SCRIPT)) == Pass()
-    assert stilebase.to("/v1/x402/requirements")[0].query["suspect"] == "true"
-    site.settle()
-    assert stilebase.to("/v1/x402/visits")[0].body["signals"] == [
-        "no_accept_language",
-        "no_sec_fetch",
-        "chrome_without_client_hints",
-        "accept_any",
-    ]
-
-
-def test_suspects_get_a_page_under_strict_detection_and_its_cookie_lets_them_pass(make: Any) -> None:
-    site = make()
-    decision = site.check(request("/listings", {**SCRIPT, "accept": "text/html"}))
-    assert isinstance(decision, Respond) and decision.status == 402
-    assert decision.headers["content-type"].startswith("text/html") and decision.headers["PAYMENT-REQUIRED"]
-    token = pass_token(SECRET, CHROME, int(NOW))
-    assert f"stilebase_pass={token}".encode() in decision.body
-    assert site.check(request("/listings", {**SCRIPT, "cookie": f"a=1; stilebase_pass={token}"})) == Pass()
-    forged = f"{int(NOW)}.{'0' * 32}"
-    assert isinstance(site.check(request("/listings", {**SCRIPT, "cookie": f"stilebase_pass={forged}"})), Respond)
-    site.clock += 43201  # older than max_age_seconds
-    assert isinstance(site.check(request("/listings", {**SCRIPT, "cookie": f"stilebase_pass={token}"})), Respond)
-
-
-def test_suspects_are_never_checked_over_http_or_with_the_checks_off(make: Any) -> None:
-    assert make().check(request("/", SCRIPT, url=f"http://{DOMAIN}/")) == Pass()
-    assert make(check_browsers=False).check(request("/", SCRIPT)) == Pass()
-
-
-# --- Payments -----------------------------------------------------------------------------------------------------
-
-
-def test_a_settled_payment_lets_the_request_through_with_payment_response(make: Any, stilebase: FakeStilebase) -> None:
-    assert make().check(request("/listings", PAID)) == Pass(SETTLED_HEADER)
-    settle = stilebase.to("/v1/x402/settle")[0]
-    assert settle.body["payment"] == PAID["payment-signature"] and settle.body["request"] == {
-        "method": "GET",
-        "path": "/listings",
-    }
-    assert settle.headers["stilebase-signature"].startswith("v2=")
-
-
-def test_x402_v1s_x_payment_too_and_an_empty_payment_signature_is_none(make: Any, stilebase: FakeStilebase) -> None:
-    make().check(request("/", {"user-agent": GPTBOT, "x-payment": "v1"}))
-    make().check(request("/", {"user-agent": GPTBOT, "payment-signature": "", "x-payment": "v1"}))
-    assert [c.body["payment"] for c in stilebase.to("/v1/x402/settle")] == ["v1", "v1"]
-
-
-def test_a_refused_payment_gets_the_402_again_with_the_reason(make: Any, stilebase: FakeStilebase) -> None:
-    stilebase.settle = (200, {"success": False, "errorReason": "insufficient_funds", "header": "eyJzdWNjZXNzIjpmYWxzZX0="}, {})
-    decision = make().check(request("/listings", PAID))
-    assert isinstance(decision, Respond) and decision.status == 402
-    assert (
-        decoded(decision)["error"] == "insufficient_funds" and decision.headers["PAYMENT-RESPONSE"] == "eyJzdWNjZXNzIjpmYWxzZX0="
+def async_gate(stilebase: FakeStilebase, clock: Clock | None = None, **options: Any) -> AsyncGate:
+    return AsyncGate(
+        GateOptions(
+            key=KEY, api_url=API, transport=stilebase.async_transport, on_error=lambda e: None, now=clock or Clock(), **options
+        )
     )
+
+
+def test_without_a_key_or_disabled_everyone_passes_and_nothing_is_asked() -> None:
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    quiet = GateOptions(key="", api_url=API, transport=stilebase.transport, on_error=lambda e: None)
+    assert SyncGate(quiet).check(AGENT) == Pass()
+    disabled = sync_gate(stilebase, disabled=True)
+    assert disabled.check(AGENT) == Pass() and stilebase.calls == []
+
+
+def test_the_decision_is_asked_for_and_obeyed() -> None:
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    gate = sync_gate(stilebase)
+    decision = gate.check(AGENT)
+    assert isinstance(decision, Respond) and decision.status == 402 and decision.headers["cache-control"] == "no-store"
+    [settings_call] = stilebase.to("settings")
+    assert settings_call.headers["stilebase-client"] == "stilebase-sdk/0.2.0 gate/sync"
+    [asked] = stilebase.to("decide")
+    assert asked.body["request"] == {"method": "GET", "scheme": "https", "path": "/listings/2"}
+    assert asked.body["client_ip"] == "20.15.240.70"
+
+
+def test_a_person_is_remembered_and_never_sends_cookies() -> None:
+    stilebase = FakeStilebase(decide=(200, REMEMBER))
+    gate = sync_gate(stilebase)
+    assert gate.check(PERSON) == Pass() and gate.check(PERSON) == Pass()
+    [asked] = stilebase.to("decide")  # the second was remembered
+    assert ["cookie", "s=1; stilebase_pass=t"] not in asked.body["headers"]
+    assert asked.body["cookies"] == {"stilebase_pass": "t"} and asked.body["credentials"] is True
+
+
+def test_a_payment_is_never_remembered_nor_skipped() -> None:
+    stilebase = FakeStilebase(decide=(200, REMEMBER))
+    gate = sync_gate(stilebase)
+    gate.check(PAYING)
+    gate.check(PAYING)
+    static = GateRequest("GET", "/site.css", (("PAYMENT-SIGNATURE", PAYMENT),))
+    gate.check(static)
+    assert len(stilebase.to("decide")) == 3
+
+
+def test_static_files_pass_without_asking() -> None:
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    gate = sync_gate(stilebase)
+    assert gate.check(GateRequest("GET", "/assets/site.css", (("User-Agent", GPTBOT),))) == Pass()
+    assert isinstance(gate.check(GateRequest("GET", "/premium/article;.css", (("User-Agent", GPTBOT),))), Respond)
+    assert len(stilebase.to("decide")) == 1
 
 
 @pytest.mark.parametrize(
-    "answer",
-    [httpx.ConnectError("refused"), (502, None, {}), (200, {"transaction": "0xabc"}, {})],
-    ids=["down", "502", "no success"],
+    "stilebase",
+    [
+        FakeStilebase(down=True),
+        FakeStilebase(decide=(500, {"action": "respond"})),
+        FakeStilebase(raw_decide=b"not json"),
+        FakeStilebase(decide=(200, {"action": "teleport"})),
+    ],
+    ids=["down", "500", "garbage", "unknown action"],
 )
-def test_a_payment_stilebase_doesnt_confirm_gets_503(make: Any, stilebase: FakeStilebase, answer: Any) -> None:
-    stilebase.settle = answer
-    decision = make().check(request("/listings", PAID))
-    assert isinstance(decision, Respond) and decision.status == 503 and decision.headers["retry-after"] == "5"
+def test_anything_wrong_lets_people_through_and_payments_wait(stilebase: FakeStilebase) -> None:
+    if stilebase.down:
+        stilebase.down = False
+        gate = sync_gate(stilebase)
+        gate.check(AGENT)  # the settings first
+        stilebase.down = True
+    else:
+        gate = sync_gate(stilebase)
+    assert gate.check(AGENT) == Pass()
+    held = gate.check(PAYING)
+    assert isinstance(held, Respond) and (held.status, held.headers["retry-after"]) == (503, "5")
 
 
-def test_a_payment_without_a_price_to_meet_passes_without_settling(make: Any, stilebase: FakeStilebase) -> None:
-    stilebase.requirements = lambda q: (204, None, {})
-    assert make().check(request("/listings", PAID)) == Pass()
-    assert stilebase.to("/v1/x402/settle") == []
+def test_settings_404_and_a_version_this_gate_cant_read_let_everyone_through() -> None:
+    for answer in ((404, {"error": "gone"}), (200, settings(settings_version=2)), (200, settings(enabled=False))):
+        stilebase = FakeStilebase(settings_answer=answer, decide=(200, REQUIRED_402))
+        assert sync_gate(stilebase).check(AGENT) == Pass() and stilebase.to("decide") == []
 
 
-# --- Settings -----------------------------------------------------------------------------------------------------
+def test_the_last_good_settings_are_kept_and_refreshed() -> None:
+    clock = Clock()
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    gate = sync_gate(stilebase, clock)
+    gate.check(AGENT)
+    stilebase.settings_answer = (500, {})
+    clock.at += 301
+    gate.check(AGENT)
+    gate.wait()
+    assert len(stilebase.to("settings")) == 2 and gate.settings is not None  # a 5xx keeps the last good settings
+    assert isinstance(gate.check(AGENT), Respond)
 
 
-def test_settings_are_fetched_signed_saying_which_package_this_is(make: Any, stilebase: FakeStilebase) -> None:
-    make().check(request("/", BROWSER))
-    call = stilebase.calls[0]
-    assert call.headers["stilebase-client"].startswith("stilebase-sdk/") and call.headers["stilebase-client"].endswith(
-        " gate/test"
-    )
-    assert call.headers["stilebase-signature"].startswith("v2=")
+def test_the_breaker_opens_after_failures_in_a_row() -> None:
+    clock = Clock()
+    stilebase = FakeStilebase(decide=(500, {}))
+    gate = sync_gate(stilebase, clock)
+    for _ in range(5):
+        gate.check(AGENT)
+    assert len(stilebase.to("decide")) == 5
+    assert gate.check(AGENT) == Pass() and len(stilebase.to("decide")) == 5  # open: nothing asked
+    assert isinstance(gate.check(PAYING), Respond)  # a payment while open: 503
+    clock.at += 31
+    stilebase.decide = (200, REQUIRED_402)
+    assert isinstance(gate.check(AGENT), Respond)  # asked again, and closed
+    assert len(stilebase.to("decide")) == 6
 
 
-def test_the_verification_file_is_served_even_before_the_gateway_is_live(make: Any, stilebase: FakeStilebase) -> None:
-    gateway = {"id": GATEWAY_ID, "domain": DOMAIN, "live": False, "reason": "domain_not_verified"}
-    verification = {"path": "/.well-known/stilebase-verify.txt", "value": "stilebase-verify=tok"}
-    stilebase.config = (200, live_config(gateway=gateway, verification=verification), {})
-    site = make()
-    answer = site.check(request("/.well-known/stilebase-verify.txt"))
-    assert isinstance(answer, Respond) and (answer.status, answer.body) == (200, b"stilebase-verify=tok\n")
-    assert site.check(request("/listings", {"user-agent": GPTBOT})) == Pass()  # not live: nobody is asked
+def test_a_slow_answer_past_the_budget_lets_the_request_through() -> None:
+    slow = FakeStilebase(settings_answer=(200, settings(timeout_ms=50)), decide=(200, REQUIRED_402), delay=0.3)
+
+    async def run() -> Pass | Respond:
+        gate = async_gate(slow)
+        decision = await gate.check(AGENT)
+        await gate.aclose()
+        return decision
+
+    assert asyncio.run(run()) == Pass()
 
 
-def test_settings_refresh_in_the_background_keeping_the_last_good_ones(make: Any, stilebase: FakeStilebase) -> None:
-    site = make()
-    site.check(request("/", BROWSER))
-    stilebase.config = (500, None, {})
-    site.clock += 301
-    site.check(request("/", BROWSER))
-    site.settle()
-    assert len(stilebase.to(CONFIG_PATH)) == 2
-    assert isinstance(site.check(request("/listings", {"user-agent": GPTBOT})), Respond)  # still gated
+def test_a_paid_answer_is_settled_with_its_delivery() -> None:
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    gate = sync_gate(stilebase)
+    decision = gate.check(PAYING)
+    assert isinstance(decision, Pass) and decision.hold is not None
+    released = gate.settle(decision.hold, 200, b"the page")
+    assert released == Pass({"payment-response": RECEIPT})
+    [settled] = stilebase.to("settle")
+    assert settled.body["delivery"] == {"status": 200, "size": 8, "sha256": hashlib.sha256(b"the page").hexdigest()}
+    assert settled.body["request"]["path"] == "/listings/2" and settled.body["headers"][1] == ["payment-signature", PAYMENT]
 
 
-def test_a_removed_gateway_404_stops_the_asking(make: Any, stilebase: FakeStilebase) -> None:
-    site = make()
-    site.check(request("/", BROWSER))
-    stilebase.config = (404, None, {})
-    site.clock += 301
-    site.check(request("/", BROWSER))
-    site.settle()
-    assert site.check(request("/listings", {"user-agent": GPTBOT})) == Pass()
+@pytest.mark.parametrize(
+    ("answer", "status"),
+    [((200, REQUIRED_402), 402), ((200, {"action": "unknown_payment", "retry_after": 9}), 503), ((502, {}), 503)],
+)
+def test_a_settlement_refused_or_unknown_withholds_the_page(answer: tuple[int, Any], status: int) -> None:
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER), settle=answer)
+    gate = sync_gate(stilebase)
+    decision = gate.check(PAYING)
+    assert isinstance(decision, Pass) and decision.hold is not None
+    outcome = gate.settle(decision.hold, 200, b"the page")
+    assert isinstance(outcome, Respond) and outcome.status == status
 
 
-def test_when_stilebase_is_down_at_start_everyone_passes_and_it_is_tried_again(make: Any, stilebase: FakeStilebase) -> None:
-    stilebase.config = httpx.ConnectError("refused")
-    site = make()
-    assert site.check(request("/listings", {"user-agent": GPTBOT})) == Pass()
-    stilebase.config = (200, live_config(), {})
-    site.clock += 30
-    site.check(request("/listings", {"user-agent": GPTBOT}))
-    site.settle()
-    assert isinstance(site.check(request("/listings", {"user-agent": GPTBOT})), Respond)
+def test_too_large_to_hold_is_never_settled() -> None:
+    stilebase = FakeStilebase()
+    gate = sync_gate(stilebase)
+    outcome = gate.settle(Hold({}, 4), 200, b"12345")
+    assert isinstance(outcome, Respond) and outcome.status == 502 and stilebase.to("settle") == []
 
 
-# --- The review's cases (cycle 1) ---------------------------------------------------------------------------------
+def test_a_capture_is_sent_in_the_background() -> None:
+    stilebase = FakeStilebase()
+    gate = sync_gate(stilebase)
+    gate.check(AGENT)
+    copy = Copy(4)
+    copy.add(b"the page")
+    gate.capture(Capture("tok", 4), 200, [("content-type", "text/html")], copy, 12)
+    gate.wait()
+    [sent] = stilebase.to("captures")
+    assert sent.body == {
+        "token": "tok",
+        "status": 200,
+        "headers": [["content-type", "text/html"]],
+        "body": base64.b64encode(b"the ").decode(),
+        "size": 8,
+        "truncated": True,
+        "ttfb_ms": 12,
+    }
 
 
-def test_the_last_address_lists_are_kept_when_an_answer_has_none(make: Any, stilebase: FakeStilebase) -> None:
-    site = make()
-    site.check(request("/", BROWSER, ip="20.15.240.70"))
-    stilebase.ranges = (200, {"nothing": True}, {})
-    site.clock += 3601
-    site.check(request("/", BROWSER, ip="20.15.240.70"))
-    site.settle()
-    assert isinstance(site.check(request("/", BROWSER, ip="20.15.240.70")), Respond)
+def test_the_async_gate_asks_once_for_requests_alike() -> None:
+    async def run() -> int:
+        stilebase = FakeStilebase(decide=(200, REMEMBER), delay=0.05)
+        gate = async_gate(stilebase)
+        await gate.check(AGENT)  # settings
+        stilebase.calls.clear()
+        alike = GateRequest("GET", "/other", (("User-Agent", CHROME),), ip="198.51.100.4")
+        results = await asyncio.gather(*(gate.check(alike) for _ in range(5)))
+        assert all(r == Pass() for r in results)
+        await gate.aclose()
+        return len(stilebase.to("decide"))
+
+    assert asyncio.run(run()) == 1
 
 
-# --- The review's cases (cycle 3) ---------------------------------------------------------------------------------
-
-
-def test_a_path_starting_with_two_slashes_is_named_as_the_js_sdk_names_it() -> None:
-    from stilebase_sdk.gate._detect import path_of
-
-    assert path_of("//premium/article.html") == "//premium/article.html"
-    assert path_of("https://shop.example.com//premium/a?b=1") == "//premium/a?b=1"
-
-
-def test_a_header_is_trimmed_as_javascript_trims_it() -> None:
-    from stilebase_sdk.gate._detect import is_script
-    from tests.fake_stilebase import EXAMPLE
-
-    config = GateConfig.parse(EXAMPLE)
-    assert config is not None
-    assert is_script("\x85", config) is False and is_script(" \t", config) is True
-
-
-def test_the_402_is_written_as_json_stringify_writes_it(make: Any, stilebase: FakeStilebase) -> None:
-    stilebase.requirements = lambda q: (200, {**REQUIRED, "extra": {"name": "caf\u00e9"}}, {})
-    decision = make().check(request("/listings", {"user-agent": GPTBOT}))
-    assert isinstance(decision, Respond)
-    assert (
-        decision.body
-        == json.dumps({**REQUIRED, "extra": {"name": "caf\u00e9"}}, separators=(",", ":"), ensure_ascii=False).encode()
-    )
-
-
-# --- The review's cases (cycle 4) ---------------------------------------------------------------------------------
-
-
-def test_a_lone_surrogate_in_the_price_is_escaped_as_json_stringify_escapes_it() -> None:
-    """A price cut in the middle of an emoji: the 402 is still written (JSON.stringify escapes it), never an error."""
-    from stilebase_sdk.gate._core import _payment_required
-
-    decision = _payment_required({**REQUIRED, "extra": "\ud83d"})
-    assert decision.status == 402 and b'"extra":"\\ud83d"' in decision.body
-
-
-def test_addresses_and_relative_paths_are_read_as_the_js_sdk_reads_them() -> None:
-    from stilebase_sdk.gate._detect import normalize_ip, path_of
-
-    assert normalize_ip("20.15.240.70\x85") == "20.15.240.70\x85"
-    assert path_of("premium/x") == "/premium/x"
-
-
-# --- The review's cases (cycle 5) ---------------------------------------------------------------------------------
-
-
-def test_a_lone_surrogate_in_the_verification_value_is_written_as_u_fffd(make: Any, stilebase: FakeStilebase) -> None:
-    from stilebase_sdk.gate._core import _respond
-
-    assert _respond(200, {}, "tok\ud83d\n").body == "tok�\n".encode()
-
-
-def test_a_future_from_client_ip_is_left_to_its_owner() -> None:
-    from stilebase_sdk.gate.asgi import GateMiddleware
-
-    async def app(scope: Any, receive: Any, send: Any) -> None: ...
-
+def test_the_async_gate_settles_and_captures() -> None:
     async def run() -> None:
-        shared: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        middleware = GateMiddleware(app, client_ip=lambda scope: shared, key=KEY, api_url=API)  # type: ignore[arg-type,return-value]
-        assert middleware.request({"type": "http", "path": "/", "headers": []}).ip is None
-        assert not shared.cancelled()  # the app may be waiting on it too
-        shared.set_result("198.51.100.9")
+        stilebase = FakeStilebase(decide=(200, {**SETTLE_AFTER, "capture": {"token": "t", "max_bytes": 100}}))
+        gate = async_gate(stilebase)
+        decision = await gate.check(PAYING)
+        assert isinstance(decision, Pass) and decision.hold is not None and decision.capture == Capture("t", 100)
+        assert await gate.settle(decision.hold, 200, b"page") == Pass({"payment-response": RECEIPT})
+        copy = Copy(100)
+        copy.add(b"page")
+        gate.capture(decision.capture, 200, [], copy, 1)
+        await gate.aclose()
+        assert len(stilebase.to("settle")) == 1 and len(stilebase.to("captures")) == 1
 
     asyncio.run(run())
+
+
+def test_paid_headers_are_passed_on() -> None:
+    stilebase = FakeStilebase(decide=(200, PAID))
+    assert sync_gate(stilebase).check(AGENT) == Pass({"payment-response": RECEIPT})
