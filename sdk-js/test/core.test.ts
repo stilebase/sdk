@@ -131,6 +131,30 @@ describe("deciding", () => {
     expect(stilebase.to(DECIDE)).toHaveLength(3);
   });
 
+  it("asks once when half open, and forgets a shared decision past its budget", async () => {
+    stilebase.decide = () => ({ status: 500 });
+    const g = gate();
+    for (let i = 0; i < 5; i += 1) await g.check(request(`/p${i}`, GPTBOT));
+    now += 31_000;
+    stilebase.decide = () => ({ status: 200, body: { action: "pass" }, delayMs: 30 });
+    await Promise.all([g.check(request("/a", GPTBOT)), g.check(request("/b", GPTBOT)), g.check(request("/c", GPTBOT))]);
+    expect(stilebase.to(DECIDE)).toHaveLength(6); // one probe
+    await g.check(request("/d", GPTBOT));
+    expect(stilebase.to(DECIDE)).toHaveLength(7); // closed
+  });
+
+  it("settles even when the settings were dropped meanwhile", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", settle_after: { max_bytes: 100 } } });
+    const g = gate();
+    const held = await g.check(request("/x", PAID));
+    if (held.action !== "hold") throw new Error("not held");
+    stilebase.settings = { status: 404 };
+    now += 301_000;
+    await g.check(request("/y", BROWSER));
+    await new Promise((r) => setTimeout(r, 0));
+    expect((await g.settle(held.ticket, { status: 200, body: new Uint8Array() })).action).toBe("send");
+  });
+
   it("is switched off by STILEBASE_DISABLED=true too", async () => {
     process.env.STILEBASE_DISABLED = " True ";
     try {

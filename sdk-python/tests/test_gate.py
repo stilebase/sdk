@@ -391,3 +391,49 @@ def test_a_settle_after_that_isnt_an_object_is_unusable(settle_after: Any) -> No
     assert gate.check(AGENT) == Pass()
     held = gate.check(PAYING)
     assert isinstance(held, Respond) and held.status == 503
+
+
+# Review cycle 2
+
+
+def test_half_open_asks_exactly_one_request() -> None:
+    async def run() -> None:
+        clock = Clock()
+        stilebase = FakeStilebase(decide=(500, {}), delay=0.05)
+        gate = async_gate(stilebase, clock)
+        for _ in range(5):
+            await gate.check(AGENT)
+        clock.at += 31  # half open
+        stilebase.calls.clear()
+        results = await asyncio.gather(gate.check(AGENT), gate.check(AGENT), gate.check(PAYING), gate.check(AGENT))
+        assert len(stilebase.to("decide")) == 1  # the probe; the others passed (a payment: 503) as while open
+        assert sum(isinstance(r, Respond) and r.status == 503 for r in results) == 1
+        assert await gate.check(AGENT) == Pass() and len(stilebase.to("decide")) == 1  # its failure reopened it
+        clock.at += 31
+        stilebase.decide = (200, REQUIRED_402)
+        await gate.check(AGENT)  # the probe's usable answer closes it
+        await asyncio.gather(*(gate.check(AGENT) for _ in range(3)))  # closed: asked again (alike, so once)
+        assert len(stilebase.to("decide")) == 3
+        await gate.aclose()
+
+    asyncio.run(run())
+
+
+def test_a_shared_decision_waiting_past_its_budget_is_forgotten() -> None:
+    async def run() -> None:
+        stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+        gate = async_gate(stilebase)
+        await gate.check(AGENT)  # settings
+        stilebase.calls.clear()
+        settings = gate.settings
+        assert settings is not None
+        from stilebase_sdk.gate._core import remember_key
+
+        loop = asyncio.get_running_loop()
+        stuck: asyncio.Future[Any] = loop.create_future()  # a leader the runtime cancelled: never answered
+        gate._asking[f"GET {remember_key(AGENT, settings)}"] = (stuck, loop.time() - 10)
+        decision = await gate.check(AGENT)
+        assert isinstance(decision, Respond) and decision.status == 402 and len(stilebase.to("decide")) == 1
+        await gate.aclose()
+
+    asyncio.run(run())

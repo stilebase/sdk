@@ -25,6 +25,20 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 # Loose on purpose: frameworks type their apps their own way (Starlette's add_middleware must accept this class).
 ASGIApp = Callable[[Any, Any, Any], Awaitable[None]]
+BODILESS = frozenset({204, 205, 304})
+# Server features that send a body around `send`: off for a held request, so the gate sees the whole body.
+SIDE_SENDS = ("http.response.pathsend", "http.response.zerocopysend")
+
+
+class _TooLarge(Exception):
+    """Raised into an app whose paid answer outgrew what the gate holds: it stops being read."""
+
+
+def _without_side_sends(scope: Scope) -> Scope:
+    extensions = scope.get("extensions")
+    if not isinstance(extensions, Mapping) or not any(name in extensions for name in SIDE_SENDS):
+        return scope
+    return {**scope, "extensions": {k: v for k, v in extensions.items() if k not in SIDE_SENDS}}
 
 
 class GateMiddleware:
@@ -105,26 +119,32 @@ class GateMiddleware:
         hold = decision.hold
         assert hold is not None
         started = time.monotonic()
-        held: dict[str, Any] = {"parts": [], "size": 0}
+        held: dict[str, Any] = {"parts": [], "size": 0, "over": False}
 
         async def holding(message: Message) -> None:
+            if held["over"]:
+                raise _TooLarge  # stop the app: what it sends next is never read
             if message["type"] == "http.response.start":
                 held["start"] = message
                 held["ttfb"] = int((time.monotonic() - started) * 1000)
             elif message["type"] == "http.response.body":
                 chunk = bytes(message.get("body", b""))
                 held["size"] += len(chunk)
-                if held["size"] <= hold.max_bytes:
-                    held["parts"].append(chunk)
-                else:
-                    held["parts"] = []  # too large to be paid for: nothing is kept
+                if held["size"] > hold.max_bytes:
+                    held["over"], held["parts"] = True, []  # too large to be paid for: nothing more is read
+                    raise _TooLarge
+                held["parts"].append(chunk)
 
-        await self.app(scope, receive, holding)  # an app that raises: nothing was settled, nothing sent
+        try:
+            await self.app(_without_side_sends(scope), receive, holding)
+        except Exception:
+            if not held["over"]:
+                raise  # the app failed: nothing was settled, nothing sent
+        if held["over"]:
+            await _send_response(send, too_large())
+            return
         start = held.get("start")
         if start is None:
-            return
-        if held["size"] > hold.max_bytes:
-            await _send_response(send, too_large())
             return
         status = int(start.get("status", 200))
         body = b"".join(held["parts"])
@@ -134,7 +154,8 @@ class GateMiddleware:
             return
         headers = [*start.get("headers", []), *_raw(decision.response_headers), *_raw(outcome.response_headers)]
         await send({**start, "headers": headers})
-        await send({"type": "http.response.body", "body": body, "more_body": False})
+        # A status that can't carry a body is sent without one.
+        await send({"type": "http.response.body", "body": b"" if status in BODILESS else body, "more_body": False})
         if decision.capture is not None:
             _capture_whole(self.gate, decision.capture, status, _text(headers), body, held["ttfb"])
 

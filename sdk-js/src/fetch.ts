@@ -51,7 +51,8 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
       const settled = await gate.settle(decision.ticket, { status: response.status, body: held.bytes });
       if (settled.action === "respond") return toResponse(settled);
       if (decision.capture) gate.capture(decision.capture, captured(response, held, decision.capture, ttfbMs), waitUntil);
-      return rebuilt(response, held.bytes, settled.responseHeaders);
+      const noBody = [101, 204, 205, 304].includes(response.status);
+      return rebuilt(response, noBody ? null : held.bytes, { ...decision.responseHeaders, ...settled.responseHeaders });
     }
 
     let served = response;
@@ -171,7 +172,12 @@ function captured(response: Response, copy: { bytes: Uint8Array; size: number; t
 
 /** The response with these headers set (a fresh Response: the handler's headers may be immutable). */
 function rebuilt(response: Response, body: BodyInit | null, headers: Record<string, string>): Response {
-  const copy = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  let copy: Response;
+  try {
+    copy = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  } catch {
+    copy = new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
+  }
   for (const [name, value] of Object.entries(headers)) {
     try {
       copy.headers.set(name, value);

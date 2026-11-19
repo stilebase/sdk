@@ -3,7 +3,7 @@
 import type { ServerResponse } from "node:http";
 import { parse } from "node:url";
 
-import { type Gate, type GateOptions, type SettleDecision, type Ticket, addressFrom, addressOf, createGate } from "./core.js";
+import { type Gate, type GateDecision, type GateOptions, type SettleDecision, addressFrom, addressOf, createGate } from "./core.js";
 import { type Capture, type GateRequest, normalizeIp } from "./protocol.js";
 
 /** The parts of Express's request the gate uses (no dependency on Express's types). */
@@ -44,7 +44,13 @@ export function gate(options: ExpressGateOptions = {}) {
         }
         try {
           if (decision.action === "hold") {
-            hold(res, siteGate, decision.ticket, decision.maxBytes, decision.capture);
+            try {
+              hold(res, siteGate, decision);
+            } catch {
+              // Holding couldn't be set up: never the paid page unsettled.
+              answer(res, { status: 503, headers: { "content-type": "application/json", "retry-after": "5", "cache-control": "no-store" }, body: JSON.stringify({ error: "Payment settlement unavailable" }) });
+              return;
+            }
             return next();
           }
           for (const [name, value] of Object.entries(decision.responseHeaders)) res.setHeader(name, value);
@@ -148,83 +154,98 @@ function copy(res: ServerResponse, gate: Gate, capture: Capture): void {
   }) as End;
 }
 
-/** Holds the answer (a payment): nothing reaches the agent until Stilebase settled it, or the answer is refused. */
-function hold(res: ServerResponse, gate: Gate, ticket: Ticket, maxBytes: number, capture: Capture | null): void {
+/** Holds the answer (a payment): nothing reaches the agent until Stilebase settled it, or the answer is refused. The
+ * response's own methods stay in place behind ours, so middleware mounted after the gate (on-headers hooks) still runs. */
+function hold(res: ServerResponse, gate: Gate, decision: Extract<GateDecision, { action: "hold" }>): void {
+  const { ticket, maxBytes, capture } = decision;
   const started = Date.now();
-  const writeHead = res.writeHead.bind(res) as (...a: unknown[]) => ServerResponse;
-  const write = res.write.bind(res) as (...a: unknown[]) => boolean;
-  const end = res.end.bind(res) as (...a: unknown[]) => ServerResponse;
+  const writeHead = res.writeHead as (...a: unknown[]) => ServerResponse;
+  const write = res.write as (...a: unknown[]) => boolean;
+  const end = res.end as (...a: unknown[]) => ServerResponse;
   const parts: Buffer[] = [];
   let size = 0;
   let headArgs: unknown[] | null = null;
-  let ended = false;
+  let released = false; // settled or refused: our methods pass straight through (unless swallowing)
+  let done = false; // the route's end, or the gate's own answer, has been taken
+  let swallowing = false; // the gate answered before the route finished: the route's further writes go nowhere
+  let callback: (() => void) | undefined;
+
+  const finish = (outcome: SettleDecision) => {
+    released = true;
+    if (outcome.action === "respond") {
+      for (const name of res.getHeaderNames()) res.removeHeader(name);
+      for (const [name, value] of Object.entries(outcome.headers)) res.setHeader(name, value);
+      res.statusCode = outcome.status;
+      end.apply(res, [outcome.body]);
+      return;
+    }
+    for (const [name, value] of Object.entries({ ...decision.responseHeaders, ...outcome.responseHeaders })) res.setHeader(name, value);
+    if (headArgs) res.writeHead(...(headArgs as Parameters<ServerResponse["writeHead"]>));
+    const body = Buffer.concat(parts);
+    if (capture) safely(() => gate.capture(capture, { status: res.statusCode, headers: headerList(res), body: body.subarray(0, capture.maxBytes), size, truncated: size > capture.maxBytes, ttfbMs: Date.now() - started }));
+    const noBody = [204, 205, 304].includes(res.statusCode);
+    end.apply(res, [noBody ? undefined : body, callback]);
+  };
+  // Whatever happens finishing (a header Node refuses), the request gets an answer and the process keeps running;
+  // never the held page unless the settlement said so.
+  const finishSafely = (outcome: SettleDecision) => {
+    try {
+      finish(outcome);
+    } catch {
+      released = true;
+      try {
+        if (!res.headersSent) {
+          for (const name of res.getHeaderNames()) res.removeHeader(name);
+          res.statusCode = 502;
+          res.setHeader("cache-control", "no-store");
+        }
+        end.apply(res, []);
+      } catch {
+        // nothing more can be sent
+      }
+    }
+  };
+  const tooLarge = () => {
+    if (done) return;
+    done = swallowing = true;
+    finishSafely(gate.tooLarge()); // stop now: the rest of the answer is never read
+  };
   const take = (chunk: unknown, encoding?: unknown) => {
     const bytes = chunkOf(chunk, encoding);
-    if (!bytes) return;
+    if (!bytes || done) return;
     size += bytes.byteLength;
-    if (size <= maxBytes) parts.push(Buffer.from(bytes));
+    if (size > maxBytes) return tooLarge();
+    parts.push(Buffer.from(bytes));
   };
+
   res.writeHead = ((...args: unknown[]) => {
+    if (released) return writeHead.apply(res, args);
     headArgs = args; // sent after settling
     if (typeof args[0] === "number") res.statusCode = args[0];
     return res;
   }) as ServerResponse["writeHead"];
-  res.flushHeaders = () => undefined;
+  const flushHeaders = res.flushHeaders;
+  res.flushHeaders = () => (released ? flushHeaders.call(res) : undefined);
   res.write = ((chunk: unknown, ...args: unknown[]) => {
+    if (released) return swallowing ? false : write.apply(res, [chunk, ...args]);
     take(chunk, typeof args[0] === "string" ? args[0] : undefined);
-    const callback = args.find((a) => typeof a === "function") as (() => void) | undefined;
-    callback?.();
-    return true;
-  }) as Write;
+    (args.find((a) => typeof a === "function") as (() => void) | undefined)?.();
+    return !done;
+  }) as ServerResponse["write"];
   res.end = ((chunk?: unknown, ...args: unknown[]) => {
-    if (ended) return res;
-    ended = true;
+    if (released) return swallowing ? res : end.apply(res, [chunk, ...args]);
+    if (done) return res;
     if (typeof chunk === "function") {
       args = [chunk];
       chunk = undefined;
     }
     take(chunk, typeof args[0] === "string" ? args[0] : undefined);
-    const callback = args.find((a) => typeof a === "function") as (() => void) | undefined;
-    const body = Buffer.concat(parts);
-    const ttfbMs = Date.now() - started;
-    const finish = (decision: SettleDecision) => {
-      res.writeHead = writeHead as ServerResponse["writeHead"];
-      res.write = write as Write;
-      res.end = end as End;
-      if (decision.action === "respond") {
-        for (const name of res.getHeaderNames()) res.removeHeader(name);
-        answer(res, decision);
-        return;
-      }
-      for (const [name, value] of Object.entries(decision.responseHeaders)) res.setHeader(name, value);
-      if (headArgs) writeHead(...headArgs);
-      if (capture) safely(() => gate.capture(capture, { status: res.statusCode, headers: headerList(res), body: body.subarray(0, capture.maxBytes), size, truncated: size > capture.maxBytes, ttfbMs }));
-      end(body, callback);
-    };
-    // Whatever happens finishing (a header Node refuses), the request gets an answer and the process keeps running;
-    // never the held page unless the settlement said so.
-    const finishSafely = (decision: SettleDecision) => {
-      try {
-        finish(decision);
-      } catch {
-        try {
-          res.writeHead = writeHead as ServerResponse["writeHead"];
-          res.end = end as End;
-          if (!res.headersSent) {
-            for (const name of res.getHeaderNames()) res.removeHeader(name);
-            res.statusCode = 502;
-            res.setHeader("cache-control", "no-store");
-          }
-          end();
-        } catch {
-          // nothing more can be sent
-        }
-      }
-    };
-    const settling = size > maxBytes ? Promise.resolve(gate.tooLarge()) : gate.settle(ticket, { status: res.statusCode, body });
-    settling.then(finishSafely, () => finishSafely(gate.tooLarge()));
+    if (done) return res; // too large: answered already
+    done = true;
+    callback = args.find((a) => typeof a === "function") as (() => void) | undefined;
+    gate.settle(ticket, { status: res.statusCode, body: Buffer.concat(parts) }).then(finishSafely, () => finishSafely(gate.tooLarge()));
     return res;
-  }) as End;
+  }) as ServerResponse["end"];
 }
 
 function safely(work: () => void): void {

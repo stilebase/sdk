@@ -15,12 +15,15 @@ library"), go here.
 - **Cookie fields joined with ", "** (the Fetch API joins HTTP/2's separate Cookie fields so, on Deno and Bun): a
   forwarded cookie is found only in the first. The Worker splits at ";" only, and the conformance cases say nothing about it.
   *Waits:* strict detection is off by default; a shared case first.
-- **Python: the timeouts are per network step**, not a total deadline (httpx applies 3, 5 and 65 seconds to each of
-  connect, read and write), so a trickling answer can hold a request longer than in JS. *Waits:* the far end is
-  Stilebase's own API, which answers or fails fast; the Worker has no timeouts at all.
+- **Python: the sync gate's budget is per network step.** httpx's sync client applies `timeout_ms` to each of
+  connect, write and read, so a trickling answer can hold a request up to about three times `timeout_ms`; the async
+  gate enforces the total with `asyncio.wait_for`. *Waits:* httpx's sync client has no overall deadline, and enforcing
+  one costs a thread per call or a watchdog that closes the connection; Stilebase's API answers or fails fast.
 - **An absolute-form target under uvicorn's h11** keeps its whole target as the path (`//host/x`), where Express names
   `/x`. *Waits:* Starlette doesn't route it either; no page is freed.
-- **Python: the sync and async drivers repeat their effect loop** and the request code. *Waits:* no behaviour changes.
+- **Python: the sync and async gates repeat their calls** (settings, decide, settle, captures) around one core without
+  IO (`_core.py`). *Waits:* every rule is in the core; the drivers differ only in how they wait (asyncio or threads),
+  and sharing in-flight decisions exists only in the async one.
 
 - **A rewrite before the gate:** Express names the visitor's page (originalUrl), while WSGI, and ASGI without
   `raw_path`, name the path after the rewrite. *Waits:* WSGI and ASGI hand the app no original URL to read; mount the

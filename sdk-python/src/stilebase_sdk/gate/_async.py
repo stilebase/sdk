@@ -16,6 +16,7 @@ from ._core import (
     SETTINGS_TIMEOUT,
     UNUSABLE,
     Answer,
+    Asking,
     Capture,
     Copy,
     Decision,
@@ -45,51 +46,69 @@ class AsyncGate(Engine):
         self._http: httpx.AsyncClient | None = None
         self._settings_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._asking: dict[str, asyncio.Future[Answer]] = {}  # same remember key, no payment: one question at a time
+        # GET/HEAD alike, no payment: one question at a time (the future, and when it was asked)
+        self._asking: dict[str, tuple[asyncio.Future[Answer], float]] = {}
         self._captures: asyncio.Queue[dict[str, Any]] | None = None
         self._capturing: asyncio.Task[None] | None = None
 
     async def check(self, request: GateRequest) -> Decision:
         if not self.active:
             return PASS
+        settings: Settings | None = None
+        asking: Asking | None = None
+        recorded = False
         try:
             settings = await self._settings()
-            decision = self.before_asking(request, settings)
-            if decision is not None or settings is None:
-                return decision or PASS
+            before = self.before_asking(request, settings)
+            if not isinstance(before, Asking) or settings is None:
+                return before if not isinstance(before, Asking) else PASS
+            asking = before
             body = decide_body(request, settings, self.options.assume_https)
             if request.payment is not None:
                 answer = await self._ask("decide", body, settings.settle_timeout)
-                return self.after_asking(request, settings, body, answer)
-            if request.method.upper() not in ("GET", "HEAD"):  # only reads are alike enough to share an answer
-                return self.after_asking(request, settings, body, await self._ask("decide", body, settings.timeout))
+                recorded = True
+                return self.after_asking(request, settings, body, answer, asking)
+            if request.method.upper() not in ("GET", "HEAD") or asking.probe:  # only reads share; a probe asks alone
+                answer = await self._ask("decide", body, settings.timeout)
+                recorded = True
+                return self.after_asking(request, settings, body, answer, asking)
             key = f"{request.method.upper()} {remember_key(request, settings)}"
-            asking = self._asking.get(key)
-            if asking is not None:  # another request like this one is being asked about: its answer is ours
+            loop = asyncio.get_running_loop()
+            shared = self._asking.get(key)
+            if shared is not None and loop.time() - shared[1] > settings.timeout:
+                # Waiting longer than its budget: the runtime may have cancelled it. Forgotten; this one asks again.
+                self._asking.pop(key, None)
+                shared = None
+            if shared is not None:  # another request like this one is being asked about: its answer is ours
                 try:
-                    answer = await asyncio.wait_for(asyncio.shield(asking), settings.timeout)
+                    answer = await asyncio.wait_for(asyncio.shield(shared[0]), settings.timeout)
                 except Exception:
                     answer = UNUSABLE
+                recorded = True  # the leader counts for the breaker
                 if not answer.usable:
                     return PASS
                 if isinstance(answer.decision, Pass) and answer.decision.capture is not None:
                     # A capture is for the request it was asked about, never for the ones that shared its answer.
-                    shared = Pass(answer.decision.response_headers, answer.decision.hold, None)
-                    answer = Answer(True, shared, answer.remember)
+                    answer = Answer(True, Pass(answer.decision.response_headers, answer.decision.hold, None), answer.remember)
                 return self.after_asking(request, settings, body, answer)
-            future: asyncio.Future[Answer] = asyncio.get_running_loop().create_future()
-            self._asking[key] = future
+            future: asyncio.Future[Answer] = loop.create_future()
+            self._asking[key] = (future, loop.time())
             answer = UNUSABLE
             try:
                 answer = await self._ask("decide", body, settings.timeout)
             finally:
-                self._asking.pop(key, None)
+                if self._asking.get(key, (None, 0.0))[0] is future:
+                    self._asking.pop(key, None)
                 if not future.done():
                     future.set_result(answer)
-            return self.after_asking(request, settings, body, answer)
+            recorded = True
+            return self.after_asking(request, settings, body, answer, asking)
         except Exception as error:
             self.report(error)
             return unknown_payment() if request.payment is not None else PASS
+        finally:
+            if not recorded:  # failed or cancelled before its answer was read: counted, and its probe freed
+                self.gave_up(settings, asking)
 
     async def settle(self, hold: Hold, status: int, body: bytes) -> Decision:
         """The site answered a paid request (`body` its whole body, held): settle it (SPEC.md, section 7). `Pass`: send

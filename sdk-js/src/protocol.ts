@@ -37,15 +37,55 @@ export const SETTINGS_VERSION = 1;
 const ALWAYS_STRIPPED = ["cookie", "authorization", "proxy-authorization"];
 const MAX_HEADERS = 100;
 
-/** A settings document from Stilebase, checked enough to run on; null when it isn't one this version reads. */
+const DEFAULTS: GateSettings = {
+  settings_version: SETTINGS_VERSION,
+  enabled: true,
+  refresh_seconds: 300,
+  timeout_ms: 300,
+  settle_timeout_ms: 65_000,
+  breaker: { failures: 5, open_seconds: 30 },
+  remember_by: ["client_ip", "user-agent", "path"],
+  cache_max_entries: 10_000,
+  strip_headers: [],
+  forward_cookies: [],
+  skip_paths: { prefixes: [], extensions: [] },
+  settle_after: { max_bytes: 10_485_760 },
+};
+
+/** A settings document from Stilebase (SPEC.md section 3, conformance `settings`): null when it isn't one this version
+ * reads; otherwise every field that's missing or malformed takes its default. */
 export function parseSettings(value: unknown): GateSettings | null {
   if (!isRecord(value) || value.settings_version !== SETTINGS_VERSION || typeof value.enabled !== "boolean") return null;
-  const s = value as Partial<GateSettings>;
-  const numbers = [s.refresh_seconds, s.timeout_ms, s.settle_timeout_ms, s.cache_max_entries, s.breaker?.failures, s.breaker?.open_seconds, s.settle_after?.max_bytes];
-  if (numbers.some((n) => typeof n !== "number" || !Number.isFinite(n) || n < 0)) return null;
-  const lists = [s.remember_by, s.strip_headers, s.forward_cookies, s.skip_paths?.prefixes, s.skip_paths?.extensions];
-  if (lists.some((list) => !Array.isArray(list) || list.some((item) => typeof item !== "string"))) return null;
-  return value as unknown as GateSettings;
+  const breaker = isRecord(value.breaker) ? value.breaker : {};
+  const skip = isRecord(value.skip_paths) ? value.skip_paths : {};
+  const settle = isRecord(value.settle_after) ? value.settle_after : {};
+  return {
+    settings_version: SETTINGS_VERSION,
+    enabled: value.enabled,
+    refresh_seconds: positive(value.refresh_seconds, DEFAULTS.refresh_seconds),
+    timeout_ms: positive(value.timeout_ms, DEFAULTS.timeout_ms),
+    settle_timeout_ms: positive(value.settle_timeout_ms, DEFAULTS.settle_timeout_ms),
+    breaker: { failures: positive(breaker.failures, DEFAULTS.breaker.failures), open_seconds: positive(breaker.open_seconds, DEFAULTS.breaker.open_seconds) },
+    remember_by: strings(value.remember_by, DEFAULTS.remember_by),
+    cache_max_entries: positive(value.cache_max_entries, DEFAULTS.cache_max_entries),
+    strip_headers: strings(value.strip_headers, []),
+    forward_cookies: strings(value.forward_cookies, []),
+    skip_paths: { prefixes: strings(skip.prefixes, []), extensions: strings(skip.extensions, []) },
+    settle_after: { max_bytes: positive(settle.max_bytes, DEFAULTS.settle_after.max_bytes) },
+  };
+}
+
+/** The settings when there are none to read (settling a payment whose settings were dropped meanwhile). */
+export function defaultSettings(): GateSettings {
+  return structuredClone(DEFAULTS);
+}
+
+function positive(value: unknown, fallback: number): number {
+  return Number.isInteger(value) && (value as number) > 0 ? (value as number) : fallback;
+}
+
+function strings(value: unknown, fallback: string[]): string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? (value as string[]) : fallback;
 }
 
 /** Whether a request passes without asking (SPEC.md section 5): matched as the site's router will read it, so a page
@@ -63,7 +103,7 @@ export function skipped(path: string, skip: GateSettings["skip_paths"]): boolean
 export function rememberMaterial(request: GateRequest, by: string[]): string {
   return by
     .map((field) => {
-      if (field === "client_ip") return request.ip ?? "";
+      if (field === "client_ip") return normalizeIp(request.ip) ?? "";
       if (field === "path") return request.path;
       return header(request, field) ?? "";
     })
@@ -88,7 +128,7 @@ export function decideBody(request: GateRequest, settings: GateSettings, assumeH
   }
   const body: Record<string, unknown> = {
     request: { method: request.method.toUpperCase(), scheme: assumeHttps ? "https" : request.scheme.toLowerCase(), path: request.path },
-    client_ip: request.ip ?? null,
+    client_ip: normalizeIp(request.ip),
     headers,
     cookies: forwardedCookies(request, settings.forward_cookies),
     credentials,
@@ -118,7 +158,7 @@ function forwardedCookies(request: GateRequest, names: string[]): Record<string,
 export type Answer =
   | { kind: "pass"; rememberSeconds: number | null; responseHeaders: Record<string, string>; capture: Capture | null }
   | { kind: "respond"; status: number; headers: Record<string, string>; body: string }
-  | { kind: "settle_after"; maxBytes: number; capture: Capture | null }
+  | { kind: "settle_after"; maxBytes: number; responseHeaders: Record<string, string>; capture: Capture | null }
   | { kind: "unknown_payment"; retryAfter: number }
   | { kind: "unusable" };
 
@@ -127,32 +167,34 @@ export interface Capture {
   maxBytes: number;
 }
 
-/** Reads decide's (or settle's) answer; anything a gate can't act on is "unusable". */
+/** Reads decide's (or settle's) answer (SPEC.md section 6 step 5, conformance `answers`); anything a gate can't act on is
+ * "unusable". */
 export function readAnswer(status: number, body: unknown): Answer {
   if (status !== 200 || !isRecord(body)) return { kind: "unusable" };
   const capture = readCapture(body.capture);
   switch (body.action) {
     case "pass": {
+      const headers = body.response_headers === undefined ? {} : stringRecord(body.response_headers);
+      if (headers === null) return { kind: "unusable" };
       if (body.settle_after !== undefined) {
         if (!isRecord(body.settle_after)) return { kind: "unusable" }; // a field of the wrong type
         const max = body.settle_after.max_bytes;
-        return typeof max === "number" && Number.isFinite(max) && max >= 0 ? { kind: "settle_after", maxBytes: max, capture } : { kind: "unusable" };
+        return Number.isInteger(max) && (max as number) > 0 ? { kind: "settle_after", maxBytes: max as number, responseHeaders: headers, capture } : { kind: "unusable" };
       }
       const seconds = isRecord(body.remember) ? body.remember.seconds : undefined;
-      const headers = body.response_headers === undefined ? {} : stringRecord(body.response_headers);
-      if (headers === null) return { kind: "unusable" };
-      const remember = typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+      const remember = Number.isInteger(seconds) && (seconds as number) > 0 ? (seconds as number) : null;
       return { kind: "pass", rememberSeconds: remember, responseHeaders: headers, capture };
     }
     case "respond": {
-      const headers = stringRecord(body.headers ?? {});
-      const ok = Number.isInteger(body.status) && (body.status as number) >= 100 && (body.status as number) <= 599;
-      if (!ok || headers === null || typeof body.body !== "string") return { kind: "unusable" };
-      return { kind: "respond", status: body.status as number, headers, body: body.body };
+      const headers = body.headers === undefined || body.headers === null ? {} : stringRecord(body.headers);
+      const text = body.body === undefined ? "" : body.body;
+      const ok = Number.isInteger(body.status) && (body.status as number) >= 200 && (body.status as number) <= 599;
+      if (!ok || headers === null || typeof text !== "string") return { kind: "unusable" };
+      return { kind: "respond", status: body.status as number, headers, body: text };
     }
     case "unknown_payment": {
-      const after = typeof body.retry_after === "number" && body.retry_after > 0 ? body.retry_after : 5;
-      return { kind: "unknown_payment", retryAfter: after };
+      const after = body.retry_after;
+      return { kind: "unknown_payment", retryAfter: Number.isInteger(after) && (after as number) >= 1 && (after as number) <= 3600 ? (after as number) : 5 };
     }
     default:
       return { kind: "unusable" };
@@ -160,8 +202,8 @@ export function readAnswer(status: number, body: unknown): Answer {
 }
 
 function readCapture(value: unknown): Capture | null {
-  if (!isRecord(value) || typeof value.token !== "string" || typeof value.max_bytes !== "number") return null;
-  return value.max_bytes >= 0 ? { token: value.token, maxBytes: value.max_bytes } : null;
+  if (!isRecord(value) || typeof value.token !== "string" || !Number.isInteger(value.max_bytes) || (value.max_bytes as number) <= 0) return null;
+  return { token: value.token, maxBytes: value.max_bytes as number };
 }
 
 function stringRecord(value: unknown): Record<string, string> | null {

@@ -17,6 +17,7 @@ from ._request import GateRequest, address_from, headers_of
 from ._sync import SyncGate
 
 StartResponse = Callable[..., Any]
+BODILESS = frozenset({204, 205, 304})
 WSGIApp = Callable[[dict[str, Any], StartResponse], Iterable[bytes]]
 
 
@@ -83,31 +84,34 @@ class GateMiddleware:
         hold = decision.hold
         assert hold is not None
         started = time.monotonic()
-        held: dict[str, Any] = {"parts": [], "size": 0}
+        held: dict[str, Any] = {"parts": [], "size": 0, "over": False}
 
         def keep(data: bytes) -> None:
+            if held["over"]:
+                raise _TooLarge
             held["size"] += len(data)
-            if held["size"] <= hold.max_bytes:
-                held["parts"].append(bytes(data))
-            else:
-                held["parts"] = []  # too large to be paid for: nothing is kept
+            if held["size"] > hold.max_bytes:
+                held["over"], held["parts"] = True, []  # too large to be paid for: nothing more is read
+                raise _TooLarge
+            held["parts"].append(bytes(data))
 
         def holding_start(status: str, headers: list[tuple[str, str]], exc_info: Any = None) -> Callable[[bytes], None]:
             held["status"], held["headers"] = status, list(headers)
             held["ttfb"] = int((time.monotonic() - started) * 1000)
             return keep
 
-        result = self.app(environ, holding_start)  # an app that raises: nothing was settled, nothing sent
+        result: Iterable[bytes] | None = None
         try:
+            result = self.app(environ, holding_start)  # an app that raises: nothing was settled, nothing sent
             for chunk in result:
                 keep(chunk)
+        except _TooLarge:
+            pass
         finally:
             close = getattr(result, "close", None)
             if close is not None:
                 close()
-        if "status" not in held:
-            return _respond(start_response, too_large())
-        if held["size"] > hold.max_bytes:
+        if held["over"] or "status" not in held:
             return _respond(start_response, too_large())
         status = _code(held["status"])
         body = b"".join(held["parts"])
@@ -120,7 +124,11 @@ class GateMiddleware:
             copy = Copy(decision.capture.max_bytes)
             copy.add(body)
             self.gate.capture(decision.capture, status, headers, copy, held["ttfb"])
-        return [body]
+        return [] if status in BODILESS else [body]  # a status that can't carry a body is sent without one
+
+
+class _TooLarge(Exception):
+    """Raised into an app (from `write`) whose paid answer outgrew what the gate holds: it stops being read."""
 
 
 class _Copying:

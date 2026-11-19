@@ -65,6 +65,12 @@ def test_decide_bodies(case: dict[str, Any]) -> None:
     assert decide_body(request, settings, given["assume_https"]) == case["body"]
 
 
+@pytest.mark.parametrize("case", VECTORS["settings"]["cases"], ids=lambda c: c["name"])
+def test_settings(case: dict[str, Any]) -> None:
+    read = Settings.parse(case["body"])
+    assert (read.read() if read is not None else None) == case["read"]
+
+
 def outcome(decision: Pass | Respond) -> str:
     if isinstance(decision, Respond):
         return "unknown_payment" if decision.status == 503 and "retry-after" in decision.headers else "respond"
@@ -81,8 +87,13 @@ def test_answers(case: dict[str, Any]) -> None:
         request = GateRequest("GET", "/listings/2", headers, ip="203.0.113.7")
         decision = engine.after_asking(request, settings, {"b": 1}, read_answer(case["http_status"], case["body"]))
         assert outcome(decision) == expected, (case["name"], payment)
-        if "response_headers" in case and isinstance(decision, Pass):
-            assert dict(decision.response_headers) == case["response_headers"]
+        if "response_headers" in case:
+            assert isinstance(decision, Pass) and dict(decision.response_headers) == case["response_headers"]
+        if "respond" in case:
+            assert isinstance(decision, Respond)
+            assert (decision.status, decision.body.decode()) == (case["respond"]["status"], case["respond"]["body"])
+        if "retry_after" in case:
+            assert isinstance(decision, Respond) and decision.headers["retry-after"] == str(case["retry_after"])
         if case.get("remember_seconds") and not payment:
             assert engine.remembered.get(remember_key(request, settings), engine.options.now())
         elif not payment:
@@ -94,5 +105,6 @@ def test_the_settings_example_is_read() -> None:
     assert settings is not None
     assert (settings.timeout, settings.settle_timeout, settings.breaker_failures) == (0.3, 65.0, 5)
     assert settings.forward_cookies == ("stilebase_pass",) and ".png" in settings.skip_extensions
+    assert settings.read()["strip_headers"] == ["cookie", "authorization", "proxy-authorization"]
     assert Settings.parse({**SETTINGS, "settings_version": 2}) is None
     assert Settings.parse({**SETTINGS, "enabled": "yes"}) is None

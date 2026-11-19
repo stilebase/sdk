@@ -48,67 +48,97 @@ class GateOptions:
 
 @dataclass(frozen=True)
 class Settings:
-    """What a gate runs on: GET /v1/gate/sites/{id}/settings (SPEC.md, "The settings")."""
+    """What a gate runs on: GET /v1/gate/sites/{id}/settings (SPEC.md, section 3; conformance `settings`)."""
 
     enabled: bool = True
-    refresh_seconds: float = 300.0
-    timeout: float = 0.3
-    settle_timeout: float = 65.0
+    refresh_seconds: int = 300
+    timeout_ms: int = 300
+    settle_timeout_ms: int = 65_000
     breaker_failures: int = 5
-    breaker_open_seconds: float = 30.0
+    breaker_open_seconds: int = 30
     remember_by: tuple[str, ...] = ("client_ip", "user-agent", "path")
     cache_max_entries: int = 10_000
-    strip_headers: frozenset[str] = frozenset({"cookie", "authorization", "proxy-authorization"})
+    strip_headers: tuple[str, ...] = ()
     forward_cookies: tuple[str, ...] = ()
     skip_prefixes: tuple[str, ...] = ()
     skip_extensions: tuple[str, ...] = ()
     max_bytes: int = 10 * 1024 * 1024
 
+    @property
+    def timeout(self) -> float:
+        return self.timeout_ms / 1000
+
+    @property
+    def settle_timeout(self) -> float:
+        return self.settle_timeout_ms / 1000
+
     @classmethod
     def parse(cls, value: Any) -> Settings | None:
-        """A settings document from Stilebase, checked enough to run on; None when this version can't read it."""
+        """Settings as Stilebase sent them: None (everyone passes) unless `settings_version` is 1 and `enabled` a
+        boolean; any other field missing, of the wrong type or (a number) not a positive integer takes its default."""
         if not isinstance(value, dict) or value.get("settings_version") != SETTINGS_VERSION:
             return None
         if not isinstance(value.get("enabled"), bool):
             return None
-        default = cls()
-        breaker = value["breaker"] if isinstance(value.get("breaker"), dict) else {}
-        skip = value["skip_paths"] if isinstance(value.get("skip_paths"), dict) else {}
-        settle = value["settle_after"] if isinstance(value.get("settle_after"), dict) else {}
-        strip = _strings(value.get("strip_headers"), tuple(sorted(default.strip_headers)))
+        d = cls()
+        breaker = _object(value.get("breaker"))
+        skip = _object(value.get("skip_paths"))
+        settle = _object(value.get("settle_after"))
         return cls(
             enabled=value["enabled"],
-            refresh_seconds=_positive(value.get("refresh_seconds"), default.refresh_seconds),
-            timeout=_positive(value.get("timeout_ms"), default.timeout * 1000) / 1000,
-            settle_timeout=_positive(value.get("settle_timeout_ms"), default.settle_timeout * 1000) / 1000,
-            breaker_failures=int(_positive(breaker.get("failures"), default.breaker_failures)),
-            breaker_open_seconds=_positive(breaker.get("open_seconds"), default.breaker_open_seconds),
-            remember_by=_strings(value.get("remember_by"), default.remember_by),
-            cache_max_entries=int(_positive(value.get("cache_max_entries"), default.cache_max_entries)),
-            strip_headers=frozenset(s.lower() for s in strip),
+            refresh_seconds=positive_integer(value.get("refresh_seconds"), d.refresh_seconds),
+            timeout_ms=positive_integer(value.get("timeout_ms"), d.timeout_ms),
+            settle_timeout_ms=positive_integer(value.get("settle_timeout_ms"), d.settle_timeout_ms),
+            breaker_failures=positive_integer(breaker.get("failures"), d.breaker_failures),
+            breaker_open_seconds=positive_integer(breaker.get("open_seconds"), d.breaker_open_seconds),
+            remember_by=_strings(value.get("remember_by"), d.remember_by),
+            cache_max_entries=positive_integer(value.get("cache_max_entries"), d.cache_max_entries),
+            strip_headers=_strings(value.get("strip_headers"), ()),
             forward_cookies=_strings(value.get("forward_cookies"), ()),
-            skip_prefixes=tuple(s.lower() for s in _strings(skip.get("prefixes"), ())),
-            skip_extensions=tuple(s.lower() for s in _strings(skip.get("extensions"), ())),
-            max_bytes=int(_positive(settle.get("max_bytes"), default.max_bytes)),
+            skip_prefixes=_strings(skip.get("prefixes"), ()),
+            skip_extensions=_strings(skip.get("extensions"), ()),
+            max_bytes=positive_integer(settle.get("max_bytes"), d.max_bytes),
         )
 
+    def read(self) -> dict[str, Any]:
+        """The settings as conformance `settings` writes them, every default filled in."""
+        return {
+            "settings_version": SETTINGS_VERSION,
+            "enabled": self.enabled,
+            "refresh_seconds": self.refresh_seconds,
+            "timeout_ms": self.timeout_ms,
+            "settle_timeout_ms": self.settle_timeout_ms,
+            "breaker": {"failures": self.breaker_failures, "open_seconds": self.breaker_open_seconds},
+            "remember_by": list(self.remember_by),
+            "cache_max_entries": self.cache_max_entries,
+            "strip_headers": list(self.strip_headers),
+            "forward_cookies": list(self.forward_cookies),
+            "skip_paths": {"prefixes": list(self.skip_prefixes), "extensions": list(self.skip_extensions)},
+            "settle_after": {"max_bytes": self.max_bytes},
+        }
 
-def _number(value: Any) -> TypeGuard[float]:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+def _object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
-def _integer(value: Any) -> TypeGuard[int]:
-    return isinstance(value, int) and not isinstance(value, bool)
+def _integral(value: Any) -> TypeGuard[int | float]:
+    """An integer as JSON carries one (600 or 600.0, as JavaScript reads both); never a boolean."""
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int) or (isinstance(value, float) and value.is_integer())
 
 
-def _positive(value: Any, default: float) -> float:
-    return float(value) if _number(value) and value > 0 else default
+def positive_integer(value: Any, default: int) -> int:
+    """A positive integer, or `default`."""
+    return int(value) if _integral(value) and value > 0 else default
 
 
 def _strings(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
-    if not isinstance(value, list):
+    """A list of strings, or `default` (a list holding anything else is of the wrong type)."""
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         return default
-    return tuple(item for item in value if isinstance(item, str))
+    return tuple(value)
 
 
 # Decisions an adapter acts on.
@@ -186,10 +216,10 @@ def skipped(path: str, settings: Settings) -> bool:
     if any(token in raw for token in _FORBIDDEN) or any(ord(c) < 32 or ord(c) == 127 for c in raw):
         return False
     lowered = raw.lower()
-    if any(prefix and lowered.startswith(prefix) for prefix in settings.skip_prefixes):
+    if any(prefix and lowered.startswith(prefix.lower()) for prefix in settings.skip_prefixes):
         return True
     segment = lowered.rsplit("/", 1)[-1]
-    return any(ext and segment.endswith(ext) and len(segment) > len(ext) for ext in settings.skip_extensions)
+    return any(ext and segment.endswith(ext.lower()) and len(segment) > len(ext) for ext in settings.skip_extensions)
 
 
 def remember_key(request: GateRequest, settings: Settings) -> str:
@@ -201,7 +231,7 @@ def remember_key(request: GateRequest, settings: Settings) -> str:
 
 def decide_body(request: GateRequest, settings: Settings, assume_https: bool) -> dict[str, Any]:
     """What `decide` is sent (SPEC.md, section 6, step 4): never the host, the body, cookies or credentials."""
-    stripped = settings.strip_headers | ALWAYS_STRIPPED
+    stripped = {name.lower() for name in settings.strip_headers} | ALWAYS_STRIPPED
     headers = [[name.lower(), value] for name, value in request.headers if name.lower() not in stripped]
     cookies: dict[str, str] = {}
     credentials = False
@@ -246,18 +276,21 @@ UNUSABLE = Answer(False)
 
 
 def read_answer(status: int, body: Any) -> Answer:
-    """What a `decide` (or `settle`) answer tells the gate to do. Fields it doesn't know are ignored."""
+    """What a `decide` (or `settle`) answer tells the gate to do (SPEC.md, section 6 step 5, "Reading an answer";
+    conformance `answers`). Fields it doesn't know are ignored."""
     if status != 200 or not isinstance(body, dict):
         return UNUSABLE
     action = body.get("action")
     if action == "respond":
-        code, headers, content = body.get("status"), body.get("headers", {}), body.get("body", "")
-        if not (_integer(code) and 100 <= code <= 599) or not _string_map(headers) or not isinstance(content, str):
+        code = body.get("status")
+        headers = {} if body.get("headers") is None else body["headers"]
+        content = body.get("body", "")
+        if not (_integral(code) and 200 <= code <= 599) or not _string_map(headers) or not isinstance(content, str):
             return UNUSABLE
-        return Answer(True, respond(code, headers, content))
+        return Answer(True, respond(int(code), headers, content))
     if action == "unknown_payment":
         retry = body.get("retry_after")
-        return Answer(True, unknown_payment(retry if _integer(retry) and 0 <= retry <= 3600 else UNKNOWN_RETRY))
+        return Answer(True, unknown_payment(int(retry) if _integral(retry) and 1 <= retry <= 3600 else UNKNOWN_RETRY))
     if action != "pass":
         return UNUSABLE
     response_headers = body.get("response_headers", {})
@@ -267,18 +300,18 @@ def read_answer(status: int, body: Any) -> Answer:
     if "settle_after" in body:
         settle = body["settle_after"]
         size = settle.get("max_bytes") if isinstance(settle, dict) else None
-        if not (_integer(size) and size > 0):
+        if not (_integral(size) and size > 0):
             return UNUSABLE
-        hold = Hold({}, size)
+        hold = Hold({}, int(size))
     capture: Capture | None = None
     order = body.get("capture")
     if isinstance(order, dict):
         token, size = order.get("token"), order.get("max_bytes")
-        if isinstance(token, str) and _integer(size) and size >= 0:
-            capture = Capture(token, size)
+        if isinstance(token, str) and _integral(size) and size >= 0:
+            capture = Capture(token, int(size))
     remember = body.get("remember")
     seconds = remember.get("seconds") if isinstance(remember, dict) else None
-    keep = float(seconds) if _number(seconds) and seconds > 0 else None
+    keep = float(seconds) if _integral(seconds) and seconds > 0 else None
     return Answer(True, Pass(dict(response_headers), hold, capture), keep)
 
 
@@ -358,19 +391,34 @@ class RememberCache:
 
 
 class Breaker:
-    """`failures` failed decisions in a row open it for `open_seconds`; then the next request is asked again, and its
-    outcome closes or reopens it."""
+    """SPEC.md, section 6 step 6. `failures` failed decisions in a row open it for `open_seconds` (nothing is asked);
+    then it's half open: exactly one request is asked, and its outcome closes the breaker or opens it again."""
 
     def __init__(self) -> None:
         self._failures = 0
         self._open_until = 0.0
+        self._probing = False
         self._lock = threading.Lock()
 
     def is_open(self, now: float) -> bool:
-        return now < self._open_until
-
-    def record(self, ok: bool, now: float, settings: Settings) -> None:
+        """Open, or half open with its one request already being asked: nothing more is asked."""
         with self._lock:
+            return self._open_until > 0 and (now < self._open_until or self._probing)
+
+    def admit(self, now: float, settings: Settings) -> Asking | None:
+        """Whether this request may be asked: as usual while closed; half open, only the first (the probe)."""
+        with self._lock:
+            if self._open_until == 0:
+                return Asking(probe=False)
+            if now < self._open_until or self._probing:
+                return None
+            self._probing = True
+            return Asking(probe=True)
+
+    def record(self, ok: bool, now: float, settings: Settings, asking: Asking | None = None) -> None:
+        with self._lock:
+            if asking is not None and asking.probe:
+                self._probing = False
             if ok:
                 self._failures = 0
                 self._open_until = 0.0
@@ -378,6 +426,13 @@ class Breaker:
             self._failures += 1
             if self._failures >= settings.breaker_failures:
                 self._open_until = now + settings.breaker_open_seconds
+
+
+@dataclass(frozen=True)
+class Asking:
+    """A request the breaker lets be asked; `probe`: the one request asked while it's half open."""
+
+    probe: bool
 
 
 class GateError(Exception):
@@ -460,23 +515,29 @@ class Engine:
         }
         return self.api + path, body, headers
 
-    def before_asking(self, request: GateRequest, settings: Settings | None) -> Decision | None:
-        """A decision made without asking (SPEC.md, section 6, steps 1-3), or None: ask."""
+    def before_asking(self, request: GateRequest, settings: Settings | None) -> Decision | Asking:
+        """A decision made without asking (SPEC.md, section 6, steps 1-3 and 6), or `Asking`: ask."""
         payment = request.payment is not None
+        now = self.options.now()
         if settings is None or not settings.enabled:
             return PASS
-        if self.breaker.is_open(self.options.now()):
+        if self.breaker.is_open(now):
             return unknown_payment() if payment else PASS
         if not payment and skipped(request.path, settings):
             return PASS
-        if not payment and self.remembered.get(remember_key(request, settings), self.options.now()):
+        if not payment and self.remembered.get(remember_key(request, settings), now):
             return PASS
-        return None
+        asking = self.breaker.admit(now, settings)
+        if asking is None:  # half open, and another request is the one being asked
+            return unknown_payment() if payment else PASS
+        return asking
 
-    def after_asking(self, request: GateRequest, settings: Settings, body: dict[str, Any], answer: Answer) -> Decision:
+    def after_asking(
+        self, request: GateRequest, settings: Settings, body: dict[str, Any], answer: Answer, asking: Asking | None = None
+    ) -> Decision:
         """What the gate does with `decide`'s answer (SPEC.md, section 6, steps 5-6)."""
         payment = request.payment is not None
-        self.breaker.record(answer.usable, self.options.now(), settings)
+        self.breaker.record(answer.usable, self.options.now(), settings, asking)
         if not answer.usable:
             return unknown_payment() if payment else PASS
         decision = answer.decision
@@ -489,6 +550,12 @@ class Engine:
                 key = remember_key(request, settings)
                 self.remembered.put(key, self.options.now() + answer.remember, settings.cache_max_entries)
         return decision
+
+    def gave_up(self, settings: Settings | None, asking: Asking | None) -> None:
+        """A request that was being asked failed before its answer was read: the breaker counts it (and frees its
+        probe)."""
+        if settings is not None and asking is not None:
+            self.breaker.record(False, self.options.now(), settings, asking)
 
     def settled(self, status: int, body: Any) -> Decision:
         """What `settle` answered (SPEC.md, section 7, step 4): `Pass` (send the held answer with its headers), or what

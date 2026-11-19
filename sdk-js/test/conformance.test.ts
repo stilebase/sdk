@@ -40,6 +40,10 @@ describe("conformance", () => {
     expect(decideBody(req, settings, r.assume_https)).toEqual(v.body);
   });
 
+  it.each(vectors.settings.cases)("settings: $name", (v) => {
+    expect(parseSettings(v.body)).toEqual(v.read);
+  });
+
   it.each(vectors.answers.cases)("answer: $name", async (v) => {
     for (const paying of [false, true]) {
       const stilebase = new FakeStilebase();
@@ -50,7 +54,9 @@ describe("conformance", () => {
       const unknown = decision.action === "respond" && decision.status === 503 && decision.body.includes("Payment settlement unavailable");
       const actual = decision.action === "hold" ? "settle_after" : unknown ? "unknown_payment" : decision.action;
       expect(actual).toBe(expected);
-      if (expected === "pass" && "response_headers" in v) expect(decision).toMatchObject({ responseHeaders: v.response_headers });
+      if ("response_headers" in v && (decision.action === "pass" || decision.action === "hold")) expect(decision.responseHeaders).toEqual(v.response_headers);
+      if ("respond" in v && decision.action === "respond") expect({ status: decision.status, body: decision.body }).toEqual(v.respond);
+      if ("retry_after" in v && decision.action === "respond") expect(decision.headers["retry-after"]).toBe(String(v.retry_after));
     }
     if ("remember_seconds" in v) {
       const answer = readAnswer(v.http_status, v.body);

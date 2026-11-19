@@ -215,3 +215,150 @@ def test_django_holds_a_stream_without_finishing_the_request_early() -> None:
         assert held["payment-response"] == RECEIPT
     finally:
         request_finished.disconnect(on_finished)
+
+
+# Review cycle 2
+
+
+def _asgi_call(app: Any, path: str, headers: list[tuple[bytes, bytes]], extensions: dict[str, Any]) -> list[dict[str, Any]]:
+    import asyncio
+
+    sent: list[dict[str, Any]] = []
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": headers,
+        "client": ("203.0.113.7", 1234),
+        "server": ("shop.example.com", 443),
+        "extensions": extensions,
+    }
+
+    async def receive() -> dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {"type": "http.disconnect"}
+
+    async def send(message: Any) -> None:
+        sent.append(dict(message))
+
+    asyncio.run(asyncio.wait_for(app(scope, receive, send), 5))
+    return sent
+
+
+def test_asgi_holds_a_file_response_whatever_pathsend_offers(tmp_path: Any) -> None:
+    from starlette.applications import Starlette
+    from starlette.responses import FileResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    page = tmp_path / "page.html"
+    page.write_bytes(PAGE.encode())
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    inner = Starlette(routes=[Route("/file", lambda request: FileResponse(page))])
+    app = GateMiddleware(inner, key=KEY, api_url=API, transport=stilebase.async_transport)
+    sent = _asgi_call(app, "/file", [(b"payment-signature", PAYMENT.encode())], {"http.response.pathsend": {}})
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]  # never a pathsend around the gate
+    assert sent[1]["body"] == PAGE.encode()
+    assert (b"payment-response", RECEIPT.encode()) in sent[0]["headers"]
+    [settled] = stilebase.to("settle")
+    assert settled.body["delivery"]["size"] == len(PAGE)
+
+
+def _endless() -> Any:
+    while True:
+        yield b"x" * 100
+
+
+def test_asgi_stops_reading_an_endless_paid_answer() -> None:
+    from starlette.applications import Starlette
+    from starlette.responses import StreamingResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    inner = Starlette(routes=[Route("/endless", lambda request: StreamingResponse(_endless()))])
+    app = GateMiddleware(inner, key=KEY, api_url=API, transport=stilebase.async_transport)
+    sent = _asgi_call(app, "/endless", [(b"payment-signature", PAYMENT.encode())], {})
+    assert sent[0]["status"] == 502 and stilebase.to("settle") == []
+
+
+def test_wsgi_stops_reading_an_endless_paid_answer() -> None:
+    from flask import Flask, Response
+
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    app = Flask(__name__)
+    app.add_url_rule("/endless", "endless", lambda: Response(_endless()))
+    app.wsgi_app = GateMiddleware(app.wsgi_app, key=KEY, api_url=API, transport=stilebase.transport)  # type: ignore[method-assign]
+    assert app.test_client().get("/endless", headers={"payment-signature": PAYMENT}).status_code == 502
+    assert stilebase.to("settle") == []
+
+
+def _django() -> None:
+    import django
+    from django.conf import settings
+
+    if not settings.configured:
+        settings.configure(DEBUG=False, ALLOWED_HOSTS=["*"], ROOT_URLCONF=__name__, MIDDLEWARE=[])
+        django.setup()
+
+
+def test_django_stops_reading_an_endless_paid_answer() -> None:
+    _django()
+    from django.conf import settings
+    from django.http import StreamingHttpResponse
+    from django.test import RequestFactory
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": stilebase.transport}
+    middleware = GateMiddleware(lambda request: StreamingHttpResponse(_endless()))
+    assert middleware(RequestFactory().get("/", HTTP_PAYMENT_SIGNATURE=PAYMENT)).status_code == 502
+    assert stilebase.to("settle") == []
+
+
+def test_a_held_answer_that_cant_carry_a_body_is_sent_without_one() -> None:
+    from flask import Flask
+    from starlette.applications import Starlette
+    from starlette.responses import Response as StarletteResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware as Asgi
+    from stilebase_sdk.gate.wsgi import GateMiddleware as Wsgi
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    inner = Starlette(routes=[Route("/", lambda request: StarletteResponse(status_code=304))])
+    sent = _asgi_call(
+        Asgi(inner, key=KEY, api_url=API, transport=stilebase.async_transport),
+        "/",
+        [(b"payment-signature", PAYMENT.encode())],
+        {},
+    )
+    assert (sent[0]["status"], sent[1]["body"]) == (304, b"")
+
+    flask = Flask(__name__)
+    flask.add_url_rule("/", "x", lambda: ("", 204))
+    flask.wsgi_app = Wsgi(flask.wsgi_app, key=KEY, api_url=API, transport=stilebase.transport)  # type: ignore[method-assign]
+    answered = flask.test_client().get("/", headers={"payment-signature": PAYMENT})
+    assert (answered.status_code, answered.data) == (204, b"")
+
+    _django()
+    from django.conf import settings
+    from django.http import HttpResponseNotModified
+    from django.test import RequestFactory
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": stilebase.transport}
+    held = GateMiddleware(lambda request: HttpResponseNotModified())(RequestFactory().get("/", HTTP_PAYMENT_SIGNATURE=PAYMENT))
+    assert (held.status_code, held.content, held["payment-response"]) == (304, b"", RECEIPT)
+    assert len(stilebase.to("settle")) == 3

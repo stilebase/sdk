@@ -20,6 +20,7 @@ from ._core import (
     SETTINGS_TIMEOUT,
     UNUSABLE,
     Answer,
+    Asking,
     Capture,
     Copy,
     Decision,
@@ -56,17 +57,26 @@ class SyncGate(Engine):
     def check(self, request: GateRequest) -> Decision:
         if not self.active:
             return PASS
+        settings: Settings | None = None
+        asking: Asking | None = None
+        recorded = False
         try:
             settings = self._settings()
-            decision = self.before_asking(request, settings)
-            if decision is not None or settings is None:
-                return decision or PASS
+            before = self.before_asking(request, settings)
+            if not isinstance(before, Asking) or settings is None:
+                return before if not isinstance(before, Asking) else PASS
+            asking = before
             body = decide_body(request, settings, self.options.assume_https)
             budget = settings.settle_timeout if request.payment is not None else settings.timeout
-            return self.after_asking(request, settings, body, self._ask("decide", body, budget))
+            answer = self._ask("decide", body, budget)
+            recorded = True
+            return self.after_asking(request, settings, body, answer, asking)
         except Exception as error:
             self.report(error)
             return unknown_payment() if request.payment is not None else PASS
+        finally:
+            if not recorded:  # failed before its answer was read: counted, and its probe freed
+                self.gave_up(settings, asking)
 
     def settle(self, hold: Hold, status: int, body: bytes) -> Decision:
         """The site answered a paid request (`body` its whole body, held): settle it (SPEC.md, section 7). `Pass`: send

@@ -20,6 +20,8 @@ from ._core import Capture, Copy, GateOptions, Pass, Respond, too_large
 from ._request import GateRequest, address_from, headers_of
 from ._sync import SyncGate
 
+BODILESS = frozenset({204, 205, 304})
+
 
 class GateMiddleware:
     """Forwards each request to Stilebase and does what it says: AI agents pay per request with x402, everyone else
@@ -59,14 +61,18 @@ class GateMiddleware:
         if getattr(response, "streaming", False):
             parts: list[bytes] = []
             size = 0
+            stream = iter(response.streaming_content)
             try:
-                for chunk in response.streaming_content:
+                for chunk in stream:
                     size += len(chunk)
-                    if size <= hold.max_bytes:
-                        parts.append(bytes(chunk))
-                    else:
+                    if size > hold.max_bytes:
                         parts = []
+                        break  # too large to be paid for: nothing more is read
+                    parts.append(bytes(chunk))
             finally:
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    close()
                 _release(response)
             if size > hold.max_bytes:
                 return _response(too_large())
@@ -84,6 +90,8 @@ class GateMiddleware:
         outcome = self.gate.settle(hold, response.status_code, body)
         if isinstance(outcome, Respond):
             return _response(outcome)
+        if response.status_code in BODILESS and not getattr(response, "streaming", False):
+            response.content = b""  # a status that can't carry a body is sent without one
         for name, value in {**decision.response_headers, **outcome.response_headers}.items():
             response[name] = value
         if decision.capture is not None:

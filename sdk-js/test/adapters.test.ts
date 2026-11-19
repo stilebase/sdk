@@ -77,6 +77,14 @@ describe("express", () => {
     expect(stilebase.to(SETTLE)).toHaveLength(1); // the big one wasn't settled
   });
 
+  it("stops reading a paid answer as soon as it's too large", async () => {
+    stilebase.decide = holding(10);
+    const base = await site();
+    const paid = await fetch(`${base}/stream`, { headers: PAID });
+    expect(paid.status).toBe(502);
+    expect(stilebase.to(SETTLE)).toEqual([]);
+  });
+
   it("keeps the route's end callback while holding", async () => {
     stilebase.decide = holding();
     const paid = await fetch(`${await site()}/callback`, { headers: PAID });
@@ -160,7 +168,14 @@ describe("fetch", () => {
     const answered = await site()(new Request("https://shop.example.com/listings", { headers: GPTBOT }));
     expect([answered.status, answered.headers.get("x-bad")]).toEqual([204, null]);
     stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 101, headers: {}, body: "" } });
-    expect((await site()(new Request("https://shop.example.com/listings", { headers: GPTBOT }))).status).toBe(502);
+    expect((await site()(new Request("https://shop.example.com/listings", { headers: GPTBOT }))).status).toBe(200); // unusable: passes
+  });
+
+  it("settles a paid 204 and sends it without a body, with decide's headers too", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", settle_after: { max_bytes: 100 }, response_headers: { "x-from-decide": "1" } } });
+    const empty = withGate(async () => new Response(null, { status: 204 }), { key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
+    const paid = await empty(new Request("https://shop.example.com/x", { headers: PAID }));
+    expect([paid.status, paid.headers.get("x-from-decide"), paid.headers.get("payment-response")]).toEqual([204, "1", "eyJzdWNjZXNzIjp0cnVlfQ=="]);
   });
 
   it("reads the Worker's env and Cloudflare's edge facts", async () => {

@@ -344,7 +344,7 @@
     ]
   },
   "answers": {
-    "about": "SPEC.md section 6 step 5: what a gate does with decide's answer (http_status, body as sent). outcome: pass | respond | settle_after | unknown_payment; for a request without a payment (no_payment) and with one (with_payment).",
+    "about": "SPEC.md section 6 step 5: what a gate does with decide's answer (http_status, body as sent). outcome: pass | respond | settle_after | unknown_payment, for a request without a payment (no_payment) and with one (with_payment); respond/response_headers/retry_after/remember_seconds: what the gate then sends or keeps.",
     "cases": [
       {
         "name": "pass",
@@ -431,29 +431,6 @@
         "with_payment": "unknown_payment"
       },
       {
-        "name": "respond without a status",
-        "http_status": 200,
-        "body": {
-          "action": "respond",
-          "headers": {},
-          "body": ""
-        },
-        "no_payment": "pass",
-        "with_payment": "unknown_payment"
-      },
-      {
-        "name": "respond with a status out of range",
-        "http_status": 200,
-        "body": {
-          "action": "respond",
-          "status": 99,
-          "headers": {},
-          "body": ""
-        },
-        "no_payment": "pass",
-        "with_payment": "unknown_payment"
-      },
-      {
         "name": "remember that isn't a number",
         "http_status": 200,
         "body": {
@@ -518,6 +495,396 @@
         },
         "no_payment": "pass",
         "with_payment": "unknown_payment"
+      },
+      {
+        "name": "respond without a status",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "headers": {},
+          "body": ""
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
+      },
+      {
+        "name": "respond with a 1xx status",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 101,
+          "headers": {},
+          "body": ""
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
+      },
+      {
+        "name": "respond with a status out of range",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 600,
+          "headers": {},
+          "body": ""
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
+      },
+      {
+        "name": "respond without a body or headers",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 402
+        },
+        "no_payment": "respond",
+        "with_payment": "respond",
+        "respond": {
+          "status": 402,
+          "body": ""
+        }
+      },
+      {
+        "name": "respond with null headers",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 402,
+          "headers": null,
+          "body": "x"
+        },
+        "no_payment": "respond",
+        "with_payment": "respond",
+        "respond": {
+          "status": 402,
+          "body": "x"
+        }
+      },
+      {
+        "name": "respond with a header that isn't a string",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 402,
+          "headers": {
+            "a": 1
+          },
+          "body": ""
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
+      },
+      {
+        "name": "settle_after with max_bytes 0",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "settle_after": {
+            "max_bytes": 0
+          }
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
+      },
+      {
+        "name": "settle_after with a fraction",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "settle_after": {
+            "max_bytes": 10.5
+          }
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
+      },
+      {
+        "name": "settle_after keeps response_headers",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "settle_after": {
+            "max_bytes": 1000
+          },
+          "response_headers": {
+            "x-a": "1"
+          }
+        },
+        "no_payment": "settle_after",
+        "with_payment": "settle_after",
+        "response_headers": {
+          "x-a": "1"
+        }
+      },
+      {
+        "name": "retry_after that isn't an integer",
+        "http_status": 200,
+        "body": {
+          "action": "unknown_payment",
+          "retry_after": 2.5
+        },
+        "no_payment": "unknown_payment",
+        "with_payment": "unknown_payment",
+        "retry_after": 5
+      },
+      {
+        "name": "retry_after too large",
+        "http_status": 200,
+        "body": {
+          "action": "unknown_payment",
+          "retry_after": 100000
+        },
+        "no_payment": "unknown_payment",
+        "with_payment": "unknown_payment",
+        "retry_after": 5
+      },
+      {
+        "name": "retry_after in range",
+        "http_status": 200,
+        "body": {
+          "action": "unknown_payment",
+          "retry_after": 30
+        },
+        "no_payment": "unknown_payment",
+        "with_payment": "unknown_payment",
+        "retry_after": 30
+      },
+      {
+        "name": "remember with a fraction",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "remember": {
+            "seconds": 1.5
+          }
+        },
+        "no_payment": "pass",
+        "with_payment": "pass",
+        "remember_seconds": null
+      }
+    ]
+  },
+  "settings": {
+    "about": "SPEC.md section 3, reading settings: read is null (everyone passes) or the settings a gate runs on, every default filled in.",
+    "cases": [
+      {
+        "name": "only what's required",
+        "body": {
+          "settings_version": 1,
+          "enabled": true
+        },
+        "read": {
+          "settings_version": 1,
+          "enabled": true,
+          "refresh_seconds": 300,
+          "timeout_ms": 300,
+          "settle_timeout_ms": 65000,
+          "breaker": {
+            "failures": 5,
+            "open_seconds": 30
+          },
+          "remember_by": [
+            "client_ip",
+            "user-agent",
+            "path"
+          ],
+          "cache_max_entries": 10000,
+          "strip_headers": [],
+          "forward_cookies": [],
+          "skip_paths": {
+            "prefixes": [],
+            "extensions": []
+          },
+          "settle_after": {
+            "max_bytes": 10485760
+          }
+        }
+      },
+      {
+        "name": "switched off",
+        "body": {
+          "settings_version": 1,
+          "enabled": false
+        },
+        "read": {
+          "settings_version": 1,
+          "enabled": false,
+          "refresh_seconds": 300,
+          "timeout_ms": 300,
+          "settle_timeout_ms": 65000,
+          "breaker": {
+            "failures": 5,
+            "open_seconds": 30
+          },
+          "remember_by": [
+            "client_ip",
+            "user-agent",
+            "path"
+          ],
+          "cache_max_entries": 10000,
+          "strip_headers": [],
+          "forward_cookies": [],
+          "skip_paths": {
+            "prefixes": [],
+            "extensions": []
+          },
+          "settle_after": {
+            "max_bytes": 10485760
+          }
+        }
+      },
+      {
+        "name": "another version",
+        "body": {
+          "settings_version": 2,
+          "enabled": true
+        },
+        "read": null
+      },
+      {
+        "name": "enabled isn't a boolean",
+        "body": {
+          "settings_version": 1,
+          "enabled": "yes"
+        },
+        "read": null
+      },
+      {
+        "name": "not an object",
+        "body": [
+          1
+        ],
+        "read": null
+      },
+      {
+        "name": "zero, negative and fractional numbers take defaults",
+        "body": {
+          "settings_version": 1,
+          "enabled": true,
+          "timeout_ms": 0,
+          "refresh_seconds": -5,
+          "settle_after": {
+            "max_bytes": 1.5
+          },
+          "breaker": {
+            "failures": 0,
+            "open_seconds": 10
+          }
+        },
+        "read": {
+          "settings_version": 1,
+          "enabled": true,
+          "refresh_seconds": 300,
+          "timeout_ms": 300,
+          "settle_timeout_ms": 65000,
+          "breaker": {
+            "failures": 5,
+            "open_seconds": 10
+          },
+          "remember_by": [
+            "client_ip",
+            "user-agent",
+            "path"
+          ],
+          "cache_max_entries": 10000,
+          "strip_headers": [],
+          "forward_cookies": [],
+          "skip_paths": {
+            "prefixes": [],
+            "extensions": []
+          },
+          "settle_after": {
+            "max_bytes": 10485760
+          }
+        }
+      },
+      {
+        "name": "lists of the wrong type take defaults",
+        "body": {
+          "settings_version": 1,
+          "enabled": true,
+          "strip_headers": "cookie",
+          "forward_cookies": [
+            1
+          ],
+          "skip_paths": {
+            "prefixes": [
+              "/s/"
+            ],
+            "extensions": null
+          }
+        },
+        "read": {
+          "settings_version": 1,
+          "enabled": true,
+          "refresh_seconds": 300,
+          "timeout_ms": 300,
+          "settle_timeout_ms": 65000,
+          "breaker": {
+            "failures": 5,
+            "open_seconds": 30
+          },
+          "remember_by": [
+            "client_ip",
+            "user-agent",
+            "path"
+          ],
+          "cache_max_entries": 10000,
+          "strip_headers": [],
+          "forward_cookies": [],
+          "skip_paths": {
+            "prefixes": [
+              "/s/"
+            ],
+            "extensions": []
+          },
+          "settle_after": {
+            "max_bytes": 10485760
+          }
+        }
+      },
+      {
+        "name": "given values kept",
+        "body": {
+          "settings_version": 1,
+          "enabled": true,
+          "timeout_ms": 250,
+          "forward_cookies": [
+            "stilebase_pass"
+          ],
+          "remember_by": [
+            "client_ip",
+            "path"
+          ]
+        },
+        "read": {
+          "settings_version": 1,
+          "enabled": true,
+          "refresh_seconds": 300,
+          "timeout_ms": 250,
+          "settle_timeout_ms": 65000,
+          "breaker": {
+            "failures": 5,
+            "open_seconds": 30
+          },
+          "remember_by": [
+            "client_ip",
+            "path"
+          ],
+          "cache_max_entries": 10000,
+          "strip_headers": [],
+          "forward_cookies": [
+            "stilebase_pass"
+          ],
+          "skip_paths": {
+            "prefixes": [],
+            "extensions": []
+          },
+          "settle_after": {
+            "max_bytes": 10485760
+          }
+        }
       }
     ]
   }

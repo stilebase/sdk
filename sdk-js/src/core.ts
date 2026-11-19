@@ -8,6 +8,7 @@ import {
   type GateRequest,
   type GateSettings,
   decideBody,
+  defaultSettings,
   isRecord,
   parseSettings,
   paymentOf,
@@ -47,8 +48,9 @@ export interface GateOptions {
 export type GateDecision =
   | { action: "pass"; responseHeaders: Record<string, string>; capture: Capture | null }
   | { action: "respond"; status: number; headers: Record<string, string>; body: string }
-  /** A verified payment: hold the site's answer (at most maxBytes of body), then call `settle` with it. */
-  | { action: "hold"; maxBytes: number; capture: Capture | null; ticket: Ticket };
+  /** A verified payment: hold the site's answer (at most maxBytes of body), then call `settle` with it. The settled
+   * answer gets responseHeaders and settle's own. */
+  | { action: "hold"; maxBytes: number; responseHeaders: Record<string, string>; capture: Capture | null; ticket: Ticket };
 
 /** An answer the gate makes itself. */
 export interface Respond {
@@ -111,13 +113,14 @@ class SiteGate implements Gate {
   private settingsLoadingAt = 0;
   private settingsStarted = 0; // generations: the latest load started, and the newest whose answer applied
   private settingsApplied = 0;
-  private failures = 0; // the breaker: decisions failed in a row, and when it's open until
+  private failures = 0; // the breaker: decisions failed in a row, when it's open until, and a half-open probe out
   private openUntil = 0;
+  private probing = false;
   private readonly remembered = new Map<string, number>(); // remember key -> expires (ms), oldest first
-  private readonly asking = new Map<string, Promise<Answer>>(); // remember key -> the decision in flight
+  private readonly asking = new Map<string, { answer: Promise<Answer>; since: number }>(); // decisions in flight
   private readonly warned = new Map<string, number>();
   private captureQueue: Array<() => Promise<void>> = [];
-  private capturing = false;
+  private drain: { active: number } | null = null; // the capture drain running, and when it last made progress
 
   constructor(
     private readonly options: GateOptions,
@@ -152,8 +155,22 @@ class SiteGate implements Gate {
     if (this.disabled || !this.site) return PASS;
     const settings = await this.loadedSettings(waitUntil);
     if (!settings || !settings.enabled) return PASS;
-    if (this.now() < this.openUntil) return paying ? unknownPayment(UNKNOWN_RETRY_SECONDS) : PASS; // the breaker
     if (!paying && skipped(request.path, settings.skip_paths)) return PASS;
+    // The breaker: open, everyone passes (payments 503); half open, one request asks and the rest wait it out.
+    let probe = false;
+    if (this.openUntil) {
+      if (this.now() < this.openUntil || this.probing) return paying ? unknownPayment(UNKNOWN_RETRY_SECONDS) : PASS;
+      this.probing = probe = true;
+    }
+    try {
+      return await this.decided(request, settings, paying, probe);
+    } finally {
+      if (probe) this.probing = false;
+    }
+  }
+
+  private async decided(request: GateRequest, settings: GateSettings, paying: boolean, probe: boolean): Promise<GateDecision> {
+    const site = this.site!;
 
     const key = await sha256Hex(rememberMaterial(request, settings.remember_by));
     // Requests alike share one decision while it's in flight: GETs and HEADs only, keyed with the method too.
@@ -168,15 +185,21 @@ class SiteGate implements Gate {
     const budget = paying ? settings.settle_timeout_ms : settings.timeout_ms;
     const body = decideBody(request, settings, this.assumeHttps);
     let answer: Answer;
-    const inFlight = shared ? this.asking.get(shared) : undefined;
+    // A shared decision waiting longer than its budget is forgotten: the runtime may have cancelled it.
+    let inFlight = shared && !probe ? this.asking.get(shared) : undefined;
+    if (inFlight && this.now() - inFlight.since > budget) {
+      this.asking.delete(shared!);
+      inFlight = undefined;
+    }
     if (inFlight) {
-      answer = await withinBudget(inFlight, budget);
+      answer = await withinBudget(inFlight.answer, budget);
       if (answer.kind === "pass") answer = { ...answer, capture: null }; // a capture is the asker's own
     } else {
-      const asked = this.ask(`/v1/gate/sites/${this.site.gatewayId}/decide`, body, budget);
+      const asked = this.ask(`/v1/gate/sites/${site.gatewayId}/decide`, body, budget);
       if (shared) {
-        this.asking.set(shared, asked);
-        void asked.finally(() => this.asking.get(shared) === asked && this.asking.delete(shared));
+        const entry = { answer: asked, since: this.now() };
+        this.asking.set(shared, entry);
+        void asked.finally(() => this.asking.get(shared) === entry && this.asking.delete(shared));
       }
       answer = await asked;
       this.breaker(answer.kind !== "unusable", settings);
@@ -191,8 +214,10 @@ class SiteGate implements Gate {
       }
       case "respond":
         return respond(answer.status, answer.headers, answer.body);
-      case "settle_after":
-        return { action: "hold", maxBytes: Math.min(answer.maxBytes, settings.settle_after.max_bytes), capture: answer.capture, ticket: { body } };
+      case "settle_after": {
+        const maxBytes = Math.min(answer.maxBytes, settings.settle_after.max_bytes);
+        return { action: "hold", maxBytes, responseHeaders: answer.responseHeaders, capture: answer.capture, ticket: { body } };
+      }
       case "unknown_payment":
         return unknownPayment(answer.retryAfter);
       default:
@@ -202,8 +227,8 @@ class SiteGate implements Gate {
 
   async settle(ticket: Ticket, delivery: { status: number; body: Uint8Array }): Promise<SettleDecision> {
     try {
-      const settings = this.settings;
-      if (!this.site || !settings) return unknownPayment(UNKNOWN_RETRY_SECONDS);
+      if (!this.site) return unknownPayment(UNKNOWN_RETRY_SECONDS);
+      const settings = this.settings ?? defaultSettings(); // dropped meanwhile: the payment is still settled
       const payload = { ...ticket.body, delivery: { status: delivery.status, size: delivery.body.byteLength, sha256: await sha256Hex(delivery.body) } };
       const answer = await this.ask(`/v1/gate/sites/${this.site.gatewayId}/settle`, payload, settings.settle_timeout_ms);
       if (answer.kind === "pass") return { action: "send", responseHeaders: answer.responseHeaders };
@@ -245,15 +270,18 @@ class SiteGate implements Gate {
   }
 
   private async drainCaptures(): Promise<void> {
-    if (this.capturing) return;
-    this.capturing = true;
+    // A drain quiet for longer than a capture's timeout was cancelled by its runtime (Workers): start another.
+    if (this.drain && this.now() - this.drain.active < CAPTURE_TIMEOUT_MS * 2) return;
+    const drain = { active: this.now() };
+    this.drain = drain;
     try {
-      while (this.captureQueue.length) {
+      while (this.captureQueue.length && this.drain === drain) {
         const next = this.captureQueue.shift()!;
         await next().catch((error: unknown) => this.report(error)); // a failure is dropped, never retried
+        drain.active = this.now();
       }
     } finally {
-      this.capturing = false;
+      if (this.drain === drain) this.drain = null;
     }
   }
 
@@ -275,11 +303,12 @@ class SiteGate implements Gate {
   private breaker(usable: boolean, settings: GateSettings): void {
     if (usable) {
       this.failures = 0;
+      this.openUntil = 0;
       return;
     }
     // The count stays when it opens: after open_seconds, the next request's outcome closes or reopens it.
     this.failures += 1;
-    if (this.failures >= Math.max(1, settings.breaker.failures)) this.openUntil = this.now() + settings.breaker.open_seconds * 1000;
+    if (this.failures >= Math.max(1, settings.breaker.failures) || this.openUntil) this.openUntil = this.now() + settings.breaker.open_seconds * 1000;
   }
 
   private remember(key: string, seconds: number, max: number): void {
