@@ -34,8 +34,15 @@ export function gate(options: ExpressGateOptions = {}) {
   return function stilebaseGate(req: ExpressRequest, res: ExpressResponse, next: (error?: unknown) => void): void {
     siteGate.check(gateRequest(req, options)).then(
       (decision) => {
+        if (decision.action === "respond") {
+          try {
+            answer(res, decision);
+          } catch (error) {
+            next(error); // the gate's own answer couldn't be sent: an error, never the page
+          }
+          return;
+        }
         try {
-          if (decision.action === "respond") return answer(res, decision);
           if (decision.action === "hold") {
             hold(res, siteGate, decision.ticket, decision.maxBytes, decision.capture);
             return next();
@@ -79,8 +86,8 @@ function expressPath(req: ExpressRequest): string {
 }
 
 function answer(res: ServerResponse, decision: { status: number; headers: Record<string, string>; body: string }): void {
+  for (const [name, value] of Object.entries(decision.headers)) res.setHeader(name, value); // may throw: status untouched
   res.statusCode = decision.status;
-  for (const [name, value] of Object.entries(decision.headers)) res.setHeader(name, value);
   res.end(decision.body);
 }
 
@@ -172,6 +179,10 @@ function hold(res: ServerResponse, gate: Gate, ticket: Ticket, maxBytes: number,
   res.end = ((chunk?: unknown, ...args: unknown[]) => {
     if (ended) return res;
     ended = true;
+    if (typeof chunk === "function") {
+      args = [chunk];
+      chunk = undefined;
+    }
     take(chunk, typeof args[0] === "string" ? args[0] : undefined);
     const callback = args.find((a) => typeof a === "function") as (() => void) | undefined;
     const body = Buffer.concat(parts);
@@ -190,8 +201,28 @@ function hold(res: ServerResponse, gate: Gate, ticket: Ticket, maxBytes: number,
       if (capture) safely(() => gate.capture(capture, { status: res.statusCode, headers: headerList(res), body: body.subarray(0, capture.maxBytes), size, truncated: size > capture.maxBytes, ttfbMs }));
       end(body, callback);
     };
+    // Whatever happens finishing (a header Node refuses), the request gets an answer and the process keeps running;
+    // never the held page unless the settlement said so.
+    const finishSafely = (decision: SettleDecision) => {
+      try {
+        finish(decision);
+      } catch {
+        try {
+          res.writeHead = writeHead as ServerResponse["writeHead"];
+          res.end = end as End;
+          if (!res.headersSent) {
+            for (const name of res.getHeaderNames()) res.removeHeader(name);
+            res.statusCode = 502;
+            res.setHeader("cache-control", "no-store");
+          }
+          end();
+        } catch {
+          // nothing more can be sent
+        }
+      }
+    };
     const settling = size > maxBytes ? Promise.resolve(gate.tooLarge()) : gate.settle(ticket, { status: res.statusCode, body });
-    settling.then(finish, () => finish(gate.tooLarge()));
+    settling.then(finishSafely, () => finishSafely(gate.tooLarge()));
     return res;
   }) as End;
 }

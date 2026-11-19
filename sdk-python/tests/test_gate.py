@@ -257,3 +257,137 @@ def test_the_async_gate_settles_and_captures() -> None:
 def test_paid_headers_are_passed_on() -> None:
     stilebase = FakeStilebase(decide=(200, PAID))
     assert sync_gate(stilebase).check(AGENT) == Pass({"payment-response": RECEIPT})
+
+
+# Review cycle 1
+
+
+def test_every_call_carries_its_own_budget() -> None:
+    async def run() -> None:
+        stilebase = FakeStilebase(
+            settings_answer=(200, settings(timeout_ms=250, settle_timeout_ms=7000)), decide=(200, SETTLE_AFTER)
+        )
+        gate = async_gate(stilebase)
+        decision = await gate.check(PAYING)
+        await gate.check(AGENT)
+        assert isinstance(decision, Pass) and decision.hold is not None
+        await gate.settle(decision.hold, 200, b"page")
+        gate.capture(Capture("t", 10), 200, [], Copy(10), 1)
+        await gate.aclose()
+        assert stilebase.to("settings")[0].timeout["read"] == 3.0
+        assert [c.timeout["read"] for c in stilebase.to("decide")] == [7.0, 0.25]  # a payment's budget, then a person's
+        assert stilebase.to("settle")[0].timeout["read"] == 7.0  # never httpx's default 5 s
+        assert stilebase.to("captures")[0].timeout["read"] == 10.0
+
+    asyncio.run(run())
+
+
+def test_settings_that_arent_json_keep_the_last_good_ones() -> None:
+    clock = Clock()
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    gate = sync_gate(stilebase, clock)
+    gate.check(AGENT)
+    stilebase.raw_settings = b"<html>gateway timeout</html>"
+    clock.at += 301
+    gate.check(AGENT)
+    gate.wait()
+    assert gate.settings is not None and isinstance(gate.check(AGENT), Respond)
+    stilebase.raw_settings = None
+    stilebase.settings_answer = (200, settings(settings_version=9))  # a JSON object this version can't read: dropped
+    clock.at += 301
+    gate.check(AGENT)
+    gate.wait()
+    assert gate.settings is None and gate.check(AGENT) == Pass()
+
+
+def test_the_settings_cap_what_a_gate_holds() -> None:
+    stilebase = FakeStilebase(
+        settings_answer=(200, settings(settle_after={"max_bytes": 100})),
+        decide=(200, {"action": "pass", "settle_after": {"max_bytes": 5000}}),
+    )
+    decision = sync_gate(stilebase).check(PAYING)
+    assert isinstance(decision, Pass) and decision.hold is not None and decision.hold.max_bytes == 100
+
+
+def test_credentials_are_never_sent_whatever_the_settings_say() -> None:
+    stilebase = FakeStilebase(settings_answer=(200, settings(strip_headers=["x-secret"])))
+    request = GateRequest(
+        "GET",
+        "/",
+        (("Cookie", "s=1"), ("Authorization", "Bearer t"), ("Proxy-Authorization", "p"), ("X-Secret", "x"), ("Accept", "*/*")),
+    )
+    sync_gate(stilebase).check(request)
+    assert stilebase.to("decide")[0].body["headers"] == [["accept", "*/*"]]
+
+
+def test_the_breaker_reopens_after_one_failure_and_closes_after_one_answer() -> None:
+    clock = Clock()
+    stilebase = FakeStilebase(decide=(500, {}))
+    gate = sync_gate(stilebase, clock)
+    for _ in range(5):
+        gate.check(AGENT)
+    clock.at += 31
+    gate.check(AGENT)  # asked again, failed: open again at once (the count was kept)
+    assert len(stilebase.to("decide")) == 6
+    gate.check(AGENT)
+    assert len(stilebase.to("decide")) == 6
+    clock.at += 31
+    stilebase.decide = (200, PAID)
+    gate.check(AGENT)  # one usable answer closes it
+    stilebase.decide = (500, {})
+    gate.check(AGENT)  # one failure doesn't reopen it
+    gate.check(AGENT)
+    assert len(stilebase.to("decide")) == 9
+
+
+@pytest.mark.parametrize(
+    ("value", "disabled"), [(" 1 ", True), ("TRUE", True), ("yes", True), ("On", True), ("0", False), ("", False)]
+)
+def test_stilebase_disabled(monkeypatch: pytest.MonkeyPatch, value: str, disabled: bool) -> None:
+    monkeypatch.setenv("STILEBASE_DISABLED", value)
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    gate = SyncGate(GateOptions(key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None))
+    assert (gate.check(AGENT) == Pass()) is disabled
+
+
+def test_only_a_plain_pass_is_remembered() -> None:
+    for answer in (
+        {**REMEMBER, "response_headers": {"x": "y"}},
+        {**REMEMBER, "capture": {"token": "t", "max_bytes": 10}},
+    ):
+        stilebase = FakeStilebase(decide=(200, answer))
+        gate = sync_gate(stilebase)
+        gate.check(PERSON)
+        gate.check(PERSON)
+        assert len(stilebase.to("decide")) == 2
+
+
+def test_only_reads_share_an_answer_and_never_its_capture() -> None:
+    async def run() -> None:
+        captured = {**REMEMBER, "capture": {"token": "t", "max_bytes": 10}, "response_headers": {"x": "y"}}
+        stilebase = FakeStilebase(decide=(200, captured), delay=0.05)
+        gate = async_gate(stilebase)
+        await gate.check(AGENT)  # settings
+        stilebase.calls.clear()
+        read = GateRequest("GET", "/x", (("User-Agent", CHROME),), ip="198.51.100.4")
+        results = await asyncio.gather(*(gate.check(read) for _ in range(3)))
+        assert len(stilebase.to("decide")) == 1
+        assert sorted(r.capture is not None for r in results if isinstance(r, Pass)) == [False, False, True]
+        assert all(isinstance(r, Pass) and r.response_headers == {"x": "y"} for r in results)
+        stilebase.calls.clear()
+        posted = GateRequest("POST", "/x", (("User-Agent", CHROME),), ip="198.51.100.4")
+        head = GateRequest("HEAD", "/x", (("User-Agent", CHROME),), ip="198.51.100.4")
+        await asyncio.gather(gate.check(posted), gate.check(posted), gate.check(head), gate.check(read))
+        assert len(stilebase.to("decide")) == 4  # POSTs alone; HEAD and GET apart (the method is in the key)
+        await gate.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("settle_after", [None, True, "yes", 5, {"max_bytes": "10"}, {}])
+def test_a_settle_after_that_isnt_an_object_is_unusable(settle_after: Any) -> None:
+    stilebase = FakeStilebase(decide=(200, {"action": "pass", "settle_after": settle_after}))
+    gate = sync_gate(stilebase)
+    assert gate.check(AGENT) == Pass()
+    held = gate.check(PAYING)
+    assert isinstance(held, Respond) and held.status == 503

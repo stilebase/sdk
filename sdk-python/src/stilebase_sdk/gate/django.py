@@ -67,14 +67,15 @@ class GateMiddleware:
                     else:
                         parts = []
             finally:
-                response.close()
+                _release(response)
             if size > hold.max_bytes:
                 return _response(too_large())
             body = b"".join(parts)
-            held = HttpResponse(body, status=response.status_code)
+            held = HttpResponse(body, status=response.status_code, reason=response.reason_phrase)
             for name, value in response.items():
                 if name.lower() != "content-length":
                     held[name] = value
+            held.cookies = response.cookies  # Set-Cookie lives here, not among the headers
             response = held
         else:
             body = bytes(response.content)
@@ -122,6 +123,19 @@ class GateMiddleware:
         pairs = tuple((str(k), str(v)) for k, v in request.headers.items())
         ip = address_from(headers_of(pairs), self.ip_header, request.META.get("REMOTE_ADDR"))
         return GateRequest(request.method, request.get_full_path(), pairs, scheme=request.scheme, ip=ip)
+
+
+def _release(response: Any) -> None:
+    """Free what a streamed response holds open (a file, say) without `close()`, which would also send Django's
+    request_finished before the request is done: the response sent instead is closed by Django as usual."""
+    for closer in list(getattr(response, "_resource_closers", ())):
+        try:
+            closer()
+        except Exception:
+            pass
+    resource_closers = getattr(response, "_resource_closers", None)
+    if isinstance(resource_closers, list):
+        resource_closers.clear()
 
 
 def _response(decision: Respond) -> HttpResponse:

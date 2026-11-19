@@ -31,7 +31,7 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
         ...options,
         key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"),
         apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL"),
-        disabled: options.disabled ?? (fromEnv(rest[0], "STILEBASE_DISABLED") === "1" ? true : undefined),
+        disabled: options.disabled ?? (["1", "true", "yes", "on"].includes((fromEnv(rest[0], "STILEBASE_DISABLED") ?? "").trim().toLowerCase()) ? true : undefined),
       },
       "fetch",
     );
@@ -39,7 +39,7 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
     const ctx = rest[1] as { waitUntil?: (task: Promise<unknown>) => void } | undefined;
     const waitUntil: WaitUntil | undefined = typeof ctx?.waitUntil === "function" ? (task) => ctx.waitUntil!(task) : undefined;
     const decision = await gate.check(gateRequest(request, options, rest), waitUntil);
-    if (decision.action === "respond") return new Response(decision.body, { status: decision.status, headers: decision.headers });
+    if (decision.action === "respond") return toResponse(decision);
 
     const started = Date.now();
     const response = await handler(request, ...rest);
@@ -57,13 +57,10 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
     let served = response;
     if (Object.keys(decision.responseHeaders).length) served = rebuilt(response, response.body, decision.responseHeaders);
     if (!decision.capture || !served.body) return served;
-    // A copy as it goes out: the visitor's stream is never held back or changed.
-    const [toVisitor, toCopy] = served.body.tee();
+    // A copy as it goes out, at the visitor's pace: the stream is never held back, changed or buffered beyond the copy.
     const capture = decision.capture;
-    const copying = readUpTo(toCopy, capture.maxBytes, true).then((copy) => gate.capture(capture, captured(served, copy, capture, ttfbMs), waitUntil));
-    if (waitUntil) waitUntil(copying.catch(() => undefined));
-    else copying.catch(() => undefined);
-    return new Response(toVisitor, served);
+    const copying = copier(capture.maxBytes, (copy) => gate.capture(capture, captured(served, copy, capture, ttfbMs), waitUntil));
+    return new Response(served.body.pipeThrough(copying), served);
   };
 }
 
@@ -96,9 +93,43 @@ function gateRequest<Rest extends unknown[]>(request: Request, options: FetchGat
   };
 }
 
-/** A body read up to `max` bytes: what was read, the whole size and whether there was more. With `toEnd`, the rest is
- * read (and counted) but not kept; without it, reading stops past `max`. */
-async function readUpTo(body: ReadableStream<Uint8Array> | null, max: number, toEnd = false): Promise<{ bytes: Uint8Array; size: number; truncated: boolean }> {
+/** A pass-through stream that keeps the first `max` bytes and counts the rest, then hands over the copy. */
+function copier(max: number, done: (copy: { bytes: Uint8Array; size: number; truncated: boolean }) => void): TransformStream<Uint8Array, Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let kept = 0;
+  let size = 0;
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+      try {
+        size += chunk.byteLength;
+        if (kept < max) {
+          const part = chunk.slice(0, max - kept);
+          chunks.push(part);
+          kept += part.byteLength;
+        }
+      } catch {
+        // copying never gets in the visitor's way
+      }
+    },
+    flush() {
+      try {
+        const bytes = new Uint8Array(kept);
+        let at = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, at);
+          at += chunk.byteLength;
+        }
+        done({ bytes, size, truncated: size > max });
+      } catch {
+        // nor does sending it
+      }
+    },
+  });
+}
+
+/** A body read up to `max` bytes: what was read, the whole size and whether there was more. Reading stops past `max`. */
+async function readUpTo(body: ReadableStream<Uint8Array> | null, max: number): Promise<{ bytes: Uint8Array; size: number; truncated: boolean }> {
   if (!body) return { bytes: new Uint8Array(), size: 0, truncated: false };
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -113,7 +144,7 @@ async function readUpTo(body: ReadableStream<Uint8Array> | null, max: number, to
       chunks.push(part);
       kept += part.byteLength;
     }
-    if (size > max && !toEnd) {
+    if (size > max) {
       reader.cancel().catch(() => undefined);
       break;
     }
@@ -151,8 +182,25 @@ function rebuilt(response: Response, body: BodyInit | null, headers: Record<stri
   return copy;
 }
 
+/** The gate's own answer as a Response. A status or header the runtime refuses (a 1xx, a body on 204/205/304, a header
+ * with a newline) never throws into the app: its body is dropped for a null-body status, the header is left out, and
+ * a status that can't be sent at all becomes 502. */
 function toResponse(decision: { status: number; headers: Record<string, string>; body: string }): Response {
-  return new Response(decision.body, { status: decision.status, headers: decision.headers });
+  const status = decision.status >= 200 && decision.status <= 599 ? decision.status : 502;
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(decision.headers)) {
+    try {
+      headers.set(name, value);
+    } catch {
+      // a header the runtime refuses is left out
+    }
+  }
+  const empty = status === 204 || status === 205 || status === 304;
+  try {
+    return new Response(empty ? null : decision.body, { status, headers });
+  } catch {
+    return new Response(null, { status: 502, headers: { "cache-control": "no-store" } });
+  }
 }
 
 function fromEnv(env: unknown, name: string): string | undefined {

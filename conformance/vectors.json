@@ -508,6 +508,16 @@
         },
         "no_payment": "pass",
         "with_payment": "pass"
+      },
+      {
+        "name": "settle_after that isn't an object",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "settle_after": null
+        },
+        "no_payment": "pass",
+        "with_payment": "unknown_payment"
       }
     ]
   }

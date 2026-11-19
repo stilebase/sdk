@@ -39,6 +39,10 @@ describe("express", () => {
     app.get("/broken", (_req, res) => {
       res.status(500).send("oops");
     });
+    app.get("/callback", (_req, res) => {
+      res.write("done");
+      res.end(() => undefined);
+    });
     server = app.listen(0);
     await new Promise((resolve) => server!.once("listening", resolve));
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -71,6 +75,19 @@ describe("express", () => {
     const big = await fetch(`${base}/big`, { headers: PAID });
     expect(big.status).toBe(502);
     expect(stilebase.to(SETTLE)).toHaveLength(1); // the big one wasn't settled
+  });
+
+  it("keeps the route's end callback while holding", async () => {
+    stilebase.decide = holding();
+    const paid = await fetch(`${await site()}/callback`, { headers: PAID });
+    expect([paid.status, await paid.text()]).toEqual([200, "done"]);
+  });
+
+  it("answers an error, never the page, when its own answer can't be sent", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 402, headers: { "x-bad": "a\nb" }, body: "pay" } });
+    const refused = await fetch(`${await site()}/listings`, { headers: PAID });
+    expect(refused.status).toBe(500);
+    expect(await refused.text()).not.toContain("the listings");
   });
 
   it("reports what the site answered a paid request, so a failure isn't charged", async () => {
@@ -136,6 +153,14 @@ describe("fetch", () => {
     await Promise.all(waits);
     await new Promise((r) => setTimeout(r, 10));
     expect(stilebase.to(CAPTURES)[0]!.body).toMatchObject({ body: btoa("the"), size: 12, truncated: true });
+  });
+
+  it("never throws into the app over an answer the runtime refuses", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 204, headers: { "x-bad": "a\nb" }, body: "" } });
+    const answered = await site()(new Request("https://shop.example.com/listings", { headers: GPTBOT }));
+    expect([answered.status, answered.headers.get("x-bad")]).toEqual([204, null]);
+    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 101, headers: {}, body: "" } });
+    expect((await site()(new Request("https://shop.example.com/listings", { headers: GPTBOT }))).status).toBe(502);
   });
 
   it("reads the Worker's env and Cloudflare's edge facts", async () => {

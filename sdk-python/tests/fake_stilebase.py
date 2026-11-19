@@ -52,6 +52,7 @@ class Call:
     path: str
     headers: httpx.Headers
     body: Any
+    timeout: dict[str, Any] = field(default_factory=dict)
 
 
 def _signed(request: httpx.Request) -> bool:
@@ -72,6 +73,7 @@ class FakeStilebase:
     down: bool = False
     delay: float = 0.0
     raw_decide: bytes | None = None
+    raw_settings: bytes | None = None
     calls: list[Call] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -85,11 +87,14 @@ class FakeStilebase:
         if self.down:
             raise httpx.ConnectError("Stilebase down", request=request)
         body: dict[str, Any] = json.loads(request.content) if request.content else {}
-        self.calls.append(Call(request.method, request.url.path, request.headers, body))
+        timeout = dict(request.extensions.get("timeout", {}))
+        self.calls.append(Call(request.method, request.url.path, request.headers, body, timeout))
         if not _signed(request):
             return httpx.Response(401, json={"error": "Invalid site signature"})
         name = request.url.path.rsplit("/", 1)[-1]
         if name == "settings":
+            if self.raw_settings is not None:
+                return httpx.Response(200, content=self.raw_settings)
             return httpx.Response(self.settings_answer[0], json=self.settings_answer[1])
         if name == "decide":
             if self.raw_decide is not None:

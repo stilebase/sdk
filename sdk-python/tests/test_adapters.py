@@ -178,3 +178,40 @@ def test_django() -> None:
 
 
 urlpatterns: list[Any] = []
+
+
+def test_django_holds_a_stream_without_finishing_the_request_early() -> None:
+    import django
+    from django.conf import settings
+
+    if not settings.configured:
+        settings.configure(DEBUG=False, ALLOWED_HOSTS=["*"], ROOT_URLCONF=__name__, MIDDLEWARE=[])
+        django.setup()
+    from django.core.signals import request_finished
+    from django.http import StreamingHttpResponse
+    from django.test import RequestFactory
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    finished: list[object] = []
+    closed: list[bool] = []
+
+    def on_finished(**kwargs: Any) -> None:
+        finished.append(kwargs)
+
+    def view(request: Any) -> StreamingHttpResponse:
+        response = StreamingHttpResponse(iter([b"the ", b"listings"]), reason="Fine Thanks")
+        response.set_cookie("session", "abc")
+        response._resource_closers.append(lambda: closed.append(True))
+        return response
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": stilebase.transport}
+    request_finished.connect(on_finished)
+    try:
+        held = GateMiddleware(view)(RequestFactory().get("/listings", HTTP_PAYMENT_SIGNATURE=PAYMENT))
+        assert finished == [] and closed == [True]  # the stream's resources freed, the request not "finished" yet
+        assert (held.content, held.reason_phrase, held.cookies["session"].value) == (PAGE.encode(), "Fine Thanks", "abc")
+        assert held["payment-response"] == RECEIPT
+    finally:
+        request_finished.disconnect(on_finished)

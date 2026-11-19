@@ -104,6 +104,43 @@ describe("deciding", () => {
     expect(await g.check(request("/other", PAID))).toMatchObject({ action: "respond", status: 503, headers: { "retry-after": "5" } });
   });
 
+  it("never sends credentials, whatever the settings say", async () => {
+    stilebase.settings = { status: 200, body: settings({ strip_headers: [] }) };
+    await gate().check(request("/listings", { ...BROWSER, cookie: "s=1", authorization: "Bearer t", "proxy-authorization": "x" }));
+    const names = (stilebase.to(DECIDE)[0]!.body!.headers as Array<[string, string]>).map(([n]) => n);
+    expect(names).not.toContain("cookie");
+    expect(names).not.toContain("authorization");
+    expect(names).not.toContain("proxy-authorization");
+  });
+
+  it("remembers only a plain pass", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", remember: { seconds: 600 }, response_headers: { "x-a": "1" } } });
+    const g = gate();
+    await g.check(request("/listings", BROWSER));
+    await g.check(request("/listings", BROWSER));
+    expect(stilebase.to(DECIDE)).toHaveLength(2);
+  });
+
+  it("shares a decision in flight only between GETs alike, and never its capture", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", capture: { token: "t", max_bytes: 10 } }, delayMs: 50 });
+    const g = gate();
+    const [first, second] = await Promise.all([g.check(request("/listings", BROWSER)), g.check(request("/listings", BROWSER))]);
+    expect(stilebase.to(DECIDE)).toHaveLength(1);
+    expect([first, second].filter((d) => d.action === "pass" && d.capture)).toHaveLength(1);
+    await Promise.all([g.check(request("/x", BROWSER)), g.check(request("/x", BROWSER, { method: "POST" }))]);
+    expect(stilebase.to(DECIDE)).toHaveLength(3);
+  });
+
+  it("is switched off by STILEBASE_DISABLED=true too", async () => {
+    process.env.STILEBASE_DISABLED = " True ";
+    try {
+      await gate({ disabled: undefined }).check(request("/", GPTBOT));
+      expect(stilebase.calls).toEqual([]);
+    } finally {
+      delete process.env.STILEBASE_DISABLED;
+    }
+  });
+
   it("stops asking for a while after failures in a row (the breaker)", async () => {
     stilebase.decide = () => ({ status: 500 });
     const g = gate();
@@ -113,9 +150,14 @@ describe("deciding", () => {
     expect(stilebase.to(DECIDE)).toHaveLength(5); // open: everyone passes, nothing asked
     expect(await g.check(request("/p7", PAID))).toMatchObject({ status: 503 });
     now += 31_000;
-    stilebase.decide = () => ({ status: 200, body: { action: "pass" } });
-    await g.check(request("/p8", GPTBOT));
+    await g.check(request("/p8", GPTBOT)); // one more failure reopens it
+    await g.check(request("/p9", GPTBOT));
     expect(stilebase.to(DECIDE)).toHaveLength(6);
+    now += 31_000;
+    stilebase.decide = () => ({ status: 200, body: { action: "pass" } });
+    await g.check(request("/p10", GPTBOT)); // one usable answer closes it
+    await g.check(request("/p11", GPTBOT));
+    expect(stilebase.to(DECIDE)).toHaveLength(8);
   });
 });
 

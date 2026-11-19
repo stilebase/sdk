@@ -34,6 +34,7 @@ export interface GateRequest {
 }
 
 export const SETTINGS_VERSION = 1;
+const ALWAYS_STRIPPED = ["cookie", "authorization", "proxy-authorization"];
 const MAX_HEADERS = 100;
 
 /** A settings document from Stilebase, checked enough to run on; null when it isn't one this version reads. */
@@ -76,7 +77,8 @@ export function paymentOf(request: GateRequest): string | null {
 
 /** The decide body for a request (SPEC.md section 6, step 4; conformance decide_bodies). */
 export function decideBody(request: GateRequest, settings: GateSettings, assumeHttps: boolean): Record<string, unknown> {
-  const strip = new Set(settings.strip_headers.map((h) => h.toLowerCase()));
+  // Credentials are never sent, whatever the settings say (strip_headers adds to these, never removes them).
+  const strip = new Set([...ALWAYS_STRIPPED, ...settings.strip_headers.map((h) => h.toLowerCase())]);
   const headers: Array<[string, string]> = [];
   let credentials = false;
   for (const [name, value] of request.headers) {
@@ -131,7 +133,8 @@ export function readAnswer(status: number, body: unknown): Answer {
   const capture = readCapture(body.capture);
   switch (body.action) {
     case "pass": {
-      if (isRecord(body.settle_after)) {
+      if (body.settle_after !== undefined) {
+        if (!isRecord(body.settle_after)) return { kind: "unusable" }; // a field of the wrong type
         const max = body.settle_after.max_bytes;
         return typeof max === "number" && Number.isFinite(max) && max >= 0 ? { kind: "settle_after", maxBytes: max, capture } : { kind: "unusable" };
       }

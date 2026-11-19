@@ -22,6 +22,7 @@ from ._core import (
     Engine,
     GateOptions,
     Hold,
+    Pass,
     Settings,
     capture_body,
     decide_body,
@@ -60,14 +61,22 @@ class AsyncGate(Engine):
             if request.payment is not None:
                 answer = await self._ask("decide", body, settings.settle_timeout)
                 return self.after_asking(request, settings, body, answer)
-            key = remember_key(request, settings)
+            if request.method.upper() not in ("GET", "HEAD"):  # only reads are alike enough to share an answer
+                return self.after_asking(request, settings, body, await self._ask("decide", body, settings.timeout))
+            key = f"{request.method.upper()} {remember_key(request, settings)}"
             asking = self._asking.get(key)
             if asking is not None:  # another request like this one is being asked about: its answer is ours
                 try:
                     answer = await asyncio.wait_for(asyncio.shield(asking), settings.timeout)
                 except Exception:
                     answer = UNUSABLE
-                return self.after_asking(request, settings, body, answer) if answer.usable else PASS
+                if not answer.usable:
+                    return PASS
+                if isinstance(answer.decision, Pass) and answer.decision.capture is not None:
+                    # A capture is for the request it was asked about, never for the ones that shared its answer.
+                    shared = Pass(answer.decision.response_headers, answer.decision.hold, None)
+                    answer = Answer(True, shared, answer.remember)
+                return self.after_asking(request, settings, body, answer)
             future: asyncio.Future[Answer] = asyncio.get_running_loop().create_future()
             self._asking[key] = future
             answer = UNUSABLE
@@ -90,7 +99,8 @@ class AsyncGate(Engine):
         try:
             settings = self.settings or Settings()
             url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
-            answer = await asyncio.wait_for(self.http.post(url, content=data, headers=headers), settings.settle_timeout)
+            request = self.http.post(url, content=data, headers=headers, timeout=settings.settle_timeout)
+            answer = await asyncio.wait_for(request, settings.settle_timeout)
             return self.settled(answer.status_code, json_body(answer.content))
         except Exception as error:
             self.report(error)
@@ -164,7 +174,8 @@ class AsyncGate(Engine):
             payload = self._captures.get_nowait()
             try:
                 url, data, headers = self.signed_post("captures", payload)
-                await asyncio.wait_for(self.http.post(url, content=data, headers=headers), CAPTURE_TIMEOUT)
+                request = self.http.post(url, content=data, headers=headers, timeout=CAPTURE_TIMEOUT)
+                await asyncio.wait_for(request, CAPTURE_TIMEOUT)
             except Exception as error:
                 self.report(error)
 

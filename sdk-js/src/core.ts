@@ -127,7 +127,7 @@ class SiteGate implements Gate {
     this.site = parseSiteKey(key);
     this.api = (options.apiUrl || env("STILEBASE_API_URL") || DEFAULT_API_URL).replace(/\/+$/, "");
     this.client = `${PACKAGE}/${VERSION} gate/${adapter}`;
-    this.disabled = options.disabled ?? env("STILEBASE_DISABLED") === "1";
+    this.disabled = options.disabled ?? switchedOff(env("STILEBASE_DISABLED"));
     this.assumeHttps = options.assumeHttps !== false;
     // Never a redirect (signed headers mustn't go elsewhere; a redirect is an answer like any other non-200).
     const given = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -156,6 +156,9 @@ class SiteGate implements Gate {
     if (!paying && skipped(request.path, settings.skip_paths)) return PASS;
 
     const key = await sha256Hex(rememberMaterial(request, settings.remember_by));
+    // Requests alike share one decision while it's in flight: GETs and HEADs only, keyed with the method too.
+    const method = request.method.toUpperCase();
+    const shared = !paying && (method === "GET" || method === "HEAD") ? `${method} ${key}` : null;
     if (!paying) {
       const expires = this.remembered.get(key);
       if (expires !== undefined && expires > this.now()) return PASS;
@@ -165,23 +168,27 @@ class SiteGate implements Gate {
     const budget = paying ? settings.settle_timeout_ms : settings.timeout_ms;
     const body = decideBody(request, settings, this.assumeHttps);
     let answer: Answer;
-    const inFlight = paying ? undefined : this.asking.get(key);
+    const inFlight = shared ? this.asking.get(shared) : undefined;
     if (inFlight) {
       answer = await withinBudget(inFlight, budget);
+      if (answer.kind === "pass") answer = { ...answer, capture: null }; // a capture is the asker's own
     } else {
       const asked = this.ask(`/v1/gate/sites/${this.site.gatewayId}/decide`, body, budget);
-      if (!paying) {
-        this.asking.set(key, asked);
-        void asked.finally(() => this.asking.get(key) === asked && this.asking.delete(key));
+      if (shared) {
+        this.asking.set(shared, asked);
+        void asked.finally(() => this.asking.get(shared) === asked && this.asking.delete(shared));
       }
       answer = await asked;
       this.breaker(answer.kind !== "unusable", settings);
     }
 
     switch (answer.kind) {
-      case "pass":
-        if (answer.rememberSeconds && !paying) this.remember(key, answer.rememberSeconds, settings.cache_max_entries);
+      case "pass": {
+        // Only a plain pass is remembered: one with headers or a capture is asked again.
+        const plain = !answer.capture && Object.keys(answer.responseHeaders).length === 0;
+        if (answer.rememberSeconds && !paying && plain) this.remember(key, answer.rememberSeconds, settings.cache_max_entries);
         return { action: "pass", responseHeaders: answer.responseHeaders, capture: answer.capture };
+      }
       case "respond":
         return respond(answer.status, answer.headers, answer.body);
       case "settle_after":
@@ -270,11 +277,9 @@ class SiteGate implements Gate {
       this.failures = 0;
       return;
     }
+    // The count stays when it opens: after open_seconds, the next request's outcome closes or reopens it.
     this.failures += 1;
-    if (this.failures >= Math.max(1, settings.breaker.failures)) {
-      this.openUntil = this.now() + settings.breaker.open_seconds * 1000;
-      this.failures = 0;
-    }
+    if (this.failures >= Math.max(1, settings.breaker.failures)) this.openUntil = this.now() + settings.breaker.open_seconds * 1000;
   }
 
   private remember(key: string, seconds: number, max: number): void {
@@ -416,6 +421,11 @@ async function withinBudget<T>(promise: Promise<T>, ms: number): Promise<T | Ans
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** STILEBASE_DISABLED: 1, true, yes or on. */
+function switchedOff(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 
 /** An environment variable where there is one (Node, Bun, Deno with permission); undefined elsewhere (Workers). */

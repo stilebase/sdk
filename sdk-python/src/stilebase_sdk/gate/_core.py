@@ -175,6 +175,8 @@ def too_large() -> Respond:
 
 
 _FORBIDDEN = ("%", ";", "\\", "..")
+# Never sent, whatever the settings say: they add to this list, never take from it.
+ALWAYS_STRIPPED = frozenset({"cookie", "authorization", "proxy-authorization"})
 
 
 def skipped(path: str, settings: Settings) -> bool:
@@ -199,7 +201,8 @@ def remember_key(request: GateRequest, settings: Settings) -> str:
 
 def decide_body(request: GateRequest, settings: Settings, assume_https: bool) -> dict[str, Any]:
     """What `decide` is sent (SPEC.md, section 6, step 4): never the host, the body, cookies or credentials."""
-    headers = [[name.lower(), value] for name, value in request.headers if name.lower() not in settings.strip_headers]
+    stripped = settings.strip_headers | ALWAYS_STRIPPED
+    headers = [[name.lower(), value] for name, value in request.headers if name.lower() not in stripped]
     cookies: dict[str, str] = {}
     credentials = False
     for name, value in request.headers:
@@ -436,6 +439,8 @@ class Engine:
                 raise GateError("Stilebase has no gateway for this site key (404): every request passes")
             if status != 200:
                 raise GateError(f"Stilebase answered the settings {status}")
+            if not isinstance(body, dict):  # not a JSON object: a failed fetch, the last good settings stay
+                raise GateError("Stilebase's settings answer isn't a JSON object")
             settings = Settings.parse(body)
             if settings is None:
                 self.settings = None
@@ -477,8 +482,10 @@ class Engine:
         decision = answer.decision
         if isinstance(decision, Pass):
             if decision.hold is not None:
-                decision = Pass(decision.response_headers, Hold(body, decision.hold.max_bytes), decision.capture)
+                limit = min(decision.hold.max_bytes, settings.max_bytes)  # the settings cap what any answer asks to hold
+                decision = Pass(decision.response_headers, Hold(body, limit), decision.capture)
             elif answer.remember and not payment and not decision.response_headers and decision.capture is None:
+                # Only a plain pass is remembered: one with headers, a capture or a hold is about this request alone.
                 key = remember_key(request, settings)
                 self.remembered.put(key, self.options.now() + answer.remember, settings.cache_max_entries)
         return decision
