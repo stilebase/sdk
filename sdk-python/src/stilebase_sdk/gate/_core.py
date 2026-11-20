@@ -17,6 +17,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeGuard
 
+import httpx
+
 from .._version import PACKAGE, VERSION
 from ._request import JS_WHITESPACE, GateRequest, normalize_ip
 from ._signing import parse_site_key, signed_headers
@@ -28,6 +30,9 @@ MIN_REFRESH = 30.0
 RETRY_WITHOUT_SETTINGS = 30.0
 MAX_HEADERS = 100
 UNKNOWN_RETRY = 5
+# The connections each gate (async and sync alike) keeps to Stilebase: enough not to queue under load, bounded so a
+# flood can't exhaust the host. A wait for a free one that times out (PoolTimeout) is the gate's own, never counted.
+LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=100)
 CAPTURE_QUEUE = 20
 CAPTURE_TIMEOUT = 10.0
 
@@ -269,7 +274,8 @@ def skipped(path: str, settings: Settings) -> bool:
 
 def remember_key(request: GateRequest, settings: Settings) -> str:
     """The SHA-256 (lowercase hex) of the `remember_by` fields joined with "\\n"; a missing value is empty."""
-    values = {"client_ip": normalize_ip(request.ip) or "", "path": request.path}
+    path = request.path if request.path.startswith("/") else f"/{request.path}"  # as the decide body sends it
+    values = {"client_ip": normalize_ip(request.ip) or "", "path": path}
     joined = "\n".join(values[name] if name in values else request.header(name) for name in settings.remember_by)
     return hashlib.sha256(joined.encode("utf-8", "replace")).hexdigest()
 
@@ -362,14 +368,25 @@ def read_answer(status: int, body: Any) -> Answer:
     return Answer(True, Pass(valid_headers(response_headers), hold, capture), keep)
 
 
-_TOKEN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_BAD_VALUE = re.compile(r"[\r\n\x00]")
+_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+_VALUE = re.compile(r"[\t\x20-\x7e]*")
+# Never taken from Stilebase: connection-level headers (a server refuses or rewrites them) and the body's length (the
+# gate sets the real one).
+_DROPPED = frozenset(
+    {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "content-length"}
+)
 
 
 def valid_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    """Stilebase's headers a gate may send: a name that isn't an HTTP token, or a value with CR, LF or NUL in it, is
-    left out (the rest of the answer stands). The one check every adapter relies on."""
-    return {name: value for name, value in headers.items() if _TOKEN.match(name) and not _BAD_VALUE.search(value)}
+    """Stilebase's headers a gate may send (SPEC.md, section 6 step 5): a name that's an HTTP token (all of it), a value
+    of printable ASCII and tabs only, without leading or trailing space or tab; never a connection-level header or
+    Content-Length. Anything else is left out, and the rest of the answer stands. The one check every adapter relies
+    on: whatever passes it, every server accepts."""
+    return {
+        name: value
+        for name, value in headers.items()
+        if _TOKEN.fullmatch(name) and _VALUE.fullmatch(value) and value == value.strip(" \t") and name.lower() not in _DROPPED
+    }
 
 
 def _string_map(value: Any) -> bool:
@@ -615,6 +632,8 @@ class Engine:
         payment = request.payment is not None
         if asking is not None and answer.counted:
             self.breaker.record(answer.usable, self.options.clock(), settings, asking)
+        elif asking is not None:
+            self.breaker.release(asking)  # never reached Stilebase (a pool wait): counts nothing, frees a probe
         if not answer.usable:
             return unknown_payment() if payment else PASS
         decision = answer.decision

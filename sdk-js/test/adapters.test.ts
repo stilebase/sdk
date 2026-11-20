@@ -97,6 +97,14 @@ describe("express", () => {
     expect([refused.status, await refused.text(), refused.headers.get("x-ok"), refused.headers.get("x-bad")]).toEqual([402, "pay", "1", null]);
   });
 
+  it("sends Stilebase's answer with only headers Node accepts (a real server)", async () => {
+    const headers = { "x-ok": "a b", "x-euro": "pay €1", "x-ctl": "a\u0001b", "x-space": " lead", connection: "close", "content-length": "99" };
+    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 402, headers, body: "pay" } });
+    const answered = await fetch(`${await site()}/listings`, { headers: GPTBOT });
+    expect([answered.status, await answered.text(), answered.headers.get("x-ok"), answered.headers.get("x-euro"), answered.headers.get("x-ctl")]).toEqual([402, "pay", "a b", null, null]);
+    expect(answered.headers.get("content-length")).toBe("3");
+  });
+
   it("lets Stilebase's headers win over the route's, whenever it sets them", async () => {
     stilebase.decide = () => ({ status: 200, body: { action: "pass", response_headers: { "x-site": "stilebase" } } });
     const served = await fetch(`${await site()}/listings`, { headers: BROWSER });

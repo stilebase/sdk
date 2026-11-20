@@ -215,16 +215,23 @@ function readCapture(value: unknown): Capture | null {
   return { token: value.token, maxBytes: value.max_bytes as number };
 }
 
-/** Headers from Stilebase: null when a value isn't a string (a field of the wrong type); a header whose name isn't an
- * HTTP token or whose value holds CR, LF or NUL is left out (SPEC.md section 6 step 5). */
+/** Headers from Stilebase: null when a value isn't a string (a field of the wrong type); otherwise only those every
+ * server accepts (SPEC.md section 6 step 5): a token name, a printable-ASCII value without surrounding space, and never
+ * a hop-by-hop header or a length (the adapter sets the real one). */
 function stringRecord(value: unknown): Record<string, string> | null {
   if (!isRecord(value)) return null;
   const entries = Object.entries(value);
   if (!entries.every(([, v]) => typeof v === "string")) return null;
-  return Object.fromEntries(entries.filter(([name, v]) => HEADER_NAME.test(name) && !/[\r\n\0]/.test(v as string))) as Record<string, string>;
+  return Object.fromEntries(entries.filter(([name, v]) => acceptedHeader(name, v as string))) as Record<string, string>;
 }
 
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HEADER_VALUE = /^(?:[\x21-\x7e](?:[\t\x20-\x7e]*[\x21-\x7e])?)?$/;
+const NEVER_SENT = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "content-length"]);
+
+export function acceptedHeader(name: string, value: string): boolean {
+  return HEADER_NAME.test(name) && HEADER_VALUE.test(value) && !NEVER_SENT.has(name.toLowerCase());
+}
 
 export function header(request: GateRequest, name: string): string | null {
   const lower = name.toLowerCase();
@@ -311,7 +318,8 @@ export class Copy {
   add(chunk: Uint8Array): void {
     this.size += chunk.byteLength;
     if (this.kept < this.max) {
-      const part = chunk.slice(0, this.max - this.kept);
+      // A copy of the bytes (a Node Buffer's slice is a view the route may refill).
+      const part = Uint8Array.prototype.slice.call(chunk, 0, this.max - this.kept);
       this.chunks.push(part);
       this.kept += part.byteLength;
     }
@@ -322,6 +330,7 @@ export class Copy {
   }
 
   bytes(): Uint8Array {
+    if (this.chunks.length === 1) return this.chunks[0]!; // already a copy: no second one
     const out = new Uint8Array(this.kept);
     let at = 0;
     for (const chunk of this.chunks) {

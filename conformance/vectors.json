@@ -106,6 +106,12 @@
         "user_agent": "curl/8.4.0",
         "path": "/a?b=c&d",
         "key": "54022158518e86751d42c2317ee643cefa9c5ad6149e8657bf69ef63b30c882c"
+      },
+      {
+        "client_ip": null,
+        "user_agent": null,
+        "path": "listings?x=1",
+        "key": "7349b1639e7efe6a03d7bbb28e46c37f0175ae93fdb0f2d1c13353f9dcbbdf55"
       }
     ]
   },
@@ -760,6 +766,38 @@
         "with_payment": "pass",
         "response_headers": {
           "x-ok": "1"
+        }
+      },
+      {
+        "name": "only headers every server accepts",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 402,
+          "headers": {
+            "x-ok": "a b",
+            "x-euro": "pay €1",
+            "x-ctl": "a\u0001b",
+            "x-space": " lead",
+            "x-del": "ab",
+            "connection": "close",
+            "Content-Length": "2",
+            "transfer-encoding": "chunked",
+            "set-cookie\n": "x",
+            "x-tab": "a\tb"
+          },
+          "body": "pay"
+        },
+        "no_payment": "respond",
+        "with_payment": "respond",
+        "respond": {
+          "status": 402,
+          "body": "pay"
+        },
+        "headers": {
+          "x-ok": "a b",
+          "x-tab": "a\tb",
+          "cache-control": "no-store"
         }
       }
     ]

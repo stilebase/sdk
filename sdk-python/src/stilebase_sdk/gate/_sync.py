@@ -16,6 +16,7 @@ import httpx
 from ._core import (
     CAPTURE_QUEUE,
     CAPTURE_TIMEOUT,
+    LIMITS,
     NOT_ASKED,
     PASS,
     SETTINGS_TIMEOUT,
@@ -47,12 +48,7 @@ class SyncGate(Engine):
 
     def __init__(self, options: GateOptions | None = None, adapter: str = "sync", **kwargs: Any) -> None:
         super().__init__(options or GateOptions(**kwargs), adapter)
-        # Never a queue for a free connection: each server thread's request gets one (a pool wait counts nothing anyway).
-        self._http = httpx.Client(
-            transport=self.options.transport,
-            follow_redirects=False,
-            limits=httpx.Limits(max_connections=None, max_keepalive_connections=100),
-        )
+        self._http = httpx.Client(transport=self.options.transport, follow_redirects=False, limits=LIMITS)
         self._settings_lock = threading.Lock()
         self._refreshing = False
         self._captures: queue.Queue[dict[str, Any]] = queue.Queue(CAPTURE_QUEUE)

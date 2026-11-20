@@ -578,23 +578,6 @@ def test_waiting_for_a_free_connection_counts_nothing() -> None:
     assert gate.breaker._failures == 0 and not gate.breaker.is_open(0)
 
 
-def test_no_queue_for_a_connection_under_load() -> None:
-    from stilebase_sdk.gate._async import LIMITS
-
-    assert LIMITS.max_connections is None and LIMITS.max_keepalive_connections == 100
-
-    async def run() -> None:
-        stilebase = FakeStilebase(decide=(200, REQUIRED_402), delay=0.05)
-        gate = async_gate(stilebase)
-        await gate.check(AGENT)
-        many = [GateRequest("GET", f"/p/{i}", (("User-Agent", GPTBOT),)) for i in range(150)]
-        results = await asyncio.gather(*(gate.check(r) for r in many))
-        assert all(isinstance(r, Respond) for r in results) and gate.breaker._failures == 0
-        await gate.aclose()
-
-    asyncio.run(run())
-
-
 def test_intervals_never_follow_the_wall_clock_back() -> None:
     class Back:
         """A wall clock that steps back an hour on every read."""
@@ -625,3 +608,42 @@ def test_intervals_never_follow_the_wall_clock_back() -> None:
     mono.at += 601
     gate.check(PERSON)
     assert len(stilebase.to("decide")) == 8  # and forgotten on it
+
+
+def test_a_probe_that_never_reached_stilebase_frees_its_slot() -> None:
+    import httpx
+
+    clock = Clock()
+    full = {"on": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/settings"):
+            return httpx.Response(200, json=settings())
+        if full["on"]:
+            raise httpx.PoolTimeout("no free connection", request=request)
+        return httpx.Response(500, json={})
+
+    gate = SyncGate(
+        GateOptions(key=KEY, api_url=API, transport=httpx.MockTransport(handler), on_error=lambda e: None, now=clock, clock=clock)
+    )
+    for _ in range(5):
+        gate.check(AGENT)
+    clock.at += 31  # half open
+    full["on"] = True
+    assert gate.check(AGENT) == Pass()  # the probe waited for a connection: not Stilebase's failure
+    assert gate.breaker._failures == 5 and not gate.breaker.is_open(clock.at)  # the slot is free again
+    assert gate.breaker.admit(clock.at, gate.settings or settings_object(), "k", 0.3) is not None
+
+
+def settings_object() -> Any:
+    from stilebase_sdk.gate import Settings
+
+    return Settings()
+
+
+def test_one_pool_size_for_both_gates() -> None:
+    from stilebase_sdk.gate._core import LIMITS
+
+    assert (LIMITS.max_connections, LIMITS.max_keepalive_connections) == (256, 100)
+    sync = SyncGate(GateOptions(key=KEY, api_url=API, on_error=lambda e: None))
+    assert sync._http._transport._pool._max_connections == 256  # type: ignore[attr-defined]

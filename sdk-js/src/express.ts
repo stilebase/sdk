@@ -32,20 +32,26 @@ export interface ExpressGateOptions extends GateOptions {
 export function gate(options: ExpressGateOptions = {}) {
   const siteGate = createGate(options, "express");
   return function stilebaseGate(req: ExpressRequest, res: ExpressResponse, next: (error?: unknown) => void): void {
-    const request = gateRequest(req, options);
-    const paying = request.headers.some(([n, v]) => ["payment-signature", "x-payment"].includes(n.toLowerCase()) && v.trim() !== "");
-    siteGate.check(request).then(
+    siteGate.check(gateRequest(req, options)).then(
       (decision) => {
         if (decision.action === "respond") {
-          // The gate's own answer couldn't be sent: no payment, the site; a payment, a bare 503, never the page.
-          if (!sendSafely(res, decision) && !paying) next();
+          // The gate's own answer couldn't be sent: an error, as Express reports it, never the page.
+          try {
+            answer(res, decision);
+          } catch (error) {
+            next(error);
+          }
           return;
         }
         if (decision.action === "hold") {
           try {
             hold(res, siteGate, decision);
           } catch {
-            sendSafely(res, unknownPayment(5)); // holding couldn't be set up: never the paid page unsettled
+            try {
+              answer(res, unknownPayment(5)); // holding couldn't be set up: never the paid page unsettled
+            } catch (error) {
+              next(error);
+            }
             return;
           }
           return next();
@@ -63,37 +69,19 @@ export function gate(options: ExpressGateOptions = {}) {
   };
 }
 
-/** Sends the gate's own answer; false when nothing could be sent (then a payment still never gets the page: a bare 503
- * is tried). */
-function sendSafely(res: ServerResponse, decision: { status: number; headers: Record<string, string>; body: string }): boolean {
-  try {
-    answer(res, decision);
-    return true;
-  } catch {
-    try {
-      if (!res.headersSent) {
-        for (const name of res.getHeaderNames()) res.removeHeader(name);
-        res.statusCode = 503;
-      }
-      res.end();
-    } catch {
-      // nothing more can be sent
-    }
-    return false;
-  }
-}
-
-/** Stilebase's headers win over the site's, whenever the site sets them: applied as the headers go out. */
+/** Stilebase's headers win over the site's, whenever the site sets them: set now and again as the headers go out (their
+ * values are ones every server accepts), with same-name headers dropped from the route's own writeHead. */
 function overlay(res: ServerResponse, headers: Record<string, string>): void {
+  for (const [name, value] of Object.entries(headers)) safely(() => res.setHeader(name, value));
   const writeHead = res.writeHead as (...a: unknown[]) => ServerResponse;
   res.writeHead = ((...args: unknown[]) => {
     for (const [name, value] of Object.entries(headers)) safely(() => res.setHeader(name, value));
-    return writeHead.apply(res, withOverlay(args, headers));
+    return writeHead.apply(res, withoutNames(args, headers));
   }) as ServerResponse["writeHead"];
 }
 
-/** writeHead's arguments with the overlay's headers replacing same-name ones in its headers object or list. */
-function withOverlay(args: unknown[], headers: Record<string, string>): unknown[] {
+/** writeHead's arguments without the headers the overlay sets (removed, never rewritten: the rest are the route's). */
+function withoutNames(args: unknown[], headers: Record<string, string>): unknown[] {
   const at = args.findIndex((a, i) => i > 0 && a !== null && typeof a === "object");
   if (at < 0) return args;
   const given = args[at];
@@ -104,7 +92,7 @@ function withOverlay(args: unknown[], headers: Record<string, string>): unknown[
       : pairs(given as string[])
     : Object.entries(given as Record<string, string>);
   const merged: Record<string, string | string[]> = {};
-  for (const [name, value] of [...kept.filter(([n]) => !names.has(String(n).toLowerCase())), ...Object.entries(headers)]) {
+  for (const [name, value] of kept.filter(([n]) => !names.has(String(n).toLowerCase()))) {
     const before = merged[name];
     merged[name] = before === undefined ? value : [...(Array.isArray(before) ? before : [before]), value];
   }
@@ -233,7 +221,7 @@ function hold(res: ServerResponse, gate: Gate, decision: Extract<GateDecision, {
     // headers win over the route's, its writeHead's included.
     const overlays = { ...decision.responseHeaders, ...outcome.responseHeaders };
     for (const [name, value] of Object.entries(overlays)) safely(() => res.setHeader(name, value));
-    if (headArgs) safely(() => res.writeHead(...(withOverlay(headArgs!, overlays) as Parameters<ServerResponse["writeHead"]>)));
+    if (headArgs) safely(() => res.writeHead(...(withoutNames(headArgs!, overlays) as Parameters<ServerResponse["writeHead"]>)));
     if (capture) safely(() => gate.capture(capture, { status: res.statusCode, headers: headerList(res), body: body.subarray(0, capture.maxBytes), size, truncated: size > capture.maxBytes, ttfbMs: Date.now() - started }));
     end.apply(res, [allowed ? body : undefined, callback]);
   };

@@ -36,11 +36,9 @@ class GateMiddleware:
         self.gate = SyncGate(GateOptions(**options), adapter="django")
 
     def __call__(self, request: Any) -> Any:
-        asked = self.request(request)
-        decision = self.gate.check(asked)
+        decision = self.gate.check(self.request(request))
         if isinstance(decision, Respond):
-            answer = self._gate_answer(decision, asked.payment is not None)
-            return answer if answer is not None else self.get_response(request)  # refused, nothing paid: the site
+            return _response(decision)  # if it can't be built, the error goes up: never the site's page
         started = time.monotonic()
         response = self.get_response(request)
         ttfb = int((time.monotonic() - started) * 1000)
@@ -51,21 +49,12 @@ class GateMiddleware:
             self._copy(response, decision.capture, ttfb)
         return response
 
-    def _gate_answer(self, decision: Respond, payment: bool) -> Any:
-        """An answer the gate made (SPEC.md, section 10). If it can't be built: None for a request without a payment
-        (it goes to the site); a request with a payment gets a bare 503, never the page."""
-        try:
-            return _response(decision)
-        except Exception as error:
-            self.gate.report(error)
-            return HttpResponse(status=503) if payment else None
-
     def _held(self, response: Any, decision: Pass, ttfb: int) -> Any:
         """A paid request: the view's answer is held, settled, and only then sent (SPEC.md, section 7)."""
         hold = decision.hold
         assert hold is not None
         if getattr(response, "is_async", False) or not holdable(response.status_code):
-            return self._gate_answer(not_payable(), True)  # an async stream, or a protocol switch: never held, never settled
+            return _response(not_payable())  # an async stream, or a protocol switch: never held, never settled
         if getattr(response, "streaming", False):
             parts: list[bytes] = []
             size = 0
@@ -83,7 +72,7 @@ class GateMiddleware:
                     close()
                 _release(response)
             if size > hold.max_bytes:
-                return self._gate_answer(not_payable(), True)
+                return _response(not_payable())
             body = b"".join(parts)
             held = HttpResponse(body, status=response.status_code, reason=response.reason_phrase)
             for name, value in response.items():
@@ -94,10 +83,10 @@ class GateMiddleware:
         else:
             body = bytes(response.content)
             if len(body) > hold.max_bytes:
-                return self._gate_answer(not_payable(), True)
+                return _response(not_payable())
         outcome = self.gate.settle(hold, response.status_code, body)
         if isinstance(outcome, Respond):
-            return self._gate_answer(outcome, True)
+            return _response(outcome)
         if not body_allowed(response.status_code):
             response.content = b""  # a status that can't carry a body is sent without one
         _overlay(response, decision.response_headers, outcome.response_headers)

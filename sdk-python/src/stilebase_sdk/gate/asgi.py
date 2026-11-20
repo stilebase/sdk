@@ -75,11 +75,9 @@ class GateMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        request = self.request(scope)
-        decision = await self.gate.check(request)
+        decision = await self.gate.check(self.request(scope))
         if isinstance(decision, Respond):
-            if not await _send_gate_answer(send, decision, request.payment is not None, self.gate):
-                await self.app(scope, receive, send)  # the gate's answer couldn't be sent, and nothing was paid: the site
+            await _send_response(send, decision)  # refused by the server: its error, never the site (SPEC.md, section 10)
             return
         if decision.hold is not None:
             await self._held(scope, receive, send, decision)
@@ -126,13 +124,13 @@ class GateMiddleware:
         async def finish(answer: Respond | None) -> None:
             held["done"] = True
             if answer is not None:
-                await _send_gate_answer(send, answer, True, self.gate)
+                await _send_response(send, answer)
                 return
             status = int(held["start"].get("status", 200))
             body = b"".join(held["parts"])
             outcome = await self.gate.settle(hold, status, body)
             if isinstance(outcome, Respond):
-                await _send_gate_answer(send, outcome, True, self.gate)
+                await _send_response(send, outcome)
                 return
             headers = merge_headers(_text(held["start"].get("headers", [])), decision.response_headers, outcome.response_headers)
             await send({**held["start"], "headers": _raw(headers)})
@@ -208,35 +206,9 @@ def _text(headers: Any) -> list[tuple[str, str]]:
     return [(bytes(k).decode("latin-1"), bytes(v).decode("latin-1")) for k, v in headers]
 
 
-async def _send_gate_answer(send: Send, decision: Respond, payment: bool, gate: AsyncGate) -> bool:
-    """Send an answer the gate made (SPEC.md, section 10). If the server refuses it: False for a request without a
-    payment (it goes to the site); a request with a payment gets whatever bare 503 can still be sent, never the page."""
-    started = False
-
-    async def tracking(message: Message) -> None:
-        nonlocal started
-        await send(message)
-        started = started or message["type"] == "http.response.start"
-
-    try:
-        await _send_response(tracking, decision)
-        return True
-    except Exception as error:
-        gate.report(error)
-        if started:
-            return True  # the answer began going out: nothing else can be sent
-        if not payment:
-            return False
-        try:
-            await send({"type": "http.response.start", "status": 503, "headers": []})
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
-        except Exception as again:
-            gate.report(again)
-        return True
-
-
 async def _send_response(send: Send, decision: Respond) -> None:
-    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is."""
+    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is, with its real
+    Content-Length (none for 204, 205, 304). If the server refuses it, its error goes up: never the site's page."""
     headers = _raw(decision.headers.items())
     if body_allowed(decision.status):
         headers.append((b"content-length", str(len(decision.body)).encode()))

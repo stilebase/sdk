@@ -12,6 +12,7 @@ import httpx
 from ._core import (
     CAPTURE_QUEUE,
     CAPTURE_TIMEOUT,
+    LIMITS,
     NOT_ASKED,
     PASS,
     SETTINGS_TIMEOUT,
@@ -35,9 +36,6 @@ from ._core import (
     unknown_payment,
 )
 from ._request import GateRequest
-
-# Never a queue for a free connection under load: a request's budget is for Stilebase, not for waiting on the pool.
-LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=100)
 
 
 class AsyncGate(Engine):

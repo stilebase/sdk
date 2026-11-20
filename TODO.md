@@ -28,8 +28,6 @@ What's known and not yet done, each with why it waits. Review findings that aren
   (1, 0.5, 1, 0.5 for the pool). A read that trickles in can still run longer. The async gate enforces totals with
   `asyncio.wait_for`. *Waits:* a true deadline costs a thread per call or a watchdog closing the connection;
   Stilebase's API answers or fails fast.
-- **Python: a gate answer refused once the ASGI server has its start message** sends nothing more (the visitor's
-  connection is in an unknown state). *Waits:* no server does this in practice.
 - **An absolute-form target under uvicorn's h11** keeps its whole target as the path (`//host/x`), where Express names
   `/x`. *Waits:* Starlette doesn't route it either; no page is freed.
 - **Python: the sync and async gates repeat their calls** (settings, decide, settle, captures) around one core without
