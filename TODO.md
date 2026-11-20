@@ -11,6 +11,10 @@ What's known and not yet done, each with why it waits. Review findings that aren
   WSGI and Django: a person served, an agent's 402, a paid page settled and delivered, a site error not charged, a
   capture received, and Stilebase down (everyone served, a payment 503). *Waits:* the journal, then this run, by hand,
   before tagging.
+- **Stilebase's production API (`https://stilebase.com`, the SDKs' default) serves the thin gate's calls**
+  (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`). Check it before tagging: a gate whose calls fail lets
+  everyone through, so a release before that would let every agent read free. *Waits:* Stilebase's production deploy,
+  after the two above.
 
 ## Both SDKs
 
