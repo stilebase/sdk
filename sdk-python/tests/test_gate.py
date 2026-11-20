@@ -770,3 +770,25 @@ def test_requests_queued_for_a_connection_count_nothing(monkeypatch: pytest.Monk
         assert asyncio.run(run()) == 1
     finally:
         server.shutdown()
+
+
+def test_the_collector_never_shares_a_decision() -> None:
+    """Stilebase's AgentView collector asks for itself, and nobody waits on its pass."""
+
+    def answer(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        collector = any(n == "stilebase-collect" for n, _ in body.get("headers", []))
+        return (200, {"action": "pass"}) if collector else (200, REQUIRED_402)
+
+    stilebase = FakeStilebase(decide=answer, delay=0.05)
+
+    async def run() -> tuple[object, object]:
+        gate = async_gate(stilebase)
+        collector = GateRequest("GET", "/listings", (("user-agent", "GPTBot/1.2"), ("stilebase-collect", "t=1,n=0,v1=0")))
+        agent = GateRequest("GET", "/listings", (("user-agent", "GPTBot/1.2"),))
+        results = await asyncio.gather(gate.check(collector), gate.check(agent))
+        await gate.aclose()
+        return results[0], results[1]
+
+    collector, agent = asyncio.run(run())
+    assert collector == Pass() and isinstance(agent, Respond) and agent.status == 402
+    assert len(stilebase.to("decide")) == 2

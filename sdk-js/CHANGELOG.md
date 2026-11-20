@@ -9,7 +9,7 @@ for a page delivered. New: remembered answers, static files skipped, a circuit b
 `disabled` / `STILEBASE_DISABLED`, `assumeHttps`. Removed: `catchHttpClients`, `catchHiddenAgents`, `checkBrowsers`,
 `passToken`. `createGate().check` takes `{ method, path, scheme, headers: [name, value][], ip }` and may answer `hold`. A decision
 past its budget (1 second by default) isn't aborted: it finishes in the background, so its connection is kept for the
-next request.
+next request. A request carrying `Stilebase-Collect` (AgentView's collector) never shares an in-flight decision.
 
 ## 0.1.0
 

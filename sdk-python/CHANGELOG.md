@@ -9,7 +9,7 @@ is settled (`/settle`), so an agent is charged only for a page it got; Stilebase
 `catch_hidden_agents`, `check_browsers` (Stilebase decides). `GateRequest` takes the path and header pairs, never a URL.
 Needs a Stilebase with the `/v1/gate` API. `AsyncGate`: a decision past its budget (1 second by default) isn't
 cancelled: it finishes in the background, so its connection is kept for the next request. `SyncGate` gives each network
-step the whole budget, so a new connection's handshake fits. Idle connections to Stilebase are kept 50 s.
+step the whole budget, so a new connection's handshake fits. Idle connections to Stilebase are kept 50 s. A request carrying `Stilebase-Collect` (AgentView's collector) never shares an in-flight decision.
 
 ## 0.1.0
 

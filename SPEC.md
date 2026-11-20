@@ -139,7 +139,8 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
 
    The budget is `timeout_ms`, or `settle_timeout_ms` for a request with a payment. Requests with the same remember
    key and no payment that arrive while one is being asked **wait for that answer** instead of asking again (within
-   their own budget), and do what it says.
+   their own budget), and do what it says. A request carrying `Stilebase-Collect` (Stilebase's AgentView collector,
+   signed for that one request) never shares an answer, either way: it always asks, and nobody waits on it.
 
    **The connection outlives the budget.** A call past its budget is **not aborted**: the request goes on without
    Stilebase (a failure, as below), and the call runs on in the background, at most 5 seconds in all (on Workers,
