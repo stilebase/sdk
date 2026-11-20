@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+A request carrying `Stilebase-Collect` (AgentView's collector) never shares an in-flight decision, either way:
+behind a gate that can't see visitors' addresses, an agent asking for the same page at that moment would otherwise
+get the collector's pass. Stilebase's Collect now needs 0.2.1 or later. (0.2.0 was never released.)
+
 ## 0.2.0
 
 The thin gate (SPEC.md): Stilebase decides every request. The gate forwards the request line and headers to
@@ -9,7 +15,7 @@ for a page delivered. New: remembered answers, static files skipped, a circuit b
 `disabled` / `STILEBASE_DISABLED`, `assumeHttps`. Removed: `catchHttpClients`, `catchHiddenAgents`, `checkBrowsers`,
 `passToken`. `createGate().check` takes `{ method, path, scheme, headers: [name, value][], ip }` and may answer `hold`. A decision
 past its budget (1 second by default) isn't aborted: it finishes in the background, so its connection is kept for the
-next request. A request carrying `Stilebase-Collect` (AgentView's collector) never shares an in-flight decision.
+next request.
 
 ## 0.1.0
 

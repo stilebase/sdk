@@ -3,7 +3,7 @@
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
 (`.claude/rules/development-workflow.md`) go here.
 
-## Before releasing 0.2.0 (the thin gate)
+## Before releasing 0.2.1 (the thin gate; 0.2.0 was never released)
 
 - **Stilebase's payment journal is live** (its settle records every payment whose outcome isn't known, and settles it
   from the chain). *Waits:* its own change, at Stilebase.

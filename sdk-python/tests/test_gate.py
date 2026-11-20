@@ -74,7 +74,7 @@ def test_the_decision_is_asked_for_and_obeyed() -> None:
     decision = gate.check(AGENT)
     assert isinstance(decision, Respond) and decision.status == 402 and decision.headers["cache-control"] == "no-store"
     [settings_call] = stilebase.to("settings")
-    assert settings_call.headers["stilebase-client"] == "stilebase-sdk/0.2.0 gate/sync"
+    assert settings_call.headers["stilebase-client"] == "stilebase-sdk/0.2.1 gate/sync"
     [asked] = stilebase.to("decide")
     assert asked.body["request"] == {"method": "GET", "scheme": "https", "path": "/listings/2"}
     assert asked.body["client_ip"] == "20.15.240.70"

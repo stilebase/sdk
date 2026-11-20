@@ -35,7 +35,7 @@ Every call is signed with the secret:
 | --- | --- |
 | `Stilebase-Timestamp` | Unix seconds now. Stilebase refuses calls more than five minutes off |
 | `Stilebase-Signature` | `v2=` + lowercase hex HMAC-SHA256 of the canonical string, keyed with the whole secret (`sbsec_…`) |
-| `Stilebase-Client` | `<package>/<version> gate/<adapter>`, e.g. `@stilebase/sdk/0.2.0 gate/express` |
+| `Stilebase-Client` | `<package>/<version> gate/<adapter>`, e.g. `@stilebase/sdk/0.2.1 gate/express` |
 
 The canonical string is five lines joined with `\n`:
 
