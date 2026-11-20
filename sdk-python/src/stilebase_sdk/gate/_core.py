@@ -55,7 +55,7 @@ class Settings:
 
     enabled: bool = True
     refresh_seconds: int = 300
-    timeout_ms: int = 300
+    timeout_ms: int = 1000
     settle_timeout_ms: int = 65_000
     breaker_failures: int = 5
     breaker_open_seconds: int = 30
