@@ -199,7 +199,7 @@ def test_a_decision_past_its_budget_runs_on_and_keeps_its_connection() -> None:
 
 
 def test_idle_connections_are_kept_a_minute() -> None:
-    assert LIMITS.keepalive_expiry == 60.0  # httpx's default 5 s: a TLS handshake from far away costs the whole budget
+    assert LIMITS.keepalive_expiry == 50.0  # httpx's default 5 s: a TLS handshake from far away costs the whole budget
 
 
 def test_a_paid_answer_is_settled_with_its_delivery() -> None:

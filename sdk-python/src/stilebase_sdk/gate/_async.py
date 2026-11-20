@@ -34,7 +34,7 @@ from ._core import (
     read_answer,
     unknown_payment,
 )
-from ._http import LIMITS, budget, kept
+from ._http import KEEP_CONNECTING, LIMITS, budget, kept
 from ._request import GateRequest
 
 
@@ -153,9 +153,8 @@ class AsyncGate(Engine):
         call isn't cancelled: it runs on in the background (at most KEEP_CONNECTING), keeping its connection."""
         try:
             url, data, headers = self.signed_post(name, body)
-            call = asyncio.get_running_loop().create_task(
-                self.http.post(url, content=data, headers=headers, timeout=kept(seconds))
-            )
+            post = self.http.post(url, content=data, headers=headers, timeout=kept(seconds))  # httpx's: per step
+            call = asyncio.get_running_loop().create_task(asyncio.wait_for(post, max(seconds, KEEP_CONNECTING)))
             self._tasks.add(call)
             call.add_done_callback(_settled_quietly)
             call.add_done_callback(self._tasks.discard)

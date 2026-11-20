@@ -5,8 +5,9 @@ from __future__ import annotations
 import httpx
 
 # How long an idle connection to Stilebase is kept (httpx's default is 5 s): a new one costs a TLS handshake, which from
-# far away can take more than a decision's whole budget. Stilebase's server keeps them longer.
-KEEPALIVE = 60.0
+# far away can take more than a decision's whole budget. Below the server's 60 s, so a connection is never reused just
+# as the server closes it.
+KEEPALIVE = 50.0
 # A decision cut off by its budget isn't cancelled: it runs on, at most this long, so the connection it was opening is
 # there for the next request (cancelling it would make every call after an idle spell start, and lose, a new handshake).
 KEEP_CONNECTING = 10.0

@@ -472,7 +472,6 @@ function safe<T>(work: () => T, fallback: T): T {
   }
 }
 
-/** `promise`'s value, or "unusable" once `ms` have passed: this request's own deadline. */
 /** The promise's value, or `late` (by default an unusable answer) once `ms` have passed; the promise isn't cancelled. */
 async function withinBudget<T>(promise: Promise<T>, ms: number, late: Answer = { kind: "unusable" }): Promise<T | Answer> {
   let timer: ReturnType<typeof setTimeout> | undefined;

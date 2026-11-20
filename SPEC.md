@@ -142,11 +142,13 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
    their own budget), and do what it says.
 
    **The connection outlives the budget.** A call past its budget is **not aborted**: the request goes on without
-   Stilebase (a failure, as below), and the call runs on in the background, at most 10 seconds (on Workers, through
-   `waitUntil`), its answer unused. Aborting it would also abort the connection it was opening, so after an idle spell
+   Stilebase (a failure, as below), and the call runs on in the background, at most 10 seconds in all (on Workers,
+   through `waitUntil`), its answer unused. Aborting it would also abort the connection it was opening, so after an idle spell
    every call would start a new TLS handshake, which from far away takes longer than the budget, and lose it again:
-   the gate would let every agent through. Idle connections to Stilebase are kept at least a minute where the HTTP
-   client lets the gate choose (Stilebase's server says `Keep-Alive: timeout=60` for the clients that follow it).
+   the gate would let every agent through. Idle connections to Stilebase are kept nearly a minute (50 seconds) where the
+   HTTP client lets the gate choose (Stilebase's server says `Keep-Alive: timeout=60` for the clients that follow it).
+   A synchronous gate that can't leave a call running (the Python `SyncGate`) applies the budget to each network step
+   (connecting, sending, reading) instead, so a new connection's handshake has the whole budget.
 5. **Do what the answer says** (an HTTP 200 with a JSON object):
 
    | `action` | The gate |
