@@ -34,7 +34,7 @@ const EMPTY = new Uint8Array();
 const MAX_ASKING = 1000;
 // A decision cut off by its budget isn't aborted: it runs on, at most this long, so the connection it was opening is
 // there for the next request (aborting it would make every call after an idle spell start, and lose, a new handshake).
-const KEEP_CONNECTING_MS = 10_000;
+const KEEP_CONNECTING_MS = 3_000; // a TLS handshake from anywhere fits; few sockets held through an outage
 const started = Date.now() - (globalThis.performance?.now() ?? 0);
 /** Milliseconds on a clock that never goes back (performance.now), shaped like Date.now. */
 const monotonic = () => (globalThis.performance ? started + globalThis.performance.now() : Date.now());

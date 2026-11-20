@@ -17,11 +17,13 @@ What's known and not yet done, each with why it waits. Review findings that aren
 ## Both SDKs
 
 - **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
-  runs on up to 10 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
+  runs on up to 3 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
   calls pass uncounted (`NOT_ASKED`); a cap on calls running late, or counting pool waits while some run late. JS
-  reports a late call twice (late, then its 10 s abort); Python reports only the first. Requests waiting on a late
-  leader: JS may still get its late answer, Python passes at the leader's budget. The sync gate's per-step budget can
-  hold a request thread about 3 budgets (connect, write, read). *Waits:* seen in production.
+  reports a late call twice (late, then its 3 s abort); Python reports only the first. Requests waiting on a late
+  leader: JS may still get its late answer, Python passes at the leader's budget. A late plain `pass` with `remember`
+  could still be remembered (it's dropped). The ASGI middleware never closes its gate, so a late call at shutdown is
+  destroyed pending. No test proves a late call's connection is pooled (the fakes have no pool). *Waits:* seen in
+  production.
 
 - **More frameworks and languages:** Next.js, Fastify and Koa adapters for `@stilebase/sdk` (Hono works today through
   the fetch adapter); Go, PHP and Ruby gates on [SPEC.md](SPEC.md) and `conformance/`. *Waits:* demand.

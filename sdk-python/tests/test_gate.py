@@ -179,7 +179,7 @@ def test_a_slow_answer_past_the_budget_lets_the_request_through() -> None:
 def test_a_decision_past_its_budget_runs_on_and_keeps_its_connection() -> None:
     """Cancelling it would lose the connection it was opening: after an idle spell, every call would start a new TLS
     handshake and be cut off again, and the gate would let every agent through."""
-    slow = FakeStilebase(settings_answer=(200, settings(timeout_ms=50)), decide=(200, REQUIRED_402), delay=0.2)
+    slow = FakeStilebase(settings_answer=(200, settings(timeout_ms=50)), decide=(200, REQUIRED_402), delay=0.8)
 
     async def run() -> None:
         errors: list[str] = []
@@ -189,7 +189,7 @@ def test_a_decision_past_its_budget_runs_on_and_keeps_its_connection() -> None:
         loop = asyncio.get_running_loop()
         started = loop.time()
         assert await gate.check(AGENT) == Pass()  # past its budget: the request goes on
-        assert loop.time() - started < 0.15
+        assert loop.time() - started < 0.6  # the budget, never the call (0.8 s)
         assert "Stilebase didn't answer within 50 ms" in errors
         assert slow.to("decide") == []  # still running
         await gate.aclose()
@@ -199,7 +199,19 @@ def test_a_decision_past_its_budget_runs_on_and_keeps_its_connection() -> None:
 
 
 def test_idle_connections_are_kept_a_minute() -> None:
-    assert LIMITS.keepalive_expiry == 50.0  # httpx's default 5 s: a TLS handshake from far away costs the whole budget
+    assert LIMITS.keepalive_expiry == 50.0
+
+
+def test_the_sync_gate_splits_a_decisions_budget_across_the_steps() -> None:
+    stilebase = FakeStilebase(settings_answer=(200, settings(timeout_ms=1000)), decide=(200, REQUIRED_402))
+    gate = sync_gate(stilebase)
+    gate.check(AGENT)
+    gate.check(PAYING)
+    person, paying = stilebase.to("decide")
+    assert (person.timeout["connect"], person.timeout["write"], person.timeout["read"]) == (0.6, 0.1, 0.4)
+    assert (
+        paying.timeout["read"] == 65.0
+    )  # a payment's budget stays per step  # httpx's default 5 s: a TLS handshake from far away costs the whole budget
 
 
 def test_a_paid_answer_is_settled_with_its_delivery() -> None:
@@ -308,7 +320,7 @@ def test_every_call_carries_its_own_budget() -> None:
         assert stilebase.to("settings")[0].timeout["read"] == 3.0
         # The gate waits a payment's budget, then a person's; the calls themselves may run on (KEEP_CONNECTING), while the
         # wait for a pool connection stays within the budget.
-        assert [c.timeout["read"] for c in stilebase.to("decide")] == [10.0, 10.0]
+        assert [c.timeout["read"] for c in stilebase.to("decide")] == [7.0, 3.0]
         assert [c.timeout["pool"] for c in stilebase.to("decide")] == [6.95, 0.2]
         assert stilebase.to("settle")[0].timeout["read"] == 7.0  # never httpx's default 5 s
         assert stilebase.to("captures")[0].timeout["read"] == 10.0

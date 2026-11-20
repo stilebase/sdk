@@ -117,7 +117,7 @@ describe("deciding", () => {
 
   it("doesn't abort a decision past its budget: the connection it opens is kept for the next call", async () => {
     stilebase.settings = { status: 200, body: settings({ timeout_ms: 50 }) };
-    stilebase.decide = () => ({ status: 200, body: { action: "pass" }, delayMs: 150 });
+    stilebase.decide = () => ({ status: 200, body: { action: "pass" }, delayMs: 800 });
     const signals: AbortSignal[] = [];
     const watched = (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith(DECIDE) && init?.signal) signals.push(init.signal);
@@ -129,7 +129,7 @@ describe("deciding", () => {
     const started = Date.now();
     const decision = await g.check(request("/listings", GPTBOT), (p) => kept.push(p));
     expect(decision.action).toBe("pass"); // past its budget: the request goes on
-    expect(Date.now() - started).toBeLessThan(140);
+    expect(Date.now() - started).toBeLessThan(600); // the budget, never the call (800 ms)
     expect(errors).toContain("Stilebase didn't answer within 50 ms");
     const pending = kept.length; // the settings load, and the decision past its budget: a Worker keeps them running
     await Promise.all(kept);

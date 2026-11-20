@@ -38,8 +38,10 @@ from ._core import (
     read_answer,
     unknown_payment,
 )
-from ._http import LIMITS, budget
+from ._http import LIMITS, budget, steps
 from ._request import GateRequest
+
+SPLIT_UP_TO = 5.0  # seconds: budgets up to this (decisions) are split across the steps
 
 
 class SyncGate(Engine):
@@ -124,7 +126,8 @@ class SyncGate(Engine):
         UNUSABLE."""
         try:
             url, data, headers = self.signed_post(name, body)
-            answer = self._http.post(url, content=data, headers=headers, timeout=budget(seconds))
+            timeout = budget(seconds) if seconds > SPLIT_UP_TO else steps(seconds)  # a payment's long budget: per step
+            answer = self._http.post(url, content=data, headers=headers, timeout=timeout)
             return read_answer(answer.status_code, json_body(answer.content))
         except httpx.PoolTimeout as error:
             self.report(error)

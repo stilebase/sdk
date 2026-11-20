@@ -8,7 +8,8 @@ is settled (`/settle`), so an agent is charged only for a page it got; Stilebase
 (`capture`, AgentView). New options: `disabled` (`STILEBASE_DISABLED`), `assume_https`. Removed: `catch_http_clients`,
 `catch_hidden_agents`, `check_browsers` (Stilebase decides). `GateRequest` takes the path and header pairs, never a URL.
 Needs a Stilebase with the `/v1/gate` API. A decision past its budget (1 second by default) isn't cancelled: it finishes
-in the background, so its connection is kept for the next request; idle connections to Stilebase are kept a minute.
+in the background, so its connection is kept for the next request; idle connections to Stilebase are kept 50 s. The sync gate splits a decision's budget across connecting, sending and
+reading.
 
 ## 0.1.0
 
