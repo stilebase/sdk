@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, MutableMapping
-from http import HTTPStatus
+import time
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
 from typing import Any
 from urllib.parse import quote
 
 from ._async import AsyncGate
-from ._core import GateOptions, Respond, address_from
-from ._detect import GateRequest, headers_of
+from ._core import Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable, reason
+from ._request import GateRequest, address_from, headers_of
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -24,10 +24,24 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 # Loose on purpose: frameworks type their apps their own way (Starlette's add_middleware must accept this class).
 ASGIApp = Callable[[Any, Any, Any], Awaitable[None]]
+# Server features that send a body around `send`: off for a held request, so the gate sees the whole body.
+SIDE_SENDS = ("http.response.pathsend", "http.response.zerocopysend")
+
+
+class _TooLarge(Exception):
+    """Raised into an app whose paid answer the gate can't hold (too large, a protocol switch): it stops being read."""
+
+
+def _without_side_sends(scope: Scope) -> Scope:
+    extensions = scope.get("extensions")
+    if not isinstance(extensions, Mapping) or not any(name in extensions for name in SIDE_SENDS):
+        return scope
+    return {**scope, "extensions": {k: v for k, v in extensions.items() if k not in SIDE_SENDS}}
 
 
 class GateMiddleware:
-    """AI agents pay per request with x402, settled through Stilebase; everyone else reaches your app.
+    """Forwards each request to Stilebase and does what it says: AI agents pay per request with x402, everyone else
+    reaches your app.
 
     `ip_header`: read the visitor's address from this header (one your proxy or CDN sets, e.g. "cf-connecting-ip").
     Default: the connection's address (behind a proxy, run uvicorn with --proxy-headers so it's the visitor's). Never a
@@ -40,9 +54,8 @@ class GateMiddleware:
         *,
         key: str | None = None,
         api_url: str | None = None,
-        catch_http_clients: bool = True,
-        catch_hidden_agents: bool = True,
-        check_browsers: bool = True,
+        disabled: bool | None = None,
+        assume_https: bool = True,
         on_error: Callable[[Exception], None] | None = None,
         ip_header: str | None = None,
         client_ip: Callable[[Scope], str | None] | None = None,
@@ -53,13 +66,7 @@ class GateMiddleware:
         self.ip_header = ip_header
         self.client_ip = client_ip
         options = GateOptions(
-            key=key,
-            api_url=api_url,
-            catch_http_clients=catch_http_clients,
-            catch_hidden_agents=catch_hidden_agents,
-            check_browsers=check_browsers,
-            on_error=on_error,
-            transport=transport,
+            key=key, api_url=api_url, disabled=disabled, assume_https=assume_https, on_error=on_error, transport=transport
         )
         self.gate = AsyncGate(options, adapter="asgi")
 
@@ -67,31 +74,143 @@ class GateMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        decision = await self.gate.check(self.request(scope))
+        request = self.request(scope)
+        decision = await self.gate.check(request)
         if isinstance(decision, Respond):
-            headers = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in decision.headers.items()]
-            headers.append((b"content-length", str(len(decision.body)).encode()))
-            reason = HTTPStatus(decision.status).phrase
-            await send({"type": "http.response.start", "status": decision.status, "headers": headers, "reason": reason})
-            await send({"type": "http.response.body", "body": decision.body})
+            if not await self._gate_answer(send, decision, request.payment is not None):
+                await self.app(scope, receive, send)  # refused before anything went out, nothing paid: the site
             return
-        receipt = decision.payment_response
-        if not receipt:
+        if decision.hold is not None:
+            await self._held(scope, receive, send, decision)
+            return
+        if not decision.response_headers and decision.capture is None:
             await self.app(scope, receive, send)
             return
+        await self.app(scope, receive, self._passing(send, decision))
 
-        async def with_receipt(message: Message) -> None:
+    def _passing(self, send: Send, decision: Pass) -> Send:
+        """`send`, with the answer's headers merged in and the site's answer copied as it goes out (never delayed)."""
+        order = decision.capture
+        copy = Copy(order.max_bytes) if order is not None else None
+        started = time.monotonic()
+        seen: dict[str, Any] = {}
+
+        async def wrapped(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), (b"payment-response", receipt.encode())]}
+                if decision.response_headers:
+                    merged = merge_headers(_text(message.get("headers", [])), decision.response_headers)
+                    message = {**message, "headers": _raw(merged)}
+                seen["status"], seen["headers"] = int(message.get("status", 200)), _text(message.get("headers", []))
+                seen["ttfb"] = int((time.monotonic() - started) * 1000)
+            elif message["type"] == "http.response.body" and order is not None and copy is not None and "status" in seen:
+                try:
+                    copy.add(bytes(message.get("body", b"")))
+                    if not message.get("more_body", False) and not seen.get("sent"):
+                        seen["sent"] = True
+                        self.gate.capture(order, seen["status"], seen["headers"], copy, seen["ttfb"])
+                except Exception as error:
+                    self.gate.report(error)
             await send(message)
 
-        await self.app(scope, receive, with_receipt)
+        return wrapped
+
+    async def _held(self, scope: Scope, receive: Receive, send: Send, decision: Pass) -> None:
+        """A paid request: the site's answer is held, and settled and sent as soon as it's complete (its last body
+        message), whatever the app does afterwards (SPEC.md, section 7)."""
+        hold = decision.hold
+        assert hold is not None
+        started = time.monotonic()
+        held: dict[str, Any] = {"parts": [], "size": 0, "done": False}
+
+        async def finish(answer: Respond | None) -> None:
+            held["done"] = True
+            if answer is not None:
+                await self._gate_answer(send, answer, True)
+                return
+            status = int(held["start"].get("status", 200))
+            body = b"".join(held["parts"])
+            outcome = await self.gate.settle(hold, status, body)
+            if isinstance(outcome, Respond):
+                await self._gate_answer(send, outcome, True)
+                return
+            headers = merge_headers(_text(held["start"].get("headers", [])), decision.response_headers, outcome.response_headers)
+            started = False
+            try:
+                await send({**held["start"], "headers": _raw(headers)})
+                started = True
+                await send({"type": "http.response.body", "body": body if body_allowed(status) else b"", "more_body": False})
+            except Exception as error:
+                self.gate.report(error)  # the server refused the paid answer
+                if not started:
+                    await _bare_503(send, self.gate)
+                return
+            if decision.capture is not None:
+                copy = Copy(decision.capture.max_bytes)
+                copy.add(body)
+                self.gate.capture(decision.capture, status, headers, copy, held["ttfb"])
+
+        async def holding(message: Message) -> None:
+            if held["done"]:
+                if held.get("cut"):
+                    raise _TooLarge  # stop the app: what it sends next is never read
+                return  # the paid answer has gone; what the app sends afterwards isn't the visitor's
+            if message["type"] == "http.response.start":
+                held["start"] = message
+                held["ttfb"] = int((time.monotonic() - started) * 1000)
+                if not holdable(int(message.get("status", 200))):  # a protocol switch can't be held or paid for
+                    held["cut"] = True
+                    await finish(not_payable())
+                    raise _TooLarge
+            elif message["type"] == "http.response.body" and "start" in held:
+                chunk = bytes(message.get("body", b""))
+                held["size"] += len(chunk)
+                if held["size"] > hold.max_bytes:  # too large to be paid for: nothing more is read
+                    held["parts"], held["cut"] = [], True
+                    await finish(not_payable())
+                    raise _TooLarge
+                held["parts"].append(chunk)
+                if not message.get("more_body", False):
+                    await finish(None)
+
+        try:
+            await self.app(_without_side_sends(scope), receive, holding)
+        except Exception as error:
+            if not held["done"]:
+                raise  # the app failed before its answer was complete: nothing was settled, nothing sent
+            if not held.get("cut"):
+                self.gate.report(error)  # after the paid answer went out: it stays sent
+            return
+        if not held["done"] and "start" in held:
+            await finish(None)  # the app returned without a last body message: what it sent is its answer
+
+    async def _gate_answer(self, send: Send, decision: Respond, payment: bool) -> bool:
+        """Send an answer the gate made (SPEC.md, section 10). Refused by the server before anything went out: reported;
+        False for a request without a payment (the site answers it); one with a payment gets a bare 503."""
+        started = False
+
+        async def tracking(message: Message) -> None:
+            nonlocal started
+            await send(message)
+            started = started or message["type"] == "http.response.start"
+
+        try:
+            await _send_response(tracking, decision)
+            return True
+        except Exception as error:
+            self.gate.report(error)
+            if started:
+                return True  # it began going out: nothing else can be sent
+        if not payment:
+            return False
+        await _bare_503(send, self.gate)
+        return True
 
     def request(self, scope: Scope) -> GateRequest:
-        headers = headers_of((k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", []))
+        pairs = tuple((k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", []))
         client = scope.get("client")
         try:
-            ip = self.client_ip(scope) if self.client_ip else address_from(headers, self.ip_header, client[0] if client else None)
+            fallback = client[0] if client else None
+            ip = self.client_ip(scope) if self.client_ip else address_from(headers_of(pairs), self.ip_header, fallback)
             if inspect.isawaitable(ip):  # an async client_ip: no address (a sync function is what it takes)
                 if inspect.iscoroutine(ip):
                     ip.close()
@@ -99,13 +218,39 @@ class GateMiddleware:
                     ip.add_done_callback(lambda done: done.cancelled() or done.exception())  # retrieved, never logged
                 ip = None
         except Exception:
-            ip = None  # a client_ip that raises: no address (agents are still asked to pay by user agent)
+            ip = None  # a client_ip that raises: no address
         raw = scope.get("raw_path")
-        path = (
-            raw.decode("latin-1")
-            if isinstance(raw, bytes) and raw
-            else quote(scope.get("root_path", "") + scope.get("path", "/"))
-        )
+        if isinstance(raw, bytes) and raw:
+            path = raw.decode("latin-1")
+        else:
+            path = quote(scope.get("root_path", "") + scope.get("path", "/"))
         query = scope.get("query_string", b"").decode("latin-1")
-        url = f"{scope.get('scheme', 'http')}://localhost{path}{'?' + query if query else ''}"
-        return GateRequest(scope.get("method", "GET"), url, headers, ip=ip)
+        target = f"{path}?{query}" if query else path
+        return GateRequest(scope.get("method", "GET"), target, pairs, scheme=scope.get("scheme", "http"), ip=ip)
+
+
+def _raw(headers: Iterable[tuple[str, str]]) -> list[tuple[bytes, bytes]]:
+    return [(k.lower().encode("latin-1", "replace"), v.encode("latin-1", "replace")) for k, v in headers]
+
+
+def _text(headers: Any) -> list[tuple[str, str]]:
+    return [(bytes(k).decode("latin-1"), bytes(v).decode("latin-1")) for k, v in headers]
+
+
+async def _bare_503(send: Send, gate: AsyncGate) -> None:
+    """For a payment whose answer couldn't be sent: whatever bare 503 the server still takes, never the page."""
+    try:
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+    except Exception as error:
+        gate.report(error)
+
+
+async def _send_response(send: Send, decision: Respond) -> None:
+    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is, with its real
+    Content-Length (none for 204, 205, 304)."""
+    headers = _raw(decision.headers.items())
+    if body_allowed(decision.status):
+        headers.append((b"content-length", str(len(decision.body)).encode()))
+    await send({"type": "http.response.start", "status": decision.status, "headers": headers, "reason": reason(decision.status)})
+    await send({"type": "http.response.body", "body": decision.body})

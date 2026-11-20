@@ -1,0 +1,49 @@
+{
+  "settings_version": 1,
+  "enabled": true,
+  "refresh_seconds": 300,
+  "timeout_ms": 300,
+  "settle_timeout_ms": 65000,
+  "breaker": {
+    "failures": 5,
+    "open_seconds": 30
+  },
+  "remember_by": [
+    "client_ip",
+    "user-agent",
+    "path"
+  ],
+  "cache_max_entries": 10000,
+  "strip_headers": [
+    "cookie",
+    "authorization",
+    "proxy-authorization"
+  ],
+  "forward_cookies": [
+    "stilebase_pass"
+  ],
+  "skip_paths": {
+    "prefixes": [],
+    "extensions": [
+      ".css",
+      ".js",
+      ".mjs",
+      ".map",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".webp",
+      ".avif",
+      ".svg",
+      ".ico",
+      ".woff",
+      ".woff2",
+      ".ttf",
+      ".otf"
+    ]
+  },
+  "settle_after": {
+    "max_bytes": 10485760
+  }
+}

@@ -33,7 +33,7 @@ jobs:
 
           failed = False
           paths = sorted(p.replace("\\", "/") for p in glob.glob("conformance/*.json"))
-          for required in ("conformance/vectors.json", "conformance/gate-config.example.json"):
+          for required in ("conformance/vectors.json", "conformance/settings.example.json"):
               if required not in paths:
                   print(f"::error::{required} is missing")
                   failed = True

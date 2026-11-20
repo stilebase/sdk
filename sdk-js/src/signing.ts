@@ -1,5 +1,5 @@
-// How a gate proves its calls come from the site (SPEC.md, "Signing calls to Stilebase"), and the browser check's pass
-// token. HMAC-SHA256 with the gateway's secret; WebCrypto only, so it runs on Node 20+, Workers, Deno and Bun alike.
+// How a gate proves its calls come from the site (SPEC.md section 2). HMAC-SHA256 with the gateway's secret; WebCrypto
+// only, so it runs on Node 20+, Workers, Deno and Bun alike.
 
 const encoder = new TextEncoder();
 const keys = new Map<string, Promise<CryptoKey>>();
@@ -26,48 +26,26 @@ async function hmacHex(secret: string, message: string): Promise<string> {
   return hex(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(message)));
 }
 
-/** The headers that prove a call to Stilebase's x402 API comes from your site. */
+/** The headers that prove a call to Stilebase comes from your site. */
 export async function signedHeaders(secret: string, method: string, path: string, body: Uint8Array, nowMs: number): Promise<Record<string, string>> {
   const ts = String(Math.floor(nowMs / 1000));
   const canonical = ["v2", ts, method.toUpperCase(), path, hex(await crypto.subtle.digest("SHA-256", body))].join("\n");
   return { "Stilebase-Timestamp": ts, "Stilebase-Signature": `v2=${await hmacHex(secret, canonical)}` };
 }
 
-/** The browser check's proof: when it was issued (unix seconds), and an HMAC of that time and the user agent. */
-export async function passToken(secret: string, userAgent: string, timestamp: number): Promise<string> {
-  return `${timestamp}.${(await hmacHex(secret, `stilebase-pass\n${timestamp}\n${userAgent}`)).slice(0, 32)}`;
+/** Lowercase hex SHA-256 of bytes or a string's UTF-8 (remember keys, a held answer's receipt). */
+export async function sha256Hex(data: Uint8Array | string): Promise<string> {
+  const bytes = typeof data === "string" ? encoder.encode(data) : data;
+  return hex(await crypto.subtle.digest("SHA-256", bytes));
 }
 
-/** A browser that passed the check within `maxAgeSeconds` carries the cookie it earned (its time at most a minute ahead). */
-export async function hasPass(cookieHeader: string, cookieName: string, secret: string, userAgent: string, nowMs: number, maxAgeSeconds: number): Promise<boolean> {
-  const cookie = cookieHeader
-    .split(";")
-    .map((c) => c.trim())
-    .find((c) => c.startsWith(`${cookieName}=`));
-  const token = cookie?.slice(cookieName.length + 1) ?? "";
-  if (!/^\d{1,12}\.[0-9a-f]{32}$/.test(token)) return false;
-  const timestamp = Number(token.split(".")[0]);
-  const age = Math.floor(nowMs / 1000) - timestamp;
-  if (age < -60 || age > maxAgeSeconds) return false;
-  return sameText(token, await passToken(secret, userAgent, timestamp));
-}
-
-/** Equal strings, compared in time that doesn't depend on where they differ. */
-function sameText(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let difference = 0;
-  for (let i = 0; i < a.length; i += 1) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return difference === 0;
+/** Base64 of bytes (a captured body). */
+export function base64Bytes(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
 }
 
 function hex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** Base64 of a string's UTF-8 bytes (the PAYMENT-REQUIRED header). */
-export function base64(text: string): string {
-  const bytes = encoder.encode(text);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
 }

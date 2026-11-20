@@ -1,19 +1,22 @@
-"""A stand-in for Stilebase's x402 API, as an httpx transport (sync and async): answers a gate's calls, records them."""
+"""A stand-in for Stilebase's gate API, as an httpx transport (sync and async): serves the settings, answers decide
+and settle as told, records every call (checking its signature)."""
 
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
 import json
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
 
 import httpx
 
 CONFORMANCE = Path(__file__).resolve().parents[2] / "conformance"
-EXAMPLE: dict[str, Any] = json.loads((CONFORMANCE / "gate-config.example.json").read_text(encoding="utf-8"))
+SETTINGS: dict[str, Any] = json.loads((CONFORMANCE / "settings.example.json").read_text(encoding="utf-8"))
 VECTORS: dict[str, Any] = json.loads((CONFORMANCE / "vectors.json").read_text(encoding="utf-8"))
 
 GATEWAY_ID = "8f14e45f-ceea-467a-9575-1e2a5e4c8a01"
@@ -22,79 +25,112 @@ KEY = f"sbk_{GATEWAY_ID.replace('-', '')}_{'ab' * 32}"
 API = "https://stilebase.test"
 DOMAIN = "shop.example.com"
 NOW = 1_792_756_800.0
-REQUIRED = {
-    "x402Version": 2,
-    "error": "PAYMENT-SIGNATURE header is required",
-    "resource": {"url": f"https://{DOMAIN}/listings"},
-    "accepts": [{"scheme": "exact", "network": "eip155:8453", "amount": "10000", "payTo": "0xPlatform"}],
-}
-SETTLED_HEADER = "eyJzdWNjZXNzIjp0cnVlfQ=="
-CACHED = "public, max-age=300"
-NETWORK = "eip155:8453"
 GPTBOT = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)"
 CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-BROWSER = {
-    "user-agent": CHROME,
-    "accept": "text/html,application/xhtml+xml",
-    "accept-language": "en-US,en;q=0.9",
-    "sec-fetch-mode": "navigate",
-    "sec-fetch-site": "none",
-    "sec-fetch-dest": "document",
-    "sec-ch-ua": '"Chromium";v="130"',
+PAYMENT = "eyJ4NDAyVmVyc2lvbiI6Mn0="
+RECEIPT = "eyJzdWNjZXNzIjp0cnVlfQ=="
+REQUIRED_402 = {
+    "action": "respond",
+    "status": 402,
+    "headers": {"content-type": "application/json", "payment-required": "e30="},
+    "body": "{}",
 }
+PASS = {"action": "pass"}
+REMEMBER = {"action": "pass", "remember": {"seconds": 600}}
+SETTLE_AFTER = {"action": "pass", "settle_after": {"max_bytes": 1000}}
+PAID = {"action": "pass", "response_headers": {"payment-response": RECEIPT}}
+Answer = tuple[int, Any]
 
 
-def live_config(**overrides: Any) -> dict[str, Any]:
-    config = copy.deepcopy(EXAMPLE)
-    config["gateway"] = {**config["gateway"], "domain": DOMAIN, "live": True, "reason": None}
-    config["verification"] = None
-    return {**config, **overrides}
+def settings(**overrides: Any) -> dict[str, Any]:
+    return {**copy.deepcopy(SETTINGS), **overrides}
 
 
 @dataclass
 class Call:
     method: str
     path: str
-    query: dict[str, str]
     headers: httpx.Headers
     body: Any
+    timeout: dict[str, Any] = field(default_factory=dict)
 
 
-Answer = tuple[int, Any, dict[str, str]] | Exception
+def _signed(request: httpx.Request) -> bool:
+    ts = request.headers.get("stilebase-timestamp", "")
+    canonical = "\n".join(["v2", ts, request.method, request.url.path, hashlib.sha256(request.content).hexdigest()])
+    mac = hmac.new(SECRET.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    return bool(request.headers.get("stilebase-signature") == f"v2={mac}")
 
 
+@dataclass
 class FakeStilebase:
-    def __init__(self) -> None:
-        self.calls: list[Call] = []
-        self.config: Answer = (200, live_config(), {})
-        self.requirements: Callable[[dict[str, str]], Answer] = lambda q: (200, REQUIRED, {"cache-control": CACHED})
-        self.settle: Answer = (200, {"success": True, "transaction": "0xabc", "network": NETWORK, "header": SETTLED_HEADER}, {})
-        self.ranges: Answer = (200, {"prefixes": ["20.15.240.64/28", "2600:1f28:365:80b0::/60"]}, {})
-        self.transport = httpx.MockTransport(self.handle)
+    """`decide` / `settle`: the answer (status, JSON body), or a function of the body sent. `down`: every call fails
+    to connect. `delay`: seconds every decide takes (for budgets)."""
 
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        query = {k: v[0] for k, v in parse_qs(request.url.query.decode(), keep_blank_values=True).items()}
-        content = request.read()
-        body = json.loads(content) if content else None
-        self.calls.append(Call(request.method, request.url.path, query, request.headers, body))
-        path = request.url.path
-        answer: Answer
-        if path == f"/v1/x402/sites/{GATEWAY_ID}/config":
-            answer = self.config
-        elif path == "/v1/x402/requirements":
-            answer = self.requirements(query)
-        elif path == "/v1/x402/agent-ranges":
-            answer = self.ranges
-        elif path == "/v1/x402/settle":
-            answer = self.settle
-        elif path == "/v1/x402/visits":
-            answer = (204, None, {})
-        else:
-            answer = (404, None, {})
-        if isinstance(answer, Exception):
-            raise answer
-        status, body, headers = answer
-        return httpx.Response(status, json=body if body is not None and status != 204 else None, headers=headers)
+    settings_answer: Answer = (200, None)
+    decide: Answer | Callable[[dict[str, Any]], Answer] = (200, PASS)
+    settle: Answer | Callable[[dict[str, Any]], Answer] = (200, PAID)
+    down: bool = False
+    delay: float = 0.0
+    settings_delay: float = 0.0
+    raw_decide: bytes | None = None
+    raw_settings: bytes | None = None
+    calls: list[Call] = field(default_factory=list)
 
-    def to(self, path: str) -> list[Call]:
-        return [c for c in self.calls if c.path == path]
+    def __post_init__(self) -> None:
+        if self.settings_answer == (200, None):
+            self.settings_answer = (200, settings())
+
+    def to(self, name: str) -> list[Call]:
+        return [c for c in self.calls if c.path.endswith(f"/{name}")]
+
+    def _answer(self, request: httpx.Request) -> httpx.Response:
+        if self.down:
+            raise httpx.ConnectError("Stilebase down", request=request)
+        body: dict[str, Any] = json.loads(request.content) if request.content else {}
+        timeout = dict(request.extensions.get("timeout", {}))
+        self.calls.append(Call(request.method, request.url.path, request.headers, body, timeout))
+        if not _signed(request):
+            return httpx.Response(401, json={"error": "Invalid site signature"})
+        name = request.url.path.rsplit("/", 1)[-1]
+        if name == "settings":
+            if self.raw_settings is not None:
+                return httpx.Response(200, content=self.raw_settings)
+            return httpx.Response(self.settings_answer[0], json=self.settings_answer[1])
+        if name == "decide":
+            if self.raw_decide is not None:
+                return httpx.Response(200, content=self.raw_decide)
+            status, answer = self.decide(body) if callable(self.decide) else self.decide
+            return httpx.Response(status, json=answer)
+        if name == "settle":
+            status, answer = self.settle(body) if callable(self.settle) else self.settle
+            return httpx.Response(status, json=answer)
+        if name == "captures":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        fake = self
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if fake.delay and request.url.path.endswith("/decide"):
+                time.sleep(fake.delay)
+            return fake._answer(request)
+
+        return httpx.MockTransport(handler)
+
+    @property
+    def async_transport(self) -> httpx.MockTransport:
+        fake = self
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            import asyncio
+
+            if fake.delay and request.url.path.endswith("/decide"):
+                await asyncio.sleep(fake.delay)
+            if fake.settings_delay and request.url.path.endswith("/settings"):
+                await asyncio.sleep(fake.settings_delay)
+            return fake._answer(request)
+
+        return httpx.MockTransport(handler)

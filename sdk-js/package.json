@@ -1,7 +1,7 @@
 {
   "name": "@stilebase/sdk",
-  "version": "0.1.0",
-  "description": "Charge AI agents per request with x402 (USDC on Base), settled through Stilebase. People pass straight through. Express, Cloudflare Workers, Hono, Bun, Deno.",
+  "version": "0.2.0",
+  "description": "Stilebase's gate: AI agents pay per request with x402 (USDC on Base), decided and settled by Stilebase; people pass straight through. Express, Cloudflare Workers, Hono, Bun, Deno.",
   "keywords": [
     "x402",
     "ai-agents",

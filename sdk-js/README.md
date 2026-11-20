@@ -1,10 +1,10 @@
 # @stilebase/sdk
 
 Connect your site to [Stilebase](https://stilebase.com) from JavaScript or TypeScript. **The gate**
-(`@stilebase/sdk/gate`) does what Stilebase's Cloudflare Worker does, from inside your app: AI agents (GPTBot,
-ClaudeBot, PerplexityBot…) get `402 Payment Required` in the open [x402](https://x402.org) format, an agent that pays
-(USDC on Base) gets the page, and Stilebase supplies the price and settles the payment. People, search engines and
-link previews see no change. If Stilebase can't be reached, everyone gets your site as usual.
+(`@stilebase/sdk/gate`) asks Stilebase about each request and does what it says: AI agents (GPTBot, ClaudeBot,
+PerplexityBot…) get `402 Payment Required` in the open [x402](https://x402.org) format, an agent that pays (USDC on
+Base) gets the page, and Stilebase decides who's an agent, supplies the price and settles the payment. People, search
+engines and link previews see no change. If Stilebase can't be reached, everyone gets your site as usual.
 
 ## Install
 
@@ -51,9 +51,11 @@ The gate sees only requests that reach the handler it wraps: on Workers with sta
 import { createGate } from "@stilebase/sdk/gate";
 
 const gate = createGate();
-const decision = await gate.check({ method, url, headers, ip }); // headers: anything with get(name)
-// decision.action === "respond": send decision.status, decision.headers, decision.body instead.
-// decision.action === "pass": serve the request; add PAYMENT-RESPONSE: decision.paymentResponse when it's set.
+const decision = await gate.check({ method, path, scheme, headers, ip }); // path with the query; headers: [name, value][]
+// "respond": send decision.status, decision.headers, decision.body instead of the page.
+// "pass":    serve the page; add decision.responseHeaders; with decision.capture, send gate.capture(...) a copy.
+// "hold":    a payment. Hold your answer (at most decision.maxBytes), then
+//            gate.settle(decision.ticket, { status, body }) says "send" (with responseHeaders) or "respond".
 ```
 
 ## Check it
@@ -67,20 +69,22 @@ curl -i -A "Mozilla/5.0" https://your-site.example/  # your page, as before
 
 ## What it does
 
-Exactly what the Worker does, with its settings (agent lists, checks, price) fetched from Stilebase and refreshed
-every five minutes:
+The gate has no logic of its own (the spec: SPEC.md in this repository). For each request it asks Stilebase what to do,
+sending the request line and headers (never cookies other than Stilebase's own, never `Authorization`, never the
+body), and does what Stilebase says:
 
-- AI agents named by their user agent, scripts with their default user agent (curl, python-requests…), and agents
-  behind a browser's user agent (the operators' published addresses, Web Bot Auth) get the 402. Agents you gave a
-  free pass on the gateway page read for free.
-- A payment (`PAYMENT-SIGNATURE`, or x402 v1's `X-PAYMENT`) is settled through Stilebase; the page is then served with
-  `PAYMENT-RESPONSE`. If Stilebase doesn't confirm the settlement, the agent gets `503` and the page isn't served.
-- Browser-looking requests that don't act like a browser are counted; with **Strict detection** on, they get a page
-  that lets real browsers straight through.
-- Until your domain is verified, the gate serves `/.well-known/stilebase-verify.txt`.
-
-Your own health checks and webhooks are scripts too: give them a user agent of your own, register those routes before
-the gate, or set `catchHttpClients: false`.
+- People pass straight through; Stilebase says to remember them for a while, so their next requests aren't asked.
+- AI agents, scripts and agents hiding behind a browser's user agent get the 402 with Stilebase's price, unless you
+  gave them a free pass or the gateway is in watch mode. Who counts as an agent is Stilebase's to decide and update.
+- A payment is verified, then **held**: your page is produced but not sent until Stilebase has settled the payment.
+  The agent is charged only if your page answered 2xx; it then gets the page with `PAYMENT-RESPONSE`. If the
+  settlement fails it gets the 402 again; if the outcome can't be told, `503`, never the page.
+- Static files (CSS, JavaScript, images, fonts) pass without asking: agents read them without paying. Remove an
+  extension on the gateway page if a route of yours answers it with content.
+- With AgentView, Stilebase may ask for a copy of some answers (to people who aren't signed in, and to agents); the
+  copy is sent in the background and never delays or changes the page.
+- If Stilebase can't be reached or answers late (300 ms), the request passes. After several failures in a row the
+  gate stops asking for 30 seconds.
 
 ## Options
 
@@ -88,9 +92,8 @@ the gate, or set `catchHttpClients: false`.
 gate({
   key: "sbk_…", // default: STILEBASE_KEY
   ipHeader: "cf-connecting-ip", // the visitor's address from a header your proxy or CDN sets
-  catchHttpClients: false, // let curl & co. through
-  catchHiddenAgents: false, // only ask agents that name themselves
-  checkBrowsers: false, // no browser checks
+  assumeHttps: false, // send the scheme your app sees (default: https, as behind a TLS-terminating proxy)
+  disabled: true, // pass everyone, ask nothing (default: STILEBASE_DISABLED=1)
   onError: (error) => log.warn(error), // default: a console warning, at most once a minute
 });
 ```
@@ -99,9 +102,6 @@ gate({
 (`ipHeader`; from a list such as `X-Forwarded-For`, its last entry), or `clientIp` (Bun:
 `(request, server) => server.requestIP(request)?.address`; Deno: `(request, info) => info.remoteAddr.hostname`). Never a
 header the visitor can set.
-
-**Behind a proxy that ends TLS**, tell your framework (Express's `trust proxy`), so the gate sees that visitors came
-over https: the browser checks run only for https, as browsers send their tell-tale headers only there.
 
 ## Undo
 

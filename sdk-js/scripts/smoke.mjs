@@ -32,7 +32,7 @@ import { gate as express } from "@stilebase/sdk/gate/express";
 import { withGate } from "@stilebase/sdk/gate/fetch";
 for (const f of [createGate, express, withGate]) if (typeof f !== "function") throw new Error("missing export");
 if (!/^\\d+\\.\\d+\\.\\d+/.test(VERSION)) throw new Error("no version");
-const decision = await createGate({ key: "" , onError() {} }).check({ method: "GET", url: "https://a.example/", headers: new Headers() });
+const decision = await createGate({ key: "" , onError() {} }).check({ method: "GET", path: "/", scheme: "https", headers: [] });
 if (decision.action !== "pass") throw new Error("a keyless gate must pass");
 console.log("esm ok", VERSION);`,
   );
@@ -53,7 +53,7 @@ import { createGate, type GateDecision } from "@stilebase/sdk/gate";
 const app = express();
 app.use(gate({ ipHeader: "cf-connecting-ip" }));
 export default { fetch: withGate((request: Request) => new Response(request.url)) };
-export const decided: Promise<GateDecision> = createGate().check({ method: "GET", url: "https://a.example/", headers: new Headers() });`,
+export const decided: Promise<GateDecision> = createGate().check({ method: "GET", path: "/", scheme: "https", headers: [["user-agent", "x"]] });`,
   );
   writeFileSync(
     join(work, "tsconfig.json"),

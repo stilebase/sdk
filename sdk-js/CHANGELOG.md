@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+The thin gate (SPEC.md): Stilebase decides every request. The gate forwards the request line and headers to
+`/v1/gate/sites/{id}/decide`, does what the answer says and fails open; agent lists, browser checks and prices are no
+longer in the package. A payment is held and settled after your page answered (`/settle`), so an agent is charged only
+for a page delivered. New: remembered answers, static files skipped, a circuit breaker, `capture` for AgentView,
+`disabled` / `STILEBASE_DISABLED`, `assumeHttps`. Removed: `catchHttpClients`, `catchHiddenAgents`, `checkBrowsers`,
+`passToken`. `createGate().check` takes `{ method, path, scheme, headers: [name, value][], ip }` and may answer `hold`.
+
 ## 0.1.0
 
 First release: the gate for Express and Fetch-API runtimes (Cloudflare Workers, Hono, Bun, Deno). It does what

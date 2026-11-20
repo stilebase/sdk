@@ -22,7 +22,7 @@ from django.conf import settings
 settings.configure()
 from stilebase_sdk.gate.django import GateMiddleware as Django  # noqa: F401
 quiet = GateOptions(key="", on_error=lambda e: None)
-request = GateRequest("GET", "https://a.example/", {"user-agent": "GPTBot"})
+request = GateRequest("GET", "/", (("user-agent", "GPTBot"),))
 assert SyncGate(quiet).check(request) == Pass()
 assert asyncio.run(AsyncGate(quiet).check(request)) == Pass()
 Asgi(lambda *a: None, key="", on_error=lambda e: None)
