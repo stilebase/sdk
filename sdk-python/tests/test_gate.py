@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 from typing import Any
 
@@ -475,7 +476,10 @@ def test_a_cancelled_probe_frees_its_slot_without_counting() -> None:
         probe = asyncio.create_task(gate.check(AGENT))
         await asyncio.sleep(0.05)
         probe.cancel()
-        await asyncio.sleep(0)
+        # Wait for the cancelled probe to finish unwinding (its `finally` frees the slot). One loop turn isn't enough
+        # before 3.12, where wait_for runs the call in an inner task and the cancellation takes more turns to arrive.
+        with contextlib.suppress(asyncio.CancelledError):
+            await probe
         failures = gate.breaker._failures
         stilebase.delay = 0.0
         assert isinstance(await gate.check(AGENT), Respond)  # the next request probes, and closes it

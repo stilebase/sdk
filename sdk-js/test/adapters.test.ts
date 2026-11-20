@@ -40,7 +40,8 @@ describe("express", () => {
       res.set("x-site", "yes").send("the listings");
     });
     app.get("/cookies", (_req, res) => {
-      res.writeHead(200, ["Set-Cookie", "a=1", "set-cookie", "b=2", "x-site", "route"]);
+      res.setHeader("Set-Cookie", ["a=1", "b=2"]);
+      res.writeHead(200, { "x-site": "route" });
       res.end("ok");
     });
     app.get("/stream", (_req, res) => {
