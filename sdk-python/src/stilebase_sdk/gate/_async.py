@@ -12,6 +12,7 @@ import httpx
 from ._core import (
     CAPTURE_QUEUE,
     CAPTURE_TIMEOUT,
+    NOT_ASKED,
     PASS,
     SETTINGS_TIMEOUT,
     UNUSABLE,
@@ -34,6 +35,9 @@ from ._core import (
     unknown_payment,
 )
 from ._request import GateRequest
+
+# Never a queue for a free connection under load: a request's budget is for Stilebase, not for waiting on the pool.
+LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=100)
 
 
 class AsyncGate(Engine):
@@ -143,7 +147,7 @@ class AsyncGate(Engine):
     @property
     def http(self) -> httpx.AsyncClient:
         if self._http is None:
-            self._http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False)
+            self._http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False, limits=LIMITS)
         return self._http
 
     async def _ask(self, name: str, body: dict[str, Any], budget: float) -> Answer:
@@ -152,12 +156,15 @@ class AsyncGate(Engine):
             url, data, headers = self.signed_post(name, body)
             answer = await asyncio.wait_for(self.http.post(url, content=data, headers=headers, timeout=budget), budget)
             return read_answer(answer.status_code, json_body(answer.content))
+        except httpx.PoolTimeout as error:
+            self.report(error)
+            return NOT_ASKED  # waiting for a free connection is the gate's own wait: the breaker ignores it
         except Exception as error:
             self.report(error)
             return UNUSABLE
 
     async def _settings(self) -> Settings | None:
-        if not self.settings_at:
+        if self.settings_at is None:
             await asyncio.wait({self._load()}, timeout=SETTINGS_TIMEOUT + 0.1)  # this request's deadline, never the load's
         elif self.settings_due():
             self._load()
@@ -175,7 +182,7 @@ class AsyncGate(Engine):
             answer = await asyncio.wait_for(fetch, SETTINGS_TIMEOUT)  # 3 s in all, however slowly it arrives
             self.take_settings(answer.status_code, json_body(answer.content))
         except Exception as error:
-            self.settings_at = self.options.now()
+            self.settings_at = self.options.clock()
             self.report(error)  # keep the last good settings, if any
 
     async def _send_captures(self) -> None:

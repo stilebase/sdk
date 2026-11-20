@@ -40,17 +40,19 @@ class Clock:
 
 def sync_gate(stilebase: FakeStilebase, clock: Clock | None = None, **options: Any) -> SyncGate:
     errors: list[Exception] = []
+    tick = clock or Clock()
     gate = SyncGate(
-        GateOptions(key=KEY, api_url=API, transport=stilebase.transport, on_error=errors.append, now=clock or Clock(), **options)
+        GateOptions(key=KEY, api_url=API, transport=stilebase.transport, on_error=errors.append, now=tick, clock=tick, **options)
     )
     gate.errors = errors  # type: ignore[attr-defined]
     return gate
 
 
 def async_gate(stilebase: FakeStilebase, clock: Clock | None = None, **options: Any) -> AsyncGate:
+    tick = clock or Clock()
     return AsyncGate(
         GateOptions(
-            key=KEY, api_url=API, transport=stilebase.async_transport, on_error=lambda e: None, now=clock or Clock(), **options
+            key=KEY, api_url=API, transport=stilebase.async_transport, on_error=lambda e: None, now=tick, clock=tick, **options
         )
     )
 
@@ -557,3 +559,69 @@ def test_a_protocol_switch_is_never_settled() -> None:
     stilebase = FakeStilebase()
     outcome = sync_gate(stilebase).settle(Hold({}, 100), 101, b"")
     assert isinstance(outcome, Respond) and outcome.status == 502 and stilebase.to("settle") == []
+
+
+# Final review
+
+
+def test_waiting_for_a_free_connection_counts_nothing() -> None:
+    import httpx
+
+    def pool_full(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/settings"):
+            return httpx.Response(200, json=settings())
+        raise httpx.PoolTimeout("no free connection", request=request)
+
+    gate = SyncGate(GateOptions(key=KEY, api_url=API, transport=httpx.MockTransport(pool_full), on_error=lambda e: None))
+    for _ in range(20):
+        assert gate.check(AGENT) == Pass()
+    assert gate.breaker._failures == 0 and not gate.breaker.is_open(0)
+
+
+def test_no_queue_for_a_connection_under_load() -> None:
+    from stilebase_sdk.gate._async import LIMITS
+
+    assert LIMITS.max_connections is None and LIMITS.max_keepalive_connections == 100
+
+    async def run() -> None:
+        stilebase = FakeStilebase(decide=(200, REQUIRED_402), delay=0.05)
+        gate = async_gate(stilebase)
+        await gate.check(AGENT)
+        many = [GateRequest("GET", f"/p/{i}", (("User-Agent", GPTBOT),)) for i in range(150)]
+        results = await asyncio.gather(*(gate.check(r) for r in many))
+        assert all(isinstance(r, Respond) for r in results) and gate.breaker._failures == 0
+        await gate.aclose()
+
+    asyncio.run(run())
+
+
+def test_intervals_never_follow_the_wall_clock_back() -> None:
+    class Back:
+        """A wall clock that steps back an hour on every read."""
+
+        def __init__(self) -> None:
+            self.at = 1_792_756_800.0
+
+        def __call__(self) -> float:
+            self.at -= 3600
+            return self.at
+
+    mono = Clock()
+    stilebase = FakeStilebase(decide=(500, {}))
+    gate = SyncGate(
+        GateOptions(key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None, now=Back(), clock=mono)
+    )
+    for _ in range(5):
+        gate.check(AGENT)
+    assert gate.check(AGENT) == Pass() and len(stilebase.to("decide")) == 5  # open, whatever the wall clock says
+    mono.at += 31
+    gate.check(AGENT)  # half open on the monotonic clock: asked
+    assert len(stilebase.to("decide")) == 6
+    stilebase.decide = (200, REMEMBER)
+    mono.at += 31
+    gate.check(PERSON)
+    gate.check(PERSON)
+    assert len(stilebase.to("decide")) == 7  # remembered on the monotonic clock
+    mono.at += 601
+    gate.check(PERSON)
+    assert len(stilebase.to("decide")) == 8  # and forgotten on it

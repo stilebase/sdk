@@ -462,3 +462,162 @@ def test_a_protocol_switch_is_never_held() -> None:
     app = GateMiddleware(switching, key=KEY, api_url=API, transport=stilebase.async_transport)
     sent = _asgi_call(app, "/", [(b"payment-signature", PAYMENT.encode())], {})
     assert (sent[0]["status"], sent[1]["body"]) == (502, NOT_PAYABLE) and stilebase.to("settle") == []
+
+
+# Final review
+
+
+def _wsgiref(app: Any, environ_extra: dict[str, Any]) -> bytes:
+    import io
+    from wsgiref.handlers import SimpleHandler
+    from wsgiref.util import setup_testing_defaults
+
+    environ: dict[str, Any] = {}
+    setup_testing_defaults(environ)
+    environ.update(environ_extra)
+    out, err = io.BytesIO(), io.StringIO()
+    SimpleHandler(io.BytesIO(), out, err, environ).run(app)
+    return out.getvalue()
+
+
+def test_wsgi_capture_keeps_what_the_server_sends() -> None:
+    import io
+    from wsgiref.util import FileWrapper
+
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    def single(environ: Any, start_response: Any) -> Any:
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [PAGE.encode()]
+
+    stilebase = FakeStilebase(decide=(200, CAPTURE))
+    gate = GateMiddleware(single, key=KEY, api_url=API, transport=stilebase.transport)
+    sent = _wsgiref(gate, {"HTTP_USER_AGENT": "curl/8.4.0"})
+    assert f"Content-Length: {len(PAGE)}".encode() in sent and sent.endswith(PAGE.encode())  # wsgiref still sets it
+    gate.gate.wait()
+    assert len(stilebase.to("captures")) == 1
+
+    def file(environ: Any, start_response: Any) -> Any:
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return environ["wsgi.file_wrapper"](io.BytesIO(PAGE.encode()))
+
+    stilebase = FakeStilebase(decide=(200, CAPTURE))
+    gate = GateMiddleware(file, key=KEY, api_url=API, transport=stilebase.transport)
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.url_scheme": "https", "wsgi.file_wrapper": FileWrapper}
+    environ["HTTP_USER_AGENT"] = "curl/8.4.0"
+    result = gate(environ, lambda status, headers: None)
+    assert isinstance(result, FileWrapper)  # the server's sendfile path, untouched; the capture skipped
+    gate.gate.wait()
+    assert stilebase.to("captures") == []
+
+
+def test_wsgi_gate_answers_carry_one_content_length_and_none_without_a_body() -> None:
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    for answer, lengths in (
+        ({"action": "respond", "status": 402, "headers": {"Content-Length": "2"}, "body": "{}"}, ["2"]),
+        ({"action": "respond", "status": 204, "headers": {}, "body": "x"}, []),
+    ):
+        stilebase = FakeStilebase(decide=(200, answer))
+        gate = GateMiddleware(lambda environ, start_response: [], key=KEY, api_url=API, transport=stilebase.transport)
+        started: list[Any] = []
+        environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.url_scheme": "https", "HTTP_USER_AGENT": GPTBOT}
+        body = gate(environ, lambda status, headers: started.append(headers))  # noqa: B023 - called in this iteration
+        assert [v for n, v in started[0] if n.lower() == "content-length"] == lengths
+        assert b"".join(body) == (b"" if not lengths else b"{}")
+
+
+def test_django_respond_adds_no_content_type() -> None:
+    _django()
+    from django.conf import settings
+    from django.test import RequestFactory
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    stilebase = FakeStilebase(decide=(200, {"action": "respond", "status": 402, "body": "pay"}))
+    settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": stilebase.transport}
+    answered = GateMiddleware(lambda request: None)(RequestFactory().get("/", HTTP_USER_AGENT=GPTBOT))
+    assert answered.status_code == 402 and "Content-Type" not in answered and answered["Cache-Control"] == "no-store"
+
+
+def test_an_invalid_header_from_stilebase_is_left_out() -> None:
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    answer = {"action": "respond", "status": 402, "headers": {"x-ok": "1", "x-bad": "a\r\nset-cookie: x"}, "body": "pay"}
+    stilebase = FakeStilebase(decide=(200, answer))
+    app = GateMiddleware(
+        Starlette(routes=[Route("/", lambda r: None)]), key=KEY, api_url=API, transport=stilebase.async_transport
+    )
+    sent = _asgi_call(app, "/", [(b"user-agent", GPTBOT.encode())], {})
+    names = [n for n, _ in sent[0]["headers"]]
+    assert sent[0]["status"] == 402 and b"x-ok" in names and b"x-bad" not in names
+
+
+def test_a_gate_answer_the_server_refuses() -> None:
+    """Without a payment the site serves the request; with one, a bare 503, never the page."""
+    import asyncio
+
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    for payment, expected in ((False, 200), (True, 503)):
+        stilebase = FakeStilebase(decide=(200, REQUIRED_402 if not payment else {"action": "unknown_payment"}))
+        inner = Starlette(routes=[Route("/", lambda r: PlainTextResponse(PAGE))])
+        app = GateMiddleware(inner, key=KEY, api_url=API, transport=stilebase.async_transport, on_error=lambda e: None)
+        sent: list[dict[str, Any]] = []
+
+        async def send(message: Any) -> None:
+            if (
+                message["type"] == "http.response.start"
+                and message["status"] in (402,)
+                or (message["type"] == "http.response.start" and message["headers"] and message["status"] == 503)
+            ):
+                raise RuntimeError("the server refuses this answer")
+            sent.append(dict(message))  # noqa: B023 - called in this iteration
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        headers = [(b"user-agent", GPTBOT.encode())] + ([(b"payment-signature", PAYMENT.encode())] if payment else [])
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "scheme": "https",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": headers,
+            "client": ("1.2.3.4", 1),
+            "server": ("x", 443),
+        }
+        asyncio.run(app(scope, receive, send))
+        assert sent[0]["status"] == expected and PAGE.encode() not in b"".join(m.get("body", b"") for m in sent if payment)
+
+    from stilebase_sdk.gate.wsgi import GateMiddleware as Wsgi
+
+    for payment, line in ((False, "200 OK"), (True, "503 Service Unavailable")):
+        stilebase = FakeStilebase(decide=(200, REQUIRED_402 if not payment else {"action": "unknown_payment"}))
+
+        def site(environ: Any, start_response: Any) -> Any:
+            start_response("200 OK", [])
+            return [PAGE.encode()]
+
+        gate = Wsgi(site, key=KEY, api_url=API, transport=stilebase.transport, on_error=lambda e: None)
+        started: list[str] = []
+
+        def start_response(status: str, headers: Any, exc_info: Any = None) -> Any:
+            if status.startswith(("402", "503")) and headers:
+                raise RuntimeError("the server refuses this answer")
+            started.append(status)  # noqa: B023 - called in this iteration
+
+        environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.url_scheme": "https", "HTTP_USER_AGENT": GPTBOT}
+        if payment:
+            environ["HTTP_PAYMENT_SIGNATURE"] = PAYMENT
+        body = b"".join(gate(environ, start_response))
+        assert started == [line] and (body == PAGE.encode()) is (not payment)

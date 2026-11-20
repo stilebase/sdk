@@ -340,6 +340,34 @@
           "cookies": {},
           "credentials": false
         }
+      },
+      {
+        "name": "a path without its slash, an edge with one field",
+        "request": {
+          "method": "GET",
+          "scheme": "https",
+          "path": "listings?x=1",
+          "assume_https": true,
+          "client_ip": null,
+          "headers": [],
+          "edge": {
+            "asn": 13335
+          }
+        },
+        "body": {
+          "request": {
+            "method": "GET",
+            "scheme": "https",
+            "path": "/listings?x=1"
+          },
+          "client_ip": null,
+          "headers": [],
+          "cookies": {},
+          "credentials": false,
+          "edge": {
+            "asn": 13335
+          }
+        }
       }
     ]
   },
@@ -693,6 +721,46 @@
           "token": "t",
           "max_bytes": 100
         }
+      },
+      {
+        "name": "an invalid header is left out",
+        "http_status": 200,
+        "body": {
+          "action": "respond",
+          "status": 402,
+          "headers": {
+            "x-ok": "1",
+            "x-bad": "a\nb",
+            "bad name": "x"
+          },
+          "body": "pay"
+        },
+        "no_payment": "respond",
+        "with_payment": "respond",
+        "respond": {
+          "status": 402,
+          "body": "pay"
+        },
+        "headers": {
+          "x-ok": "1",
+          "cache-control": "no-store"
+        }
+      },
+      {
+        "name": "an invalid response header is left out",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "response_headers": {
+            "x-ok": "1",
+            "x-bad": "a\r\nset-cookie: x"
+          }
+        },
+        "no_payment": "pass",
+        "with_payment": "pass",
+        "response_headers": {
+          "x-ok": "1"
+        }
       }
     ]
   },
@@ -924,6 +992,40 @@
           "enabled": true
         },
         "read": null
+      },
+      {
+        "name": "an empty remember_by takes the default",
+        "body": {
+          "settings_version": 1,
+          "enabled": true,
+          "remember_by": []
+        },
+        "read": {
+          "settings_version": 1,
+          "enabled": true,
+          "refresh_seconds": 300,
+          "timeout_ms": 300,
+          "settle_timeout_ms": 65000,
+          "breaker": {
+            "failures": 5,
+            "open_seconds": 30
+          },
+          "remember_by": [
+            "client_ip",
+            "user-agent",
+            "path"
+          ],
+          "cache_max_entries": 10000,
+          "strip_headers": [],
+          "forward_cookies": [],
+          "skip_paths": {
+            "prefixes": [],
+            "extensions": []
+          },
+          "settle_after": {
+            "max_bytes": 10485760
+          }
+        }
       }
     ]
   },

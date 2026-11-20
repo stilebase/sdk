@@ -3,6 +3,15 @@
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
 (`.claude/rules/development-workflow.md`) go here.
 
+## Before releasing 0.2.0 (the thin gate)
+
+- **Stilebase's payment journal is live** (its settle records every payment whose outcome isn't known, and settles it
+  from the chain). *Waits:* its own change, at Stilebase.
+- **An end-to-end run on dev** (Base Sepolia, real test USDC) through every adapter: Express, Fetch (a Worker), ASGI,
+  WSGI and Django: a person served, an agent's 402, a paid page settled and delivered, a site error not charged, a
+  capture received, and Stilebase down (everyone served, a payment 503). *Waits:* the journal, then this run, by hand,
+  before tagging.
+
 ## Both SDKs
 
 - **More frameworks and languages:** Next.js, Fastify and Koa adapters for `@stilebase/sdk` (Hono works today through
@@ -15,9 +24,12 @@ What's known and not yet done, each with why it waits. Review findings that aren
   forwarded cookie is found only in the first. The Worker splits at ";" only, and the conformance cases say nothing about it.
   *Waits:* strict detection is off by default; a shared case first.
 - **Python: the sync gate's budgets are per network step.** httpx's sync client has no overall deadline: `decide`
-  applies `timeout_ms` to each of connect, write and read, and the first settings load splits its 3 s across the steps.
-  A read that trickles in can still run longer. The async gate enforces totals with `asyncio.wait_for`. *Waits:* a true
-  deadline costs a thread per call or a watchdog closing the connection; Stilebase's API answers or fails fast.
+  applies `timeout_ms` to each of connect, write and read, and the first settings load splits its 3 s across the steps
+  (1, 0.5, 1, 0.5 for the pool). A read that trickles in can still run longer. The async gate enforces totals with
+  `asyncio.wait_for`. *Waits:* a true deadline costs a thread per call or a watchdog closing the connection;
+  Stilebase's API answers or fails fast.
+- **Python: a gate answer refused once the ASGI server has its start message** sends nothing more (the visitor's
+  connection is in an unknown state). *Waits:* no server does this in practice.
 - **An absolute-form target under uvicorn's h11** keeps its whole target as the path (`//host/x`), where Express names
   `/x`. *Waits:* Starlette doesn't route it either; no page is freed.
 - **Python: the sync and async gates repeat their calls** (settings, decide, settle, captures) around one core without

@@ -66,7 +66,7 @@ export function parseSettings(value: unknown): GateSettings | null {
     timeout_ms: positive(value.timeout_ms, DEFAULTS.timeout_ms),
     settle_timeout_ms: positive(value.settle_timeout_ms, DEFAULTS.settle_timeout_ms),
     breaker: { failures: positive(breaker.failures, DEFAULTS.breaker.failures), open_seconds: positive(breaker.open_seconds, DEFAULTS.breaker.open_seconds) },
-    remember_by: strings(value.remember_by, DEFAULTS.remember_by),
+    remember_by: nonEmpty(strings(value.remember_by, DEFAULTS.remember_by), DEFAULTS.remember_by),
     cache_max_entries: positive(value.cache_max_entries, DEFAULTS.cache_max_entries),
     strip_headers: strings(value.strip_headers, []),
     forward_cookies: strings(value.forward_cookies, []),
@@ -82,6 +82,10 @@ export function defaultSettings(): GateSettings {
 
 function positive(value: unknown, fallback: number): number {
   return Number.isInteger(value) && (value as number) > 0 ? (value as number) : fallback;
+}
+
+function nonEmpty(list: string[], fallback: string[]): string[] {
+  return list.length ? list : fallback; // a remember key of nothing would let one pass serve everyone
 }
 
 function strings(value: unknown, fallback: string[]): string[] {
@@ -104,7 +108,7 @@ export function rememberMaterial(request: GateRequest, by: string[]): string {
   return by
     .map((field) => {
       if (field === "client_ip") return normalizeIp(request.ip) ?? "";
-      if (field === "path") return request.path;
+      if (field === "path") return withSlash(request.path);
       return header(request, field) ?? "";
     })
     .join("\n");
@@ -127,16 +131,21 @@ export function decideBody(request: GateRequest, settings: GateSettings, assumeH
     if (!strip.has(lower) && headers.length < MAX_HEADERS) headers.push([lower, value]);
   }
   const body: Record<string, unknown> = {
-    request: { method: request.method.toUpperCase(), scheme: assumeHttps ? "https" : request.scheme.toLowerCase(), path: request.path },
+    request: { method: request.method.toUpperCase(), scheme: assumeHttps ? "https" : request.scheme.toLowerCase(), path: withSlash(request.path) },
     client_ip: normalizeIp(request.ip),
     headers,
     cookies: forwardedCookies(request, settings.forward_cookies),
     credentials,
   };
-  if (request.asn != null || request.httpProtocol != null) {
-    body.edge = { asn: request.asn ?? null, http_protocol: request.httpProtocol ?? null };
-  }
+  const edge: Record<string, unknown> = {};
+  if (request.asn != null) edge.asn = request.asn;
+  if (request.httpProtocol != null) edge.http_protocol = request.httpProtocol;
+  if (Object.keys(edge).length) body.edge = edge; // only the fields known
   return body;
+}
+
+function withSlash(path: string): string {
+  return path.startsWith("/") ? path : `/${path}`;
 }
 
 function forwardedCookies(request: GateRequest, names: string[]): Record<string, string> {
@@ -206,11 +215,16 @@ function readCapture(value: unknown): Capture | null {
   return { token: value.token, maxBytes: value.max_bytes as number };
 }
 
+/** Headers from Stilebase: null when a value isn't a string (a field of the wrong type); a header whose name isn't an
+ * HTTP token or whose value holds CR, LF or NUL is left out (SPEC.md section 6 step 5). */
 function stringRecord(value: unknown): Record<string, string> | null {
   if (!isRecord(value)) return null;
   const entries = Object.entries(value);
-  return entries.every(([, v]) => typeof v === "string") ? (Object.fromEntries(entries) as Record<string, string>) : null;
+  if (!entries.every(([, v]) => typeof v === "string")) return null;
+  return Object.fromEntries(entries.filter(([name, v]) => HEADER_NAME.test(name) && !/[\r\n\0]/.test(v as string))) as Record<string, string>;
 }
+
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 export function header(request: GateRequest, name: string): string | null {
   const lower = name.toLowerCase();
@@ -284,4 +298,36 @@ export function notPayableAnswer(): Sent {
 export function respondAnswer(status: number, headers: Record<string, string>, body: string): Sent {
   const merged = Object.fromEntries(mergeHeaders(Object.entries(headers), { "cache-control": "no-store" }));
   return { status, headers: merged, body: bodyAllowed(status) ? body : "" };
+}
+
+/** Keeps the first `max` bytes of what passes through and counts all of it (a capture's copy, a held answer). */
+export class Copy {
+  private readonly chunks: Uint8Array[] = [];
+  private kept = 0;
+  size = 0;
+
+  constructor(readonly max: number) {}
+
+  add(chunk: Uint8Array): void {
+    this.size += chunk.byteLength;
+    if (this.kept < this.max) {
+      const part = chunk.slice(0, this.max - this.kept);
+      this.chunks.push(part);
+      this.kept += part.byteLength;
+    }
+  }
+
+  get truncated(): boolean {
+    return this.size > this.max;
+  }
+
+  bytes(): Uint8Array {
+    const out = new Uint8Array(this.kept);
+    let at = 0;
+    for (const chunk of this.chunks) {
+      out.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return out;
+  }
 }

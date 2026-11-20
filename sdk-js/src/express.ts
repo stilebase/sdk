@@ -4,7 +4,7 @@ import type { ServerResponse } from "node:http";
 import { parse } from "node:url";
 
 import { type Gate, type GateDecision, type GateOptions, type SettleDecision, addressFrom, addressOf, createGate, unknownPayment } from "./core.js";
-import { type Capture, type GateRequest, bodyAllowed, normalizeIp } from "./protocol.js";
+import { type Capture, Copy, type GateRequest, bodyAllowed, normalizeIp } from "./protocol.js";
 
 /** The parts of Express's request the gate uses (no dependency on Express's types). */
 export interface ExpressRequest {
@@ -32,28 +32,26 @@ export interface ExpressGateOptions extends GateOptions {
 export function gate(options: ExpressGateOptions = {}) {
   const siteGate = createGate(options, "express");
   return function stilebaseGate(req: ExpressRequest, res: ExpressResponse, next: (error?: unknown) => void): void {
-    siteGate.check(gateRequest(req, options)).then(
+    const request = gateRequest(req, options);
+    const paying = request.headers.some(([n, v]) => ["payment-signature", "x-payment"].includes(n.toLowerCase()) && v.trim() !== "");
+    siteGate.check(request).then(
       (decision) => {
         if (decision.action === "respond") {
-          try {
-            answer(res, decision);
-          } catch (error) {
-            next(error); // the gate's own answer couldn't be sent: an error, never the page
-          }
+          // The gate's own answer couldn't be sent: no payment, the site; a payment, a bare 503, never the page.
+          if (!sendSafely(res, decision) && !paying) next();
           return;
         }
-        try {
-          if (decision.action === "hold") {
-            try {
-              hold(res, siteGate, decision);
-            } catch {
-              // Holding couldn't be set up: never the paid page unsettled.
-              answer(res, unknownPayment(5));
-              return;
-            }
-            return next();
+        if (decision.action === "hold") {
+          try {
+            hold(res, siteGate, decision);
+          } catch {
+            sendSafely(res, unknownPayment(5)); // holding couldn't be set up: never the paid page unsettled
+            return;
           }
-          for (const [name, value] of Object.entries(decision.responseHeaders)) res.setHeader(name, value);
+          return next();
+        }
+        try {
+          if (Object.keys(decision.responseHeaders).length) overlay(res, decision.responseHeaders);
           if (decision.capture) copy(res, siteGate, decision.capture);
         } catch {
           // a header or copy the response refuses: the page is still served
@@ -63,6 +61,62 @@ export function gate(options: ExpressGateOptions = {}) {
       (error: unknown) => next(error),
     );
   };
+}
+
+/** Sends the gate's own answer; false when nothing could be sent (then a payment still never gets the page: a bare 503
+ * is tried). */
+function sendSafely(res: ServerResponse, decision: { status: number; headers: Record<string, string>; body: string }): boolean {
+  try {
+    answer(res, decision);
+    return true;
+  } catch {
+    try {
+      if (!res.headersSent) {
+        for (const name of res.getHeaderNames()) res.removeHeader(name);
+        res.statusCode = 503;
+      }
+      res.end();
+    } catch {
+      // nothing more can be sent
+    }
+    return false;
+  }
+}
+
+/** Stilebase's headers win over the site's, whenever the site sets them: applied as the headers go out. */
+function overlay(res: ServerResponse, headers: Record<string, string>): void {
+  const writeHead = res.writeHead as (...a: unknown[]) => ServerResponse;
+  res.writeHead = ((...args: unknown[]) => {
+    for (const [name, value] of Object.entries(headers)) safely(() => res.setHeader(name, value));
+    return writeHead.apply(res, withOverlay(args, headers));
+  }) as ServerResponse["writeHead"];
+}
+
+/** writeHead's arguments with the overlay's headers replacing same-name ones in its headers object or list. */
+function withOverlay(args: unknown[], headers: Record<string, string>): unknown[] {
+  const at = args.findIndex((a, i) => i > 0 && a !== null && typeof a === "object");
+  if (at < 0) return args;
+  const given = args[at];
+  const names = new Set(Object.keys(headers).map((n) => n.toLowerCase()));
+  const kept: Array<[string, string]> = Array.isArray(given)
+    ? (given as unknown[]).length && Array.isArray((given as unknown[])[0])
+      ? (given as Array<[string, string]>)
+      : pairs(given as string[])
+    : Object.entries(given as Record<string, string>);
+  const merged: Record<string, string | string[]> = {};
+  for (const [name, value] of [...kept.filter(([n]) => !names.has(String(n).toLowerCase())), ...Object.entries(headers)]) {
+    const before = merged[name];
+    merged[name] = before === undefined ? value : [...(Array.isArray(before) ? before : [before]), value];
+  }
+  const out = [...args];
+  out[at] = merged;
+  return out;
+}
+
+function pairs(flat: string[]): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) out.push([flat[i]!, flat[i + 1]!]);
+  return out;
 }
 
 function gateRequest(req: ExpressRequest, options: ExpressGateOptions): GateRequest {
@@ -118,19 +172,12 @@ function headerList(res: ServerResponse): Array<[string, string]> {
 function copy(res: ServerResponse, gate: Gate, capture: Capture): void {
   const started = Date.now();
   let ttfb: number | null = null;
-  const parts: Buffer[] = [];
-  let kept = 0;
-  let size = 0;
+  const copied = new Copy(capture.maxBytes);
   const take = (chunk: unknown, encoding?: unknown) => {
     const bytes = chunkOf(chunk, encoding);
     if (!bytes) return;
     ttfb ??= Date.now() - started;
-    size += bytes.byteLength;
-    if (kept < capture.maxBytes) {
-      const part = bytes.subarray(0, capture.maxBytes - kept);
-      parts.push(Buffer.from(part));
-      kept += part.byteLength;
-    }
+    copied.add(bytes);
   };
   const write: Write = res.write.bind(res);
   const end: End = res.end.bind(res);
@@ -145,9 +192,9 @@ function copy(res: ServerResponse, gate: Gate, capture: Capture): void {
       gate.capture(capture, {
         status: res.statusCode,
         headers: headerList(res),
-        body: Buffer.concat(parts),
-        size,
-        truncated: size > capture.maxBytes,
+        body: copied.bytes(),
+        size: copied.size,
+        truncated: copied.truncated,
         ttfbMs: ttfb ?? Date.now() - started,
       }),
     );
@@ -182,9 +229,11 @@ function hold(res: ServerResponse, gate: Gate, decision: Extract<GateDecision, {
     }
     const body = Buffer.concat(parts);
     const allowed = bodyAllowed(res.statusCode);
-    // Paid for: whatever Node refuses below, the page still goes out (a refused header is left out).
-    for (const [name, value] of Object.entries({ ...decision.responseHeaders, ...outcome.responseHeaders })) safely(() => res.setHeader(name, value));
-    if (headArgs) safely(() => res.writeHead(...(headArgs as Parameters<ServerResponse["writeHead"]>)));
+    // Paid for: whatever Node refuses below, the page still goes out (a refused header is left out). Stilebase's
+    // headers win over the route's, its writeHead's included.
+    const overlays = { ...decision.responseHeaders, ...outcome.responseHeaders };
+    for (const [name, value] of Object.entries(overlays)) safely(() => res.setHeader(name, value));
+    if (headArgs) safely(() => res.writeHead(...(withOverlay(headArgs!, overlays) as Parameters<ServerResponse["writeHead"]>)));
     if (capture) safely(() => gate.capture(capture, { status: res.statusCode, headers: headerList(res), body: body.subarray(0, capture.maxBytes), size, truncated: size > capture.maxBytes, ttfbMs: Date.now() - started }));
     end.apply(res, [allowed ? body : undefined, callback]);
   };

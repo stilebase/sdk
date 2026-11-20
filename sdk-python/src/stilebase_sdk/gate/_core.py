@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -42,7 +43,8 @@ class GateOptions:
     disabled: bool | None = None  # every request passes, nothing is asked; default: STILEBASE_DISABLED
     assume_https: bool = True  # send scheme https whatever the app sees (behind a TLS-terminating proxy)
     on_error: Callable[[Exception], None] | None = None  # default: a warning on this logger, at most once a minute each
-    now: Callable[[], float] = field(default=time.time)  # for tests: the time in seconds
+    now: Callable[[], float] = field(default=time.time)  # the time of day, for signing calls only (tests set it)
+    clock: Callable[[], float] = field(default=time.monotonic)  # every interval: never goes back (tests set it)
     transport: Any = None  # for tests: an httpx transport
 
 
@@ -92,7 +94,7 @@ class Settings:
             settle_timeout_ms=positive_integer(value.get("settle_timeout_ms"), d.settle_timeout_ms),
             breaker_failures=positive_integer(breaker.get("failures"), d.breaker_failures),
             breaker_open_seconds=positive_integer(breaker.get("open_seconds"), d.breaker_open_seconds),
-            remember_by=_strings(value.get("remember_by"), d.remember_by),
+            remember_by=_strings(value.get("remember_by"), d.remember_by) or d.remember_by,
             cache_max_entries=positive_integer(value.get("cache_max_entries"), d.cache_max_entries),
             strip_headers=_strings(value.get("strip_headers"), ()),
             forward_cookies=_strings(value.get("forward_cookies"), ()),
@@ -313,9 +315,11 @@ class Answer:
     usable: bool
     decision: Decision = PASS
     remember: float | None = None
+    counted: bool = True  # Stilebase's own answer (or failure); False: the gate's own wait, which the breaker ignores
 
 
 UNUSABLE = Answer(False)
+NOT_ASKED = Answer(False, counted=False)  # the request never reached Stilebase (a wait for a free connection)
 
 
 def read_answer(status: int, body: Any) -> Answer:
@@ -330,7 +334,7 @@ def read_answer(status: int, body: Any) -> Answer:
         content = body.get("body", "")
         if not (_integral(code) and 200 <= code <= 599) or not _string_map(headers) or not isinstance(content, str):
             return UNUSABLE
-        return Answer(True, respond(int(code), headers, content))
+        return Answer(True, respond(int(code), valid_headers(headers), content))
     if action == "unknown_payment":
         retry = body.get("retry_after")
         return Answer(True, unknown_payment(int(retry) if _integral(retry) and 1 <= retry <= 3600 else UNKNOWN_RETRY))
@@ -355,7 +359,17 @@ def read_answer(status: int, body: Any) -> Answer:
     remember = body.get("remember")
     seconds = remember.get("seconds") if isinstance(remember, dict) else None
     keep = float(seconds) if _integral(seconds) and seconds > 0 else None
-    return Answer(True, Pass(dict(response_headers), hold, capture), keep)
+    return Answer(True, Pass(valid_headers(response_headers), hold, capture), keep)
+
+
+_TOKEN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_BAD_VALUE = re.compile(r"[\r\n\x00]")
+
+
+def valid_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Stilebase's headers a gate may send: a name that isn't an HTTP token, or a value with CR, LF or NUL in it, is
+    left out (the rest of the answer stands). The one check every adapter relies on."""
+    return {name: value for name, value in headers.items() if _TOKEN.match(name) and not _BAD_VALUE.search(value)}
 
 
 def _string_map(value: Any) -> bool:
@@ -521,7 +535,7 @@ class Engine:
         self.site = parse_site_key(key)
         self.disabled = options.disabled if options.disabled is not None else _disabled_by_env()
         self.settings: Settings | None = None
-        self.settings_at = 0.0  # when the settings were last loaded (or tried); 0: never
+        self.settings_at: float | None = None  # when the settings were last loaded (or tried), on `clock`
         self.remembered = RememberCache()
         self.breaker = Breaker()
         self._warned: dict[str, float] = {}
@@ -543,7 +557,7 @@ class Engine:
 
     def settings_due(self) -> bool:
         every = max(self.settings.refresh_seconds, MIN_REFRESH) if self.settings else RETRY_WITHOUT_SETTINGS
-        return self.options.now() - self.settings_at >= every
+        return self.settings_at is None or self.options.clock() - self.settings_at >= every
 
     def take_settings(self, status: int, body: Any) -> None:
         """What the settings call answered. Any failure keeps the last good settings (a 401 after a rotated key), except
@@ -562,7 +576,7 @@ class Engine:
                 raise GateError("Stilebase sent settings this version can't read: every request passes")
             self.settings = settings
         finally:
-            self.settings_at = self.options.now()
+            self.settings_at = self.options.clock()
 
     def signed_post(self, name: str, payload: dict[str, Any]) -> tuple[str, bytes, dict[str, str]]:
         assert self.site is not None
@@ -578,7 +592,7 @@ class Engine:
     def before_asking(self, request: GateRequest, settings: Settings | None) -> Decision | Asking:
         """A decision made without asking (SPEC.md, section 6, steps 1-3 and 6), or `Asking`: ask."""
         payment = request.payment is not None
-        now = self.options.now()
+        now = self.options.clock()
         if settings is None or not settings.enabled:
             return PASS
         if self.breaker.is_open(now):
@@ -599,8 +613,8 @@ class Engine:
         """What the gate does with `decide`'s answer (SPEC.md, section 6, steps 5-6). `asking` None: a request that
         waited on another's decision: it does what it says, but never counts for the breaker, remembers or captures."""
         payment = request.payment is not None
-        if asking is not None:
-            self.breaker.record(answer.usable, self.options.now(), settings, asking)
+        if asking is not None and answer.counted:
+            self.breaker.record(answer.usable, self.options.clock(), settings, asking)
         if not answer.usable:
             return unknown_payment() if payment else PASS
         decision = answer.decision
@@ -613,7 +627,7 @@ class Engine:
             plain = hold is None and not decision.response_headers and decision.capture is None
             if asking is not None and answer.remember and not payment and plain:
                 # Only a plain pass is remembered: one with headers, a capture or a hold is about this request alone.
-                self.remembered.put(asking.key, self.options.now() + answer.remember, settings.cache_max_entries)
+                self.remembered.put(asking.key, self.options.clock() + answer.remember, settings.cache_max_entries)
         return decision
 
     def release(self, asking: Asking | None) -> None:

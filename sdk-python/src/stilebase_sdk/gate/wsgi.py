@@ -6,6 +6,7 @@ app.wsgi_app = GateMiddleware(app.wsgi_app)   # Flask; the key comes from STILEB
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
 from http import HTTPStatus
@@ -43,9 +44,11 @@ class GateMiddleware:
         self.gate = SyncGate(GateOptions(**options), adapter="wsgi")
 
     def __call__(self, environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
-        decision = self.gate.check(request_from_environ(environ, self.ip_header, self.client_ip))
+        request = request_from_environ(environ, self.ip_header, self.client_ip)
+        decision = self.gate.check(request)
         if isinstance(decision, Respond):
-            return _respond(start_response, decision)
+            sent = _send_gate_answer(start_response, decision, request.payment is not None, self.gate)
+            return sent if sent is not None else self.app(environ, start_response)  # refused, nothing paid: the site
         if decision.hold is not None:
             return self._held(environ, start_response, decision)
         if not decision.response_headers and decision.capture is None:
@@ -76,6 +79,11 @@ class GateMiddleware:
         result = self.app(environ, wrapped_start)
         if order is None or copy is None:
             return result
+        wrapper = environ.get("wsgi.file_wrapper")
+        if isinstance(wrapper, type) and isinstance(result, wrapper):
+            return result  # the server's sendfile path: kept, the capture skipped rather than lose it
+        if hasattr(result, "__len__"):
+            return _SizedCopying(result, self.gate, order, copy, seen)
         return _Copying(result, self.gate, order, copy, seen)
 
     def _held(self, environ: dict[str, Any], start_response: StartResponse, decision: Pass) -> Iterable[bytes]:
@@ -111,12 +119,12 @@ class GateMiddleware:
             except _NotPayable:
                 pass
             if held["cut"] or "status" not in held:  # can't be held, or the app answered nothing: never settled
-                return _respond(start_response, not_payable())
+                return _send_gate_answer(start_response, not_payable(), True, self.gate) or []
             status = _code(held["status"])
             body = b"".join(held["parts"])
             outcome = self.gate.settle(hold, status, body)
             if isinstance(outcome, Respond):
-                return _respond(start_response, outcome)
+                return _send_gate_answer(start_response, outcome, True, self.gate) or []
             headers = merge_headers(held["headers"], decision.response_headers, outcome.response_headers)
             start_response(held["status"], headers)
             if decision.capture is not None:
@@ -168,6 +176,14 @@ class _Copying:
                     self._gate.report(error)
 
 
+class _SizedCopying(_Copying):
+    """As `_Copying`, for an iterable with a length: the server still sees it (wsgiref sets Content-Length from a
+    single chunk), so wrapping changes nothing it sends."""
+
+    def __len__(self) -> int:
+        return len(self._result)  # type: ignore[arg-type]  # only made for an iterable that has one
+
+
 def _add(gate: SyncGate, copy: Copy, data: bytes) -> None:
     try:
         copy.add(bytes(data))
@@ -182,15 +198,34 @@ def _code(status: str) -> int:
         return 0
 
 
+def _send_gate_answer(start_response: StartResponse, decision: Respond, payment: bool, gate: SyncGate) -> list[bytes] | None:
+    """Start an answer the gate made (SPEC.md, section 10). If the server refuses it: None for a request without a
+    payment (it goes to the site); a request with a payment gets whatever bare 503 can still be sent, never the page."""
+    try:
+        return _respond(start_response, decision)
+    except Exception as error:
+        gate.report(error)
+        if not payment:
+            return None
+        try:
+            start_response("503 Service Unavailable", [], sys.exc_info())
+        except Exception as again:
+            gate.report(again)
+        return []
+
+
 def _respond(start_response: StartResponse, decision: Respond) -> list[bytes]:
+    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is."""
     try:
         phrase = HTTPStatus(decision.status).phrase
     except ValueError:
         phrase = ""
-    start_response(
-        f"{decision.status} {phrase}".rstrip(), [*decision.headers.items(), ("Content-Length", str(len(decision.body)))]
-    )
-    return [decision.body]
+    headers = list(decision.headers.items())
+    has_length = any(name.lower() == "content-length" for name, _ in headers)
+    if body_allowed(decision.status) and not has_length:  # never a second Content-Length, none on 204/205/304
+        headers.append(("content-length", str(len(decision.body))))
+    start_response(f"{decision.status} {phrase}".rstrip(), headers)
+    return [decision.body] if body_allowed(decision.status) else []
 
 
 def request_from_environ(

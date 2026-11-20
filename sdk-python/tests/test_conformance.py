@@ -112,12 +112,14 @@ def test_answers(case: dict[str, Any]) -> None:
             assert isinstance(decision, Pass)
             expected = case["capture"]
             assert decision.capture == (Capture(expected["token"], expected["max_bytes"]) if expected else None)
+        if "headers" in case:
+            assert isinstance(decision, Respond) and decision.headers == case["headers"]
         if "retry_after" in case:
             assert isinstance(decision, Respond) and decision.headers["retry-after"] == str(case["retry_after"])
         if case.get("remember_seconds") and not payment:
-            assert engine.remembered.get(remember_key(request, settings), engine.options.now())
+            assert engine.remembered.get(remember_key(request, settings), engine.options.clock())
         elif not payment:
-            assert not engine.remembered.get(remember_key(request, settings), engine.options.now())
+            assert not engine.remembered.get(remember_key(request, settings), engine.options.clock())
 
 
 def test_the_settings_example_is_read() -> None:

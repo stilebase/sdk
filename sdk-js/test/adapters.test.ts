@@ -91,11 +91,16 @@ describe("express", () => {
     expect([paid.status, await paid.text()]).toEqual([200, "done"]);
   });
 
-  it("answers an error, never the page, when its own answer can't be sent", async () => {
-    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 402, headers: { "x-bad": "a\nb" }, body: "pay" } });
+  it("leaves out a header Stilebase sent that isn't valid, and sends the rest", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 402, headers: { "x-bad": "a\nb", "x-ok": "1" }, body: "pay" } });
     const refused = await fetch(`${await site()}/listings`, { headers: PAID });
-    expect(refused.status).toBe(500);
-    expect(await refused.text()).not.toContain("the listings");
+    expect([refused.status, await refused.text(), refused.headers.get("x-ok"), refused.headers.get("x-bad")]).toEqual([402, "pay", "1", null]);
+  });
+
+  it("lets Stilebase's headers win over the route's, whenever it sets them", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", response_headers: { "x-site": "stilebase" } } });
+    const served = await fetch(`${await site()}/listings`, { headers: BROWSER });
+    expect([await served.text(), served.headers.get("x-site")]).toEqual(["the listings", "stilebase"]);
   });
 
   it("reports what the site answered a paid request, so a failure isn't charged", async () => {

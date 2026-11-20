@@ -73,7 +73,8 @@ A gate keeps its connection to Stilebase open and reuses it.
 boolean, or everyone passes.
 Any other field that's missing, of the wrong type, or (for a number) not a positive integer takes its default:
 `refresh_seconds` 300, `timeout_ms` 300, `settle_timeout_ms` 65000, `breaker` 5 failures / 30 seconds,
-`cache_max_entries` 10000, `settle_after.max_bytes` 10485760, `remember_by` `["client_ip", "user-agent", "path"]`, and
+`cache_max_entries` 10000, `settle_after.max_bytes` 10485760, `remember_by` `["client_ip", "user-agent", "path"]` (an
+empty list takes it too: a key of nothing would let one pass serve everyone), and
 empty lists for `strip_headers`, `forward_cookies` and `skip_paths`. `cookie`, `authorization` and
 `proxy-authorization` are never sent, whatever `strip_headers` says.
 
@@ -126,11 +127,12 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
 
    - `scheme`: how the visitor reached the site. Behind a TLS-terminating proxy that's `https`, whatever the app sees
      (the option `assumeHttps`, on by default).
-   - `path`: the path with the query, as the framework gives it; **never the host**.
+   - `path`: the path with the query, as the framework gives it, with a leading `/` added if it has none; **never the
+     host**.
    - `headers`: every header but `strip_headers`, names lowercased, in order, values as received; at most 100.
    - `cookies`: only the `forward_cookies` found in the `Cookie` header (split at `;`, names trimmed).
-   - `edge`: only on a platform that reports them (Cloudflare's `request.cf.asn`, `request.cf.httpProtocol`);
-     otherwise left out.
+   - `edge`: only on a platform that reports them (Cloudflare's `request.cf.asn`, `request.cf.httpProtocol`), with only
+     the fields known; otherwise left out.
    - `credentials`: `true` when the request carried a `Cookie` or `Authorization` header (which are never sent), so
      Stilebase never asks to capture a signed-in visitor's page (section 9).
    - **Never the request body.**
@@ -154,7 +156,9 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
    missing or `null` is none, otherwise an object of strings; `body` missing is `""`, otherwise a string.
    `settle_after.max_bytes` must be a positive integer, and a `settle_after` that isn't an object makes the answer
    unusable. `response_headers` must be an object of strings when present (it applies to a `settle_after` too).
-   `remember.seconds` that isn't a positive integer is ignored, as is a malformed `capture` (its `token` a string, its
+   **A header with an invalid name (not an HTTP token) or value (CR, LF or NUL in it), in `headers` or
+   `response_headers`, is left out**: the rest of the answer stands. `remember.seconds` that isn't a positive integer is
+   ignored, as is a malformed `capture` (its `token` a string, its
    `max_bytes` a positive integer). `retry_after` that isn't an integer from 1 to 3600 is 5.
 
    Anything else (an unknown `action`, a field of the wrong type, an error status, a body that isn't JSON, no answer
@@ -164,7 +168,9 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
    cancelled it), and the next request asks again. A request that waited on another's decision does what it says but
    never remembers it and never captures: only the request that asked does.
 6. **The breaker:** a decision that failed (no answer, an error status, a malformed answer) counts one failure; any
-   usable answer resets the count. At `breaker.failures` in a row the breaker **opens** for `breaker.open_seconds`:
+   usable answer resets the count. A failure is Stilebase's (no answer, an error status, a malformed answer), never the
+   gate's own (waiting for a free connection in its pool, a cancelled request): those count nothing. Times are
+   measured on a clock that never goes back (a monotonic clock), not the time of day. At `breaker.failures` in a row the breaker **opens** for `breaker.open_seconds`:
    everyone passes, requests with a payment get `503` with `Retry-After: 5`. Then it's **half open**: one request is
    asked (the others pass as while open); a usable answer closes it, a failure opens it again. A probe that hasn't
    finished within its budget (plus a second) is forgotten, and the next request probes. Only Stilebase's failures
@@ -226,9 +232,14 @@ A gate that doesn't support `capture` ignores it (unknown fields are ignored); S
 Every adapter builds what it sends the same way:
 
 - **Headers added to the site's answer** (`response_headers` from decide, then from settle): each **replaces** a header
-  of the same name (case-insensitive), never adds a second one; settle's win over decide's.
-- **No body** with `204`, `205` or `304`, whoever answered (the site, held; or Stilebase's `respond`).
+  of the same name (case-insensitive), never adds a second one; settle's win over decide's, and both win over any the
+  site sets, whenever it sets them (they're applied as the headers go out).
+- **No body** with `204`, `205` or `304`, whoever answered (the site, held; or Stilebase's `respond`), and no
+  `Content-Length` added to those.
 - **The gate's own answers**, each with `Content-Type: application/json` and `Cache-Control: no-store`:
   - a payment whose outcome isn't known: `503`, `Retry-After: <n>`, body `{"error":"payment_outcome_unknown"}`;
   - a paid answer that can't be held: `502`, body `{"error":"answer_not_payable"}`.
-- **`respond`**: Stilebase's status, headers and body, plus `Cache-Control: no-store` (replacing any).
+- **`respond`**: Stilebase's status, headers and body, plus `Cache-Control: no-store` (replacing any); no other header
+  is added (no default `Content-Type`).
+- **The gate can't send its own answer** (the server refuses it): a request without a payment goes to the site; one
+  with a payment gets whatever bare `503` can still be sent, never the page.

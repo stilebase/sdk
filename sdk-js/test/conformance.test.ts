@@ -70,6 +70,7 @@ describe("conformance", () => {
       expect(actual).toBe(expected);
       if ("response_headers" in v && (decision.action === "pass" || decision.action === "hold")) expect(decision.responseHeaders).toEqual(v.response_headers);
       if ("respond" in v && decision.action === "respond") expect({ status: decision.status, body: decision.body }).toEqual(v.respond);
+      if ("headers" in v && decision.action === "respond") expect(decision.headers).toEqual(v.headers);
       if ("retry_after" in v && decision.action === "respond") expect(decision.headers["retry-after"]).toBe(String(v.retry_after));
       if ("capture" in v && decision.action === "pass") expect(decision.capture).toEqual(v.capture ? { token: v.capture.token, maxBytes: v.capture.max_bytes } : null);
     }

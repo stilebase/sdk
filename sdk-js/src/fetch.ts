@@ -4,7 +4,7 @@
 
 import { type Gate, type GateOptions, type WaitUntil, addressFrom, addressOf, createGate, switchedOff } from "./core.js";
 import type { Capture, GateRequest } from "./protocol.js";
-import { bodyAllowed, mergeHeaders, normalizeIp } from "./protocol.js";
+import { Copy, bodyAllowed, mergeHeaders, normalizeIp } from "./protocol.js";
 
 export interface FetchGateOptions<Rest extends unknown[] = unknown[]> extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets). Default: on Cloudflare,
@@ -52,8 +52,9 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
       if (held.truncated) return toResponse(gate.tooLarge());
       const settled = await gate.settle(decision.ticket, { status: response.status, body: held.bytes });
       if (settled.action === "respond") return toResponse(settled);
-      if (decision.capture) gate.capture(decision.capture, captured(response, held, decision.capture, ttfbMs), waitUntil);
-      return rebuilt(response, bodyAllowed(response.status) ? held.bytes : null, decision.responseHeaders, settled.responseHeaders);
+      const sent = rebuilt(response, bodyAllowed(response.status) ? held.bytes : null, decision.responseHeaders, settled.responseHeaders);
+      if (decision.capture) gate.capture(decision.capture, captured(sent, held, decision.capture, ttfbMs), waitUntil); // as it goes out
+      return sent;
     }
 
     let served = response;
@@ -97,32 +98,19 @@ function gateRequest<Rest extends unknown[]>(request: Request, options: FetchGat
 
 /** A pass-through stream that keeps the first `max` bytes and counts the rest, then hands over the copy. */
 function copier(max: number, done: (copy: { bytes: Uint8Array; size: number; truncated: boolean }) => void): TransformStream<Uint8Array, Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let kept = 0;
-  let size = 0;
+  const copy = new Copy(max);
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       controller.enqueue(chunk);
       try {
-        size += chunk.byteLength;
-        if (kept < max) {
-          const part = chunk.slice(0, max - kept);
-          chunks.push(part);
-          kept += part.byteLength;
-        }
+        copy.add(chunk);
       } catch {
         // copying never gets in the visitor's way
       }
     },
     flush() {
       try {
-        const bytes = new Uint8Array(kept);
-        let at = 0;
-        for (const chunk of chunks) {
-          bytes.set(chunk, at);
-          at += chunk.byteLength;
-        }
-        done({ bytes, size, truncated: size > max });
+        done({ bytes: copy.bytes(), size: copy.size, truncated: copy.truncated });
       } catch {
         // nor does sending it
       }
@@ -130,34 +118,23 @@ function copier(max: number, done: (copy: { bytes: Uint8Array; size: number; tru
   });
 }
 
-/** A body read up to `max` bytes: what was read, the whole size and whether there was more. Reading stops past `max`. */
+/** A body read up to `max` bytes: what was read, the whole size so far and whether there was more (reading stops past
+ * `max`). */
 async function readUpTo(body: ReadableStream<Uint8Array> | null, max: number): Promise<{ bytes: Uint8Array; size: number; truncated: boolean }> {
-  if (!body) return { bytes: new Uint8Array(), size: 0, truncated: false };
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let kept = 0;
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (kept < max) {
-      const part = value.subarray(0, max - kept);
-      chunks.push(part);
-      kept += part.byteLength;
-    }
-    if (size > max) {
-      reader.cancel().catch(() => undefined);
-      break;
+  const copy = new Copy(max);
+  if (body) {
+    const reader = body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      copy.add(value);
+      if (copy.truncated) {
+        reader.cancel().catch(() => undefined);
+        break;
+      }
     }
   }
-  const bytes = new Uint8Array(kept);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return { bytes, size, truncated: size > max };
+  return { bytes: copy.bytes(), size: copy.size, truncated: copy.truncated };
 }
 
 function captured(response: Response, copy: { bytes: Uint8Array; size: number; truncated: boolean }, capture: Capture, ttfbMs: number) {

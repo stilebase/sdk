@@ -16,6 +16,7 @@ import httpx
 from ._core import (
     CAPTURE_QUEUE,
     CAPTURE_TIMEOUT,
+    NOT_ASKED,
     PASS,
     SETTINGS_TIMEOUT,
     UNUSABLE,
@@ -46,7 +47,12 @@ class SyncGate(Engine):
 
     def __init__(self, options: GateOptions | None = None, adapter: str = "sync", **kwargs: Any) -> None:
         super().__init__(options or GateOptions(**kwargs), adapter)
-        self._http = httpx.Client(transport=self.options.transport, follow_redirects=False)
+        # Never a queue for a free connection: each server thread's request gets one (a pool wait counts nothing anyway).
+        self._http = httpx.Client(
+            transport=self.options.transport,
+            follow_redirects=False,
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=100),
+        )
         self._settings_lock = threading.Lock()
         self._refreshing = False
         self._captures: queue.Queue[dict[str, Any]] = queue.Queue(CAPTURE_QUEUE)
@@ -124,15 +130,18 @@ class SyncGate(Engine):
             url, data, headers = self.signed_post(name, body)
             answer = self._http.post(url, content=data, headers=headers, timeout=budget)
             return read_answer(answer.status_code, json_body(answer.content))
+        except httpx.PoolTimeout as error:
+            self.report(error)
+            return NOT_ASKED  # waiting for a free connection is the gate's own wait: the breaker ignores it
         except Exception as error:
             self.report(error)
             return UNUSABLE
 
     def _settings(self) -> Settings | None:
-        if not self.settings_at:
+        if self.settings_at is None:
             if self._settings_lock.acquire(timeout=SETTINGS_TIMEOUT):  # one thread loads; the others wait for it
                 try:
-                    if not self.settings_at:
+                    if self.settings_at is None:
                         self._load_settings()
                 finally:
                     self._settings_lock.release()
@@ -159,7 +168,7 @@ class SyncGate(Engine):
             answer = self._http.get(self.api + self.path("settings"), headers=self.settings_headers(), timeout=timeout)
             self.take_settings(answer.status_code, json_body(answer.content))
         except Exception as error:
-            self.settings_at = self.options.now()
+            self.settings_at = self.options.clock()
             self.report(error)  # keep the last good settings, if any
 
     def _send_captures(self) -> None:

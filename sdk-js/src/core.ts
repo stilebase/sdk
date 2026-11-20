@@ -31,6 +31,10 @@ const CAPTURE_TIMEOUT_MS = 10_000;
 const MAX_CAPTURES_WAITING = 20;
 const UNKNOWN_RETRY_SECONDS = 5;
 const EMPTY = new Uint8Array();
+const MAX_ASKING = 1000;
+const started = Date.now() - (globalThis.performance?.now() ?? 0);
+/** Milliseconds on a clock that never goes back (performance.now), shaped like Date.now. */
+const monotonic = () => (globalThis.performance ? started + globalThis.performance.now() : Date.now());
 
 export interface GateOptions {
   /** The site key from your gateway page. Default: the STILEBASE_KEY environment variable. */
@@ -43,7 +47,7 @@ export interface GateOptions {
   assumeHttps?: boolean;
   /** Where the gate reports what went wrong. Default: a console warning, at most once a minute per message. */
   onError?: (error: Error) => void;
-  /** For tests: the fetch to reach Stilebase with, and the clock. */
+  /** For tests: the fetch to reach Stilebase with, and the clock (both for intervals and for signing). */
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -108,7 +112,8 @@ class SiteGate implements Gate {
   private readonly api: string;
   private readonly client: string;
   private readonly fetch: typeof fetch;
-  private readonly now: () => number;
+  private readonly now: () => number; // intervals: a clock that never goes back
+  private readonly wall: () => number; // signing: the time of day
   private readonly disabled: boolean;
   private readonly assumeHttps: boolean;
   private settings: GateSettings | null = null;
@@ -119,7 +124,7 @@ class SiteGate implements Gate {
   private settingsApplied = 0;
   private failures = 0; // the breaker: decisions failed in a row, when it's open until, and a half-open probe out
   private openUntil = 0;
-  private probingSince = 0; // the half-open probe out, and since when (0: none)
+  private probeUntil = 0; // the half-open probe out, and until when it counts as alive (0: none)
   private readonly remembered = new Map<string, number>(); // remember key -> expires (ms), oldest first
   private readonly asking = new Map<string, { answer: Promise<Answer>; since: number }>(); // decisions in flight
   private readonly warned = new Map<string, number>();
@@ -139,7 +144,8 @@ class SiteGate implements Gate {
     // Never a redirect (signed headers mustn't go elsewhere; a redirect is an answer like any other non-200).
     const given = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.fetch = (input, init) => given(input, { ...init, redirect: "manual" });
-    this.now = options.now ?? Date.now;
+    this.now = options.now ?? monotonic;
+    this.wall = options.now ?? Date.now;
     if (!this.site && !this.disabled) {
       this.report(new Error(key ? "STILEBASE_KEY isn't a site key (sbk_…): every request passes" : "STILEBASE_KEY isn't set: every request passes"));
     }
@@ -164,19 +170,18 @@ class SiteGate implements Gate {
     // A probe not finished within its budget (plus a second) was cancelled by its runtime: the next request probes.
     let probe = 0;
     if (this.openUntil) {
-      const budget = (paying ? settings.settle_timeout_ms : settings.timeout_ms) + 1000;
-      const probing = this.probingSince && this.now() - this.probingSince < budget;
-      if (this.now() < this.openUntil || probing) return paying ? unknownPayment(UNKNOWN_RETRY_SECONDS) : PASS;
-      probe = this.probingSince = this.now();
+      if (this.now() < this.openUntil || this.now() < this.probeUntil) return paying ? unknownPayment(UNKNOWN_RETRY_SECONDS) : PASS;
+      probe = this.probeUntil = this.now() + (paying ? settings.settle_timeout_ms : settings.timeout_ms) + 1000;
     }
     try {
-      return await this.decided(request, settings, paying, probe !== 0);
+      return await this.decided(request, settings, paying, probe);
     } finally {
-      if (probe && this.probingSince === probe) this.probingSince = 0;
+      if (probe && this.probeUntil === probe) this.probeUntil = 0;
     }
   }
 
-  private async decided(request: GateRequest, settings: GateSettings, paying: boolean, probe: boolean): Promise<GateDecision> {
+  /** `probe`: this request is the half-open probe (its deadline), 0 if not; a stale probe's outcome isn't counted. */
+  private async decided(request: GateRequest, settings: GateSettings, paying: boolean, probe: number): Promise<GateDecision> {
     const site = this.site!;
 
     const key = await sha256Hex(rememberMaterial(request, settings.remember_by));
@@ -190,10 +195,10 @@ class SiteGate implements Gate {
     }
 
     const budget = paying ? settings.settle_timeout_ms : settings.timeout_ms;
-    const body = decideBody(request, settings, this.assumeHttps);
     let answer: Answer;
+    let body: Record<string, unknown> | null = null;
     // A shared decision waiting longer than its budget is forgotten: the runtime may have cancelled it.
-    let inFlight = shared && !probe ? this.asking.get(shared) : undefined;
+    let inFlight = shared && probe === 0 ? this.asking.get(shared) : undefined;
     if (inFlight && this.now() - inFlight.since > budget) {
       this.asking.delete(shared!);
       inFlight = undefined;
@@ -202,16 +207,18 @@ class SiteGate implements Gate {
       answer = await withinBudget(inFlight.answer, budget);
       if (answer.kind === "pass") answer = { ...answer, capture: null, rememberSeconds: null }; // only the asker remembers or captures
     } else {
+      body = decideBody(request, settings, this.assumeHttps);
       const asked = this.ask(`/v1/gate/sites/${site.gatewayId}/decide`, body, budget);
       if (shared) {
-        // Entries a runtime left behind (cancelled leaders) are swept as new ones come.
-        for (const [k, e] of this.asking) if (this.now() - e.since > budget) this.asking.delete(k);
+        // Entries a runtime left behind (cancelled leaders) are swept once there are many.
+        if (this.asking.size > MAX_ASKING) for (const [k, e] of this.asking) if (this.now() - e.since > budget) this.asking.delete(k);
         const entry = { answer: asked, since: this.now() };
         this.asking.set(shared, entry);
         void asked.finally(() => this.asking.get(shared) === entry && this.asking.delete(shared));
       }
       answer = await asked;
-      this.breaker(answer.kind !== "unusable", settings);
+      // A probe forgotten as stale (another has started since) counts nothing.
+      if (probe === 0 || this.probeUntil === probe) this.breaker(answer.kind !== "unusable", settings);
     }
 
     switch (answer.kind) {
@@ -225,7 +232,7 @@ class SiteGate implements Gate {
         return respond(answer.status, answer.headers, answer.body);
       case "settle_after": {
         const maxBytes = Math.min(answer.maxBytes, settings.settle_after.max_bytes);
-        return { action: "hold", maxBytes, responseHeaders: answer.responseHeaders, capture: answer.capture, ticket: { body } };
+        return { action: "hold", maxBytes, responseHeaders: answer.responseHeaders, capture: answer.capture, ticket: { body: body ?? decideBody(request, settings, this.assumeHttps) } };
       }
       case "unknown_payment":
         return unknownPayment(answer.retryAfter);
@@ -355,7 +362,7 @@ class SiteGate implements Gate {
     const site = this.site!;
     const path = `/v1/gate/sites/${site.gatewayId}/settings`;
     try {
-      const headers = { ...(await signedHeaders(site.secret, "GET", path, EMPTY, this.now())), "Stilebase-Client": this.client };
+      const headers = { ...(await signedHeaders(site.secret, "GET", path, EMPTY, this.wall())), "Stilebase-Client": this.client };
       const answer = await this.fetch(this.api + path, { headers, signal: AbortSignal.timeout(SETTINGS_TIMEOUT_MS) });
       if (answer.status !== 200) discard(answer);
       if (answer.status === 404) {
@@ -386,7 +393,7 @@ class SiteGate implements Gate {
     const headers = {
       "content-type": "application/json",
       "Stilebase-Client": this.client,
-      ...(await signedHeaders(this.site!.secret, "POST", path, body, this.now())),
+      ...(await signedHeaders(this.site!.secret, "POST", path, body, this.wall())),
     };
     return this.fetch(this.api + path, { method: "POST", body, headers, signal: AbortSignal.timeout(timeoutMs) });
   }
