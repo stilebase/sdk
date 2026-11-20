@@ -34,7 +34,7 @@ from ._core import (
     read_answer,
     unknown_payment,
 )
-from ._http import LIMITS, budget
+from ._http import LIMITS, budget, kept
 from ._request import GateRequest
 
 
@@ -149,11 +149,21 @@ class AsyncGate(Engine):
         return self._http
 
     async def _ask(self, name: str, body: dict[str, Any], seconds: float) -> Answer:
-        """One call to Stilebase within `budget` seconds, connecting included; anything wrong is UNUSABLE."""
+        """One call to Stilebase within `seconds`, connecting included; anything wrong is UNUSABLE. Past its budget the
+        call isn't cancelled: it runs on in the background (at most KEEP_CONNECTING), keeping its connection."""
         try:
             url, data, headers = self.signed_post(name, body)
-            call = self.http.post(url, content=data, headers=headers, timeout=budget(seconds))
-            answer = await asyncio.wait_for(call, seconds)
+            call = asyncio.get_running_loop().create_task(
+                self.http.post(url, content=data, headers=headers, timeout=kept(seconds))
+            )
+            self._tasks.add(call)
+            call.add_done_callback(_settled_quietly)
+            call.add_done_callback(self._tasks.discard)
+            done, _ = await asyncio.wait({call}, timeout=seconds)  # a request cancelled meanwhile never cancels the call
+            if not done:
+                self.report(TimeoutError(f"Stilebase didn't answer within {round(seconds * 1000)} ms"))
+                return UNUSABLE
+            answer = call.result()
             return read_answer(answer.status_code, json_body(answer.content))
         except httpx.PoolTimeout as error:
             self.report(error)
@@ -200,3 +210,10 @@ class AsyncGate(Engine):
         self._tasks.add(task)  # keep a reference until it's done, or it may be collected mid-flight
         task.add_done_callback(self._tasks.discard)
         return task
+
+
+def _settled_quietly(task: asyncio.Task[Any]) -> None:
+    """A call the gate stopped waiting for may fail later: its error is the gate's to ignore (it was reported, or it
+    answered after its request had gone on)."""
+    if not task.cancelled():
+        task.exception()

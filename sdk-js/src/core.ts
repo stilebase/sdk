@@ -32,6 +32,9 @@ const MAX_CAPTURES_WAITING = 20;
 const UNKNOWN_RETRY_SECONDS = 5;
 const EMPTY = new Uint8Array();
 const MAX_ASKING = 1000;
+// A decision cut off by its budget isn't aborted: it runs on, at most this long, so the connection it was opening is
+// there for the next request (aborting it would make every call after an idle spell start, and lose, a new handshake).
+const KEEP_CONNECTING_MS = 10_000;
 const started = Date.now() - (globalThis.performance?.now() ?? 0);
 /** Milliseconds on a clock that never goes back (performance.now), shaped like Date.now. */
 const monotonic = () => (globalThis.performance ? started + globalThis.performance.now() : Date.now());
@@ -174,14 +177,20 @@ class SiteGate implements Gate {
       probe = this.probeUntil = this.now() + (paying ? settings.settle_timeout_ms : settings.timeout_ms) + 1000;
     }
     try {
-      return await this.decided(request, settings, paying, probe);
+      return await this.decided(request, settings, paying, probe, waitUntil);
     } finally {
       if (probe && this.probeUntil === probe) this.probeUntil = 0;
     }
   }
 
   /** `probe`: this request is the half-open probe (its deadline), 0 if not; a stale probe's outcome isn't counted. */
-  private async decided(request: GateRequest, settings: GateSettings, paying: boolean, probe: number): Promise<GateDecision> {
+  private async decided(
+    request: GateRequest,
+    settings: GateSettings,
+    paying: boolean,
+    probe: number,
+    waitUntil?: WaitUntil,
+  ): Promise<GateDecision> {
     const site = this.site!;
 
     const key = await sha256Hex(rememberMaterial(request, settings.remember_by));
@@ -208,7 +217,7 @@ class SiteGate implements Gate {
       if (answer.kind === "pass") answer = { ...answer, capture: null, rememberSeconds: null }; // only the asker remembers or captures
     } else {
       body = decideBody(request, settings, this.assumeHttps);
-      const asked = this.ask(`/v1/gate/sites/${site.gatewayId}/decide`, body, budget);
+      const asked = this.ask(`/v1/gate/sites/${site.gatewayId}/decide`, body, Math.max(budget, KEEP_CONNECTING_MS));
       if (shared) {
         // Entries a runtime left behind (cancelled leaders) are swept once there are many.
         if (this.asking.size > MAX_ASKING) for (const [k, e] of this.asking) if (this.now() - e.since > budget) this.asking.delete(k);
@@ -216,7 +225,13 @@ class SiteGate implements Gate {
         this.asking.set(shared, entry);
         void asked.finally(() => this.asking.get(shared) === entry && this.asking.delete(shared));
       }
-      answer = await asked;
+      const late = { kind: "unusable" } as const;
+      answer = await withinBudget(asked, budget, late);
+      if (answer === late) {
+        // Past the budget: the request goes on without Stilebase; the call finishes in the background.
+        this.report(new Error(`Stilebase didn't answer within ${budget} ms`));
+        if (waitUntil) waitUntil(asked);
+      }
       // A probe forgotten as stale (another has started since) counts nothing.
       if (probe === 0 || this.probeUntil === probe) this.breaker(answer.kind !== "unusable", settings);
     }
@@ -458,10 +473,11 @@ function safe<T>(work: () => T, fallback: T): T {
 }
 
 /** `promise`'s value, or "unusable" once `ms` have passed: this request's own deadline. */
-async function withinBudget<T>(promise: Promise<T>, ms: number): Promise<T | Answer> {
+/** The promise's value, or `late` (by default an unusable answer) once `ms` have passed; the promise isn't cancelled. */
+async function withinBudget<T>(promise: Promise<T>, ms: number, late: Answer = { kind: "unusable" }): Promise<T | Answer> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<Answer>((resolve) => {
-    timer = setTimeout(() => resolve({ kind: "unusable" }), ms);
+    timer = setTimeout(() => resolve(late), ms);
   });
   try {
     return await Promise.race([promise, deadline]);

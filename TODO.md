@@ -10,7 +10,9 @@ What's known and not yet done, each with why it waits. Review findings that aren
 - **An end-to-end run on dev** (Base Sepolia, real test USDC) through every adapter: Express, Fetch (a Worker), ASGI,
   WSGI and Django: a person served, an agent's 402, a paid page settled and delivered, a site error not charged, a
   capture received, and Stilebase down (everyone served, a payment 503). *Waits:* the journal, then this run, by hand,
-  before tagging.
+  before tagging. The first run (November 20, 2026, from Israel to dev in us-east-2) found that a decision cut off at
+  300 ms aborted the connection it was opening, so after 5 s idle every agent passed free: fixed (1 s budget, calls not
+  aborted, connections kept). The capture case waits for AgentView's API.
 
 ## Both SDKs
 

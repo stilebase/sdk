@@ -41,7 +41,7 @@ const DEFAULTS: GateSettings = {
   settings_version: SETTINGS_VERSION,
   enabled: true,
   refresh_seconds: 300,
-  timeout_ms: 300,
+  timeout_ms: 1000,
   settle_timeout_ms: 65_000,
   breaker: { failures: 5, open_seconds: 30 },
   remember_by: ["client_ip", "user-agent", "path"],

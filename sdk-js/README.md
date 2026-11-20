@@ -83,7 +83,7 @@ body), and does what Stilebase says:
   extension on the gateway page if a route of yours answers it with content.
 - With AgentView, Stilebase may ask for a copy of some answers (to people who aren't signed in, and to agents); the
   copy is sent in the background and never delays or changes the page.
-- If Stilebase can't be reached or answers late (300 ms), the request passes. After several failures in a row the
+- If Stilebase can't be reached or answers late (1 second), the request passes. After several failures in a row the
   gate stops asking for 30 seconds.
 
 ## Options

@@ -106,12 +106,36 @@ describe("deciding", () => {
   });
 
   it("lets the request through when Stilebase is slow or down; a payment gets 503", async () => {
+    stilebase.settings = { status: 200, body: settings({ timeout_ms: 50 }) };
     stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 402, headers: {}, body: "" }, delayMs: 1000 });
     const g = gate();
     expect((await g.check(request("/listings", GPTBOT))).action).toBe("pass");
     stilebase.decide = () => new Error("connection refused");
     expect((await g.check(request("/other", GPTBOT))).action).toBe("pass");
     expect(await g.check(request("/other", PAID))).toMatchObject({ action: "respond", status: 503, headers: { "retry-after": "5" } });
+  });
+
+  it("doesn't abort a decision past its budget: the connection it opens is kept for the next call", async () => {
+    stilebase.settings = { status: 200, body: settings({ timeout_ms: 50 }) };
+    stilebase.decide = () => ({ status: 200, body: { action: "pass" }, delayMs: 150 });
+    const signals: AbortSignal[] = [];
+    const watched = (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith(DECIDE) && init?.signal) signals.push(init.signal);
+      return stilebase.fetch(input, init);
+    };
+    const kept: Promise<unknown>[] = [];
+    const errors: string[] = [];
+    const g = gate({ fetch: watched, onError: (e) => errors.push(e.message) });
+    const started = Date.now();
+    const decision = await g.check(request("/listings", GPTBOT), (p) => kept.push(p));
+    expect(decision.action).toBe("pass"); // past its budget: the request goes on
+    expect(Date.now() - started).toBeLessThan(140);
+    expect(errors).toContain("Stilebase didn't answer within 50 ms");
+    const pending = kept.length; // the settings load, and the decision past its budget: a Worker keeps them running
+    await Promise.all(kept);
+    expect(pending).toBe(2);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.aborted).toBe(false); // it finished: its connection is open for the next call
   });
 
   it("never sends credentials, whatever the settings say", async () => {
