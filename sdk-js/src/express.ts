@@ -4,7 +4,7 @@ import type { ServerResponse } from "node:http";
 import { parse } from "node:url";
 
 import { type Gate, type GateDecision, type GateOptions, type SettleDecision, addressFrom, addressOf, createGate, unknownPayment } from "./core.js";
-import { type Capture, Copy, type GateRequest, bodyAllowed, normalizeIp } from "./protocol.js";
+import { type Capture, Copy, type GateRequest, bodyAllowed, normalizeIp, paymentOf } from "./protocol.js";
 
 /** The parts of Express's request the gate uses (no dependency on Express's types). */
 export interface ExpressRequest {
@@ -32,26 +32,20 @@ export interface ExpressGateOptions extends GateOptions {
 export function gate(options: ExpressGateOptions = {}) {
   const siteGate = createGate(options, "express");
   return function stilebaseGate(req: ExpressRequest, res: ExpressResponse, next: (error?: unknown) => void): void {
-    siteGate.check(gateRequest(req, options)).then(
+    const request = gateRequest(req, options);
+    const paying = paymentOf(request) !== null;
+    siteGate.check(request).then(
       (decision) => {
         if (decision.action === "respond") {
-          // The gate's own answer couldn't be sent: an error, as Express reports it, never the page.
-          try {
-            answer(res, decision);
-          } catch (error) {
-            next(error);
-          }
+          // The gate's own answer couldn't be sent: as for any failure, the site; a payment, a bare 503, never the page.
+          if (!sendOwn(res, decision, paying)) next();
           return;
         }
         if (decision.action === "hold") {
           try {
             hold(res, siteGate, decision);
           } catch {
-            try {
-              answer(res, unknownPayment(5)); // holding couldn't be set up: never the paid page unsettled
-            } catch (error) {
-              next(error);
-            }
+            sendOwn(res, unknownPayment(5), true); // holding couldn't be set up: never the paid page unsettled
             return;
           }
           return next();
@@ -69,6 +63,31 @@ export function gate(options: ExpressGateOptions = {}) {
   };
 }
 
+/** Sends the gate's own answer. If it can't be: false for a request without a payment (it goes to the site, nothing
+ * having been sent); for a payment, a bare 503 is tried and true returned (never the page). */
+function sendOwn(res: ServerResponse, decision: { status: number; headers: Record<string, string>; body: string }, paying: boolean): boolean {
+  try {
+    answer(res, decision);
+    return true;
+  } catch {
+    if (!paying && !res.headersSent) {
+      for (const name of res.getHeaderNames()) res.removeHeader(name);
+      res.statusCode = 200;
+      return false;
+    }
+    try {
+      if (!res.headersSent) {
+        for (const name of res.getHeaderNames()) res.removeHeader(name);
+        res.statusCode = 503;
+      }
+      res.end();
+    } catch {
+      // nothing more can be sent
+    }
+    return true;
+  }
+}
+
 /** Stilebase's headers win over the site's, whenever the site sets them: set now and again as the headers go out (their
  * values are ones every server accepts), with same-name headers dropped from the route's own writeHead. */
 function overlay(res: ServerResponse, headers: Record<string, string>): void {
@@ -84,20 +103,15 @@ function overlay(res: ServerResponse, headers: Record<string, string>): void {
 function withoutNames(args: unknown[], headers: Record<string, string>): unknown[] {
   const at = args.findIndex((a, i) => i > 0 && a !== null && typeof a === "object");
   if (at < 0) return args;
-  const given = args[at];
   const names = new Set(Object.keys(headers).map((n) => n.toLowerCase()));
-  const kept: Array<[string, string]> = Array.isArray(given)
-    ? (given as unknown[]).length && Array.isArray((given as unknown[])[0])
-      ? (given as Array<[string, string]>)
-      : pairs(given as string[])
-    : Object.entries(given as Record<string, string>);
-  const merged: Record<string, string | string[]> = {};
-  for (const [name, value] of kept.filter(([n]) => !names.has(String(n).toLowerCase()))) {
-    const before = merged[name];
-    merged[name] = before === undefined ? value : [...(Array.isArray(before) ? before : [before]), value];
-  }
+  const drop = (name: unknown) => names.has(String(name).toLowerCase());
+  const given = args[at];
+  let kept: unknown;
+  if (Array.isArray(given) && given.length && Array.isArray(given[0])) kept = (given as Array<[string, string]>).filter(([n]) => !drop(n));
+  else if (Array.isArray(given)) kept = pairs(given as string[]).filter(([n]) => !drop(n)).flat();
+  else kept = Object.fromEntries(Object.entries(given as Record<string, unknown>).filter(([n]) => !drop(n)));
   const out = [...args];
-  out[at] = merged;
+  out[at] = kept; // filtered in its own form: a list stays a list, repeated names stay repeated
   return out;
 }
 

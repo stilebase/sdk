@@ -776,15 +776,17 @@
           "status": 402,
           "headers": {
             "x-ok": "a b",
-            "x-euro": "pay €1",
+            "x-euro": "pay \u20ac1",
             "x-ctl": "a\u0001b",
+            "x-del": "a\u007fb",
             "x-space": " lead",
-            "x-del": "ab",
+            "x-tab": "a\tb",
             "connection": "close",
+            "proxy-authenticate": "Basic",
+            "trailers": "x",
             "Content-Length": "2",
             "transfer-encoding": "chunked",
-            "set-cookie\n": "x",
-            "x-tab": "a\tb"
+            "set-cookie\n": "x"
           },
           "body": "pay"
         },
@@ -796,7 +798,6 @@
         },
         "headers": {
           "x-ok": "a b",
-          "x-tab": "a\tb",
           "cache-control": "no-store"
         }
       }

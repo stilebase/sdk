@@ -6,13 +6,13 @@ app.wsgi_app = GateMiddleware(app.wsgi_app)   # Flask; the key comes from STILEB
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
-from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote
 
-from ._core import Capture, Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable
+from ._core import Capture, Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable, reason
 from ._request import GateRequest, address_from, headers_of
 from ._sync import SyncGate
 
@@ -43,9 +43,10 @@ class GateMiddleware:
         self.gate = SyncGate(GateOptions(**options), adapter="wsgi")
 
     def __call__(self, environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
-        decision = self.gate.check(request_from_environ(environ, self.ip_header, self.client_ip))
+        request = request_from_environ(environ, self.ip_header, self.client_ip)
+        decision = self.gate.check(request)
         if isinstance(decision, Respond):
-            return _respond(start_response, decision)  # refused by the server: its error, never the site (SPEC.md, 10)
+            return self._gate_answer(environ, start_response, decision, request.payment is not None)
         if decision.hold is not None:
             return self._held(environ, start_response, decision)
         if not decision.response_headers and decision.capture is None:
@@ -116,12 +117,12 @@ class GateMiddleware:
             except _NotPayable:
                 pass
             if held["cut"] or "status" not in held:  # can't be held, or the app answered nothing: never settled
-                return _respond(start_response, not_payable())
+                return self._gate_answer(environ, start_response, not_payable(), True)
             status = _code(held["status"])
             body = b"".join(held["parts"])
             outcome = self.gate.settle(hold, status, body)
             if isinstance(outcome, Respond):
-                return _respond(start_response, outcome)
+                return self._gate_answer(environ, start_response, outcome, True)
             headers = merge_headers(held["headers"], decision.response_headers, outcome.response_headers)
             start_response(held["status"], headers)
             if decision.capture is not None:
@@ -137,6 +138,30 @@ class GateMiddleware:
                     close()
                 except Exception as error:
                     self.gate.report(error)
+
+    def _gate_answer(
+        self, environ: dict[str, Any], start_response: StartResponse, decision: Respond, payment: bool
+    ) -> Iterable[bytes]:
+        """Start an answer the gate made (SPEC.md, section 10). If the server refuses it, it's reported, and the
+        replacement starts with that error's `exc_info` (PEP 3333 lets a server take new headers then): without a
+        payment the site answers; with one, a bare 503, never the page. Headers already sent: the server's error."""
+        try:
+            return _respond(start_response, decision)
+        except Exception as error:
+            self.gate.report(error)
+            refused = sys.exc_info()
+        if payment:
+            start_response("503 Service Unavailable", [], refused)
+            return []
+        first = [True]
+
+        def again(status: str, headers: list[tuple[str, str]], exc_info: Any = None) -> Any:
+            if first[0]:
+                first[0] = False
+                return start_response(status, headers, exc_info or refused)
+            return start_response(status, headers, exc_info)
+
+        return self.app(environ, again)
 
 
 class _NotPayable(Exception):
@@ -196,16 +221,12 @@ def _code(status: str) -> int:
 
 
 def _respond(start_response: StartResponse, decision: Respond) -> list[bytes]:
-    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is. If the server
-    refuses it, its error goes up: never the site's page."""
-    try:
-        phrase = HTTPStatus(decision.status).phrase
-    except ValueError:
-        phrase = ""
+    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is, its status line
+    always "NNN Phrase" ("520 Unknown")."""
     headers = list(decision.headers.items())  # never a Content-Length of Stilebase's: valid_headers drops it
     if body_allowed(decision.status):  # the real one; none on 204, 205, 304
         headers.append(("content-length", str(len(decision.body))))
-    start_response(f"{decision.status} {phrase}".rstrip(), headers)
+    start_response(f"{decision.status} {reason(decision.status)}", headers)
     return [decision.body] if body_allowed(decision.status) else []
 
 

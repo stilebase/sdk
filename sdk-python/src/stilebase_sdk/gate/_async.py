@@ -12,7 +12,6 @@ import httpx
 from ._core import (
     CAPTURE_QUEUE,
     CAPTURE_TIMEOUT,
-    LIMITS,
     NOT_ASKED,
     PASS,
     SETTINGS_TIMEOUT,
@@ -35,6 +34,7 @@ from ._core import (
     read_answer,
     unknown_payment,
 )
+from ._http import LIMITS, budget
 from ._request import GateRequest
 
 
@@ -112,7 +112,7 @@ class AsyncGate(Engine):
         try:
             settings = self.settings or Settings()
             url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
-            request = self.http.post(url, content=data, headers=headers, timeout=settings.settle_timeout)
+            request = self.http.post(url, content=data, headers=headers, timeout=budget(settings.settle_timeout))
             answer = await asyncio.wait_for(request, settings.settle_timeout)
             return self.settled(answer.status_code, json_body(answer.content))
         except Exception as error:
@@ -148,11 +148,12 @@ class AsyncGate(Engine):
             self._http = httpx.AsyncClient(transport=self.options.transport, follow_redirects=False, limits=LIMITS)
         return self._http
 
-    async def _ask(self, name: str, body: dict[str, Any], budget: float) -> Answer:
+    async def _ask(self, name: str, body: dict[str, Any], seconds: float) -> Answer:
         """One call to Stilebase within `budget` seconds, connecting included; anything wrong is UNUSABLE."""
         try:
             url, data, headers = self.signed_post(name, body)
-            answer = await asyncio.wait_for(self.http.post(url, content=data, headers=headers, timeout=budget), budget)
+            call = self.http.post(url, content=data, headers=headers, timeout=budget(seconds))
+            answer = await asyncio.wait_for(call, seconds)
             return read_answer(answer.status_code, json_body(answer.content))
         except httpx.PoolTimeout as error:
             self.report(error)

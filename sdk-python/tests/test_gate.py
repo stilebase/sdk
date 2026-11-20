@@ -641,9 +641,89 @@ def settings_object() -> Any:
     return Settings()
 
 
-def test_one_pool_size_for_both_gates() -> None:
-    from stilebase_sdk.gate._core import LIMITS
+# The last round
 
-    assert (LIMITS.max_connections, LIMITS.max_keepalive_connections) == (256, 100)
+
+def test_both_gates_get_the_one_pool_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from stilebase_sdk.gate._http import LIMITS
+
+    given: list[Any] = []
+
+    class Recording(httpx.Client):
+        def __init__(self, **kwargs: Any) -> None:
+            given.append(kwargs.get("limits"))
+            super().__init__(**kwargs)
+
+    class RecordingAsync(httpx.AsyncClient):
+        def __init__(self, **kwargs: Any) -> None:
+            given.append(kwargs.get("limits"))
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(httpx, "Client", Recording)
+    monkeypatch.setattr(httpx, "AsyncClient", RecordingAsync)
     sync = SyncGate(GateOptions(key=KEY, api_url=API, on_error=lambda e: None))
-    assert sync._http._transport._pool._max_connections == 256  # type: ignore[attr-defined]
+    sync.close()
+
+    async def run() -> None:
+        gate = AsyncGate(GateOptions(key=KEY, api_url=API, on_error=lambda e: None))
+        assert gate.http is not None
+        await gate.aclose()
+
+    asyncio.run(run())
+    assert given == [LIMITS, LIMITS]
+    assert (LIMITS.max_connections, LIMITS.max_keepalive_connections) == (1000, 100)
+
+
+def test_requests_queued_for_a_connection_count_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real AsyncClient, a slow local server and one connection: the request holding it times out (Stilebase slow:
+    one failure); the ones still waiting for the connection give up first, as pool waits, and count nothing."""
+    import http.server
+    import json
+    import threading
+    import time
+
+    import httpx
+
+    import stilebase_sdk.gate._async as driver
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+        def _answer(self, body: bytes) -> None:
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            self._answer(json.dumps(settings(timeout_ms=300)).encode())
+
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("content-length", "0")))
+            time.sleep(1.0)  # Stilebase too slow for the 300 ms budget
+            self._answer(b'{"action":"pass"}')
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(driver, "LIMITS", httpx.Limits(max_connections=1, max_keepalive_connections=1))
+    try:
+
+        async def run() -> int:
+            api = f"http://127.0.0.1:{server.server_address[1]}"
+            gate = AsyncGate(GateOptions(key=KEY, api_url=api, on_error=lambda e: None))
+            await gate.check(GateRequest("GET", "/static/x.css"))  # loads the settings (skipped path: nothing asked)
+            many = [GateRequest("GET", f"/p/{i}", (("User-Agent", GPTBOT),)) for i in range(4)]
+            await asyncio.gather(*(gate.check(r) for r in many))
+            failures = gate.breaker._failures
+            await gate.aclose()
+            return failures
+
+        assert asyncio.run(run()) == 1
+    finally:
+        server.shutdown()

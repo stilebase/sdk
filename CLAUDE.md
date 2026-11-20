@@ -18,7 +18,7 @@ customers. The SDKs talk only to Stilebase's public API.
   Entries `.` (the `gate` namespace, `VERSION`), `/gate` (`createGate`, framework-neutral), `/gate/express`,
   `/gate/fetch` (Workers, Hono, Bun, Deno). `protocol.ts` builds and reads the calls; `core.ts` is the gate.
 - `sdk-python/`: `stilebase-sdk`, Python 3.10+, depends only on `httpx`, hatchling, typed (`py.typed`, mypy strict).
-  `stilebase_sdk.gate`: `_core.py` is the gate without IO (reading settings and answers, skipped paths, remember keys,
+  `stilebase_sdk.gate`: `_core.py` is the gate without IO (no httpx; `_http.py` holds the client limits) (reading settings and answers, skipped paths, remember keys,
   the decide body, the breaker, the remembered answers); `AsyncGate` (`_async.py`) and `SyncGate` (`_sync.py`) make the
   calls to Stilebase. Adapters `asgi`, `wsgi`, `django` hold a paid answer until it's settled and copy one for capture.
 - `conformance/`: `vectors.json` and `settings.example.json`, the cases every gate must pass. Both SDKs test

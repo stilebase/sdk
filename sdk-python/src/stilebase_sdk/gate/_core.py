@@ -15,9 +15,8 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import Any, TypeGuard
-
-import httpx
 
 from .._version import PACKAGE, VERSION
 from ._request import JS_WHITESPACE, GateRequest, normalize_ip
@@ -30,9 +29,6 @@ MIN_REFRESH = 30.0
 RETRY_WITHOUT_SETTINGS = 30.0
 MAX_HEADERS = 100
 UNKNOWN_RETRY = 5
-# The connections each gate (async and sync alike) keeps to Stilebase: enough not to queue under load, bounded so a
-# flood can't exhaust the host. A wait for a free one that times out (PoolTimeout) is the gate's own, never counted.
-LIMITS = httpx.Limits(max_connections=256, max_keepalive_connections=100)
 CAPTURE_QUEUE = 20
 CAPTURE_TIMEOUT = 10.0
 
@@ -246,6 +242,14 @@ def not_payable() -> Respond:
     return _gate_answer(502, "answer_not_payable")
 
 
+def reason(status: int) -> str:
+    """A status line's reason phrase: the standard one, or "Unknown" (SPEC.md, section 10)."""
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return "Unknown"
+
+
 def holdable(status: int) -> bool:
     """Whether a site's answer with this status can be held and paid for (never a protocol switch, 1xx)."""
     return status >= 200
@@ -369,23 +373,34 @@ def read_answer(status: int, body: Any) -> Answer:
 
 
 _TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
-_VALUE = re.compile(r"[\t\x20-\x7e]*")
-# Never taken from Stilebase: connection-level headers (a server refuses or rewrites them) and the body's length (the
-# gate sets the real one).
+_VALUE = re.compile(r"[\x20-\x7e]*")
+# Never taken from Stilebase: hop-by-hop headers (a server refuses or rewrites them) and the body's length (the gate
+# sets the real one).
 _DROPPED = frozenset(
-    {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "content-length"}
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
 )
 
 
 def valid_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Stilebase's headers a gate may send (SPEC.md, section 6 step 5): a name that's an HTTP token (all of it), a value
-    of printable ASCII and tabs only, without leading or trailing space or tab; never a connection-level header or
-    Content-Length. Anything else is left out, and the rest of the answer stands. The one check every adapter relies
-    on: whatever passes it, every server accepts."""
+    of printable ASCII only (no tabs), without leading or trailing spaces; never a hop-by-hop header or Content-Length.
+    Anything else is left out, and the rest of the answer stands. The one check every adapter relies on."""
     return {
         name: value
         for name, value in headers.items()
-        if _TOKEN.fullmatch(name) and _VALUE.fullmatch(value) and value == value.strip(" \t") and name.lower() not in _DROPPED
+        if _TOKEN.fullmatch(name) and _VALUE.fullmatch(value) and value == value.strip(" ") and name.lower() not in _DROPPED
     }
 
 

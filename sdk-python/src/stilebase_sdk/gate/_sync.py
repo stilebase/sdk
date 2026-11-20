@@ -16,7 +16,6 @@ import httpx
 from ._core import (
     CAPTURE_QUEUE,
     CAPTURE_TIMEOUT,
-    LIMITS,
     NOT_ASKED,
     PASS,
     SETTINGS_TIMEOUT,
@@ -39,6 +38,7 @@ from ._core import (
     read_answer,
     unknown_payment,
 )
+from ._http import LIMITS, budget
 from ._request import GateRequest
 
 
@@ -88,7 +88,7 @@ class SyncGate(Engine):
         try:
             settings = self.settings or Settings()
             url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
-            answer = self._http.post(url, content=data, headers=headers, timeout=settings.settle_timeout)
+            answer = self._http.post(url, content=data, headers=headers, timeout=budget(settings.settle_timeout))
             return self.settled(answer.status_code, json_body(answer.content))
         except Exception as error:
             self.report(error)
@@ -119,12 +119,12 @@ class SyncGate(Engine):
         self.wait()
         self._http.close()
 
-    def _ask(self, name: str, body: dict[str, Any], budget: float) -> Answer:
+    def _ask(self, name: str, body: dict[str, Any], seconds: float) -> Answer:
         """One call to Stilebase within `budget` seconds for each step (connect, write, read); anything wrong is
         UNUSABLE."""
         try:
             url, data, headers = self.signed_post(name, body)
-            answer = self._http.post(url, content=data, headers=headers, timeout=budget)
+            answer = self._http.post(url, content=data, headers=headers, timeout=budget(seconds))
             return read_answer(answer.status_code, json_body(answer.content))
         except httpx.PoolTimeout as error:
             self.report(error)

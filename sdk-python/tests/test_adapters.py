@@ -559,79 +559,6 @@ def test_an_invalid_header_from_stilebase_is_left_out() -> None:
 # The last review: fail closed, and headers every server accepts
 
 
-def test_a_refused_gate_answer_never_runs_the_site() -> None:
-    """If the server refuses the gate's own answer, its error goes up, with or without a payment: never the page."""
-    import asyncio
-
-    from stilebase_sdk.gate.asgi import GateMiddleware as Asgi
-    from stilebase_sdk.gate.wsgi import GateMiddleware as Wsgi
-
-    for payment in (False, True):
-        answer = (200, {"action": "unknown_payment"}) if payment else (200, REQUIRED_402)
-        ran: list[str] = []
-
-        async def site(scope: Any, receive: Any, send: Any) -> None:
-            ran.append("asgi")  # noqa: B023 - called in this iteration
-
-        async def refusing(message: Any) -> None:
-            raise RuntimeError("the server refuses this answer")
-
-        async def receive() -> dict[str, Any]:
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        headers = [(b"user-agent", GPTBOT.encode())] + ([(b"payment-signature", PAYMENT.encode())] if payment else [])
-        scope = {"type": "http", "method": "GET", "scheme": "https", "path": "/", "raw_path": b"/", "query_string": b""}
-        scope |= {"headers": headers, "client": ("1.2.3.4", 1), "server": ("x", 443)}
-        stilebase = FakeStilebase(decide=answer)
-        asgi = Asgi(site, key=KEY, api_url=API, transport=stilebase.async_transport, on_error=lambda e: None)
-        try:
-            asyncio.run(asgi(scope, receive, refusing))
-            raise AssertionError("the server's error was swallowed")
-        except RuntimeError as error:
-            assert "refuses" in str(error)
-
-        def wsgi_site(environ: Any, start_response: Any) -> Any:
-            ran.append("wsgi")  # noqa: B023 - called in this iteration
-            return [PAGE.encode()]
-
-        def refuse(status: str, headers: Any, exc_info: Any = None) -> Any:
-            raise RuntimeError("the server refuses this answer")
-
-        environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.url_scheme": "https", "HTTP_USER_AGENT": GPTBOT}
-        if payment:
-            environ["HTTP_PAYMENT_SIGNATURE"] = PAYMENT
-        wsgi = Wsgi(wsgi_site, key=KEY, api_url=API, transport=FakeStilebase(decide=answer).transport)
-        try:
-            wsgi(environ, refuse)
-            raise AssertionError("the server's error was swallowed")
-        except RuntimeError as error:
-            assert "refuses" in str(error)
-        assert ran == []
-
-
-def test_django_fails_closed_when_its_answer_cant_be_built(monkeypatch: Any) -> None:
-    _django()
-    from django.conf import settings
-    from django.test import RequestFactory
-
-    import stilebase_sdk.gate.django as adapter
-
-    def broken(decision: Any) -> Any:
-        raise RuntimeError("can't build it")
-
-    monkeypatch.setattr(adapter, "_response", broken)
-    ran: list[str] = []
-    settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": FakeStilebase(decide=(200, REQUIRED_402)).transport}
-    middleware = adapter.GateMiddleware(lambda request: ran.append("view"))
-    for headers in ({"HTTP_USER_AGENT": GPTBOT}, {"HTTP_USER_AGENT": GPTBOT, "HTTP_PAYMENT_SIGNATURE": PAYMENT}):
-        try:
-            middleware(RequestFactory().get("/", **headers))
-            raise AssertionError("the error was swallowed")
-        except RuntimeError:
-            pass
-    assert ran == []
-
-
 EVERY_KIND = {
     "x-ok": "a b",
     "x-tab": "a\tb",
@@ -659,8 +586,9 @@ def test_wsgiref_sends_what_stilebase_asked_for() -> None:
     head, _, body = sent.partition(b"\r\n\r\n")
     assert head.startswith(b"HTTP/1.0 402") and body == b"pay"
     lines = head.lower().split(b"\r\n")
-    assert b"x-ok: a b" in lines and b"x-tab: a\tb" in lines and b"content-length: 3" in lines
-    assert not any(line.startswith((b"connection", b"transfer-encoding", b"x-ctl", b"x-space", b"x-euro")) for line in lines)
+    assert b"x-ok: a b" in lines and b"content-length: 3" in lines
+    dropped = (b"connection", b"transfer-encoding", b"x-ctl", b"x-space", b"x-euro", b"x-tab")
+    assert not any(line.startswith(dropped) for line in lines)
 
 
 def test_h11_accepts_what_the_asgi_gate_sends() -> None:
@@ -690,3 +618,168 @@ def test_h11_accepts_what_the_asgi_gate_sends() -> None:
             raise AssertionError(f"h11 accepted {bad}")
         except h11.LocalProtocolError:
             pass
+
+
+# The last round: fail open, on real servers
+
+
+class _RefusingHandler:
+    """wsgiref's own handler, made to refuse one status the way a server does: after recording it, as wsgiref's own
+    header assertions do (so a second start_response needs exc_info, PEP 3333)."""
+
+    @staticmethod
+    def make(refused: str) -> Any:
+        from wsgiref.handlers import SimpleHandler
+
+        class Refusing(SimpleHandler):
+            def start_response(self, status: str, headers: Any, exc_info: Any = None) -> Any:
+                write = super().start_response(status, headers, exc_info)
+                if status.startswith(refused) and exc_info is None:
+                    raise AssertionError(f"this server refuses {status}")
+                return write
+
+        return Refusing
+
+
+def _wsgiref_with(handler: Any, app: Any, environ_extra: dict[str, Any]) -> bytes:
+    import io
+    from wsgiref.util import setup_testing_defaults
+
+    environ: dict[str, Any] = {}
+    setup_testing_defaults(environ)
+    environ.update(environ_extra)
+    out = io.BytesIO()
+    handler(io.BytesIO(), out, io.StringIO(), environ).run(app)
+    return out.getvalue()
+
+
+def test_wsgiref_a_refused_gate_answer_falls_back() -> None:
+    """Without a payment the site answers; with one, a bare 503, never the page. Each refusal is reported."""
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    def site(environ: Any, start_response: Any) -> Any:
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return [PAGE.encode()]
+
+    for payment, answer, expected in (
+        (False, REQUIRED_402, b"HTTP/1.0 200"),
+        (True, {"action": "unknown_payment"}, b"HTTP/1.0 503"),
+    ):
+        errors: list[Exception] = []
+        stilebase = FakeStilebase(decide=(200, answer))
+        gate = GateMiddleware(site, key=KEY, api_url=API, transport=stilebase.transport, on_error=errors.append)
+        extra = {"HTTP_USER_AGENT": GPTBOT} | ({"HTTP_PAYMENT_SIGNATURE": PAYMENT} if payment else {})
+        refused = "402" if not payment else "503 Service Unavailable"
+        sent = _wsgiref_with(_RefusingHandler.make(refused), gate, extra)
+        assert sent.startswith(expected) and (PAGE.encode() in sent) is (not payment)
+        assert any("refuses" in str(e) for e in errors)
+
+
+def test_wsgiref_status_line_for_a_status_without_a_phrase() -> None:
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    answer = {"action": "respond", "status": 520, "body": "x"}
+    gate = GateMiddleware(lambda e, s: [], key=KEY, api_url=API, transport=FakeStilebase(decide=(200, answer)).transport)
+    assert _wsgiref(gate, {"HTTP_USER_AGENT": GPTBOT}).startswith(b"HTTP/1.0 520 Unknown\r\n")
+
+
+def test_asgi_a_refused_gate_answer_falls_back() -> None:
+    import asyncio
+
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    for payment in (False, True):
+        errors: list[Exception] = []
+        answer = (200, {"action": "unknown_payment"}) if payment else (200, REQUIRED_402)
+        inner = Starlette(routes=[Route("/", lambda r: PlainTextResponse(PAGE))])
+        app = GateMiddleware(
+            inner, key=KEY, api_url=API, transport=FakeStilebase(decide=answer).async_transport, on_error=errors.append
+        )
+        sent: list[dict[str, Any]] = []
+
+        async def send(message: Any) -> None:
+            if message["type"] == "http.response.start" and message["status"] in (402, 503) and message["headers"]:
+                raise RuntimeError("the server refuses this answer")
+            sent.append(dict(message))  # noqa: B023 - called in this iteration
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        headers = [(b"user-agent", GPTBOT.encode())] + ([(b"payment-signature", PAYMENT.encode())] if payment else [])
+        scope = {"type": "http", "method": "GET", "scheme": "https", "path": "/", "raw_path": b"/", "query_string": b""}
+        scope |= {"headers": headers, "client": ("1.2.3.4", 1), "server": ("x", 443)}
+        asyncio.run(app(scope, receive, send))
+        body = b"".join(m.get("body", b"") for m in sent)
+        assert sent[0]["status"] == (503 if payment else 200) and (PAGE.encode() in body) is (not payment)
+        assert any("refuses" in str(e) for e in errors)
+
+
+def test_asgi_a_refused_paid_answer_is_reported() -> None:
+    import asyncio
+
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    errors: list[Exception] = []
+    inner = Starlette(routes=[Route("/", lambda r: PlainTextResponse(PAGE))])
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    app = GateMiddleware(inner, key=KEY, api_url=API, transport=stilebase.async_transport, on_error=errors.append)
+    sent: list[dict[str, Any]] = []
+
+    async def send(message: Any) -> None:
+        if message["type"] == "http.response.start" and message["status"] == 200:
+            raise RuntimeError("the server refuses the paid answer")
+        sent.append(dict(message))
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {"type": "http", "method": "GET", "scheme": "https", "path": "/", "raw_path": b"/", "query_string": b""}
+    scope |= {"headers": [(b"payment-signature", PAYMENT.encode())], "client": ("1.2.3.4", 1), "server": ("x", 443)}
+    asyncio.run(app(scope, receive, send))
+    assert any("refuses the paid answer" in str(e) for e in errors) and sent[0]["status"] == 503
+
+
+def test_django_a_gate_answer_that_cant_be_built_falls_back(monkeypatch: Any) -> None:
+    _django()
+    from django.conf import settings
+    from django.http import HttpResponse
+    from django.test import RequestFactory
+
+    import stilebase_sdk.gate.django as adapter
+
+    def broken(decision: Any) -> Any:
+        raise RuntimeError("can't build it")
+
+    monkeypatch.setattr(adapter, "_response", broken)
+    errors: list[Exception] = []
+    stilebase = FakeStilebase(decide=(200, REQUIRED_402))
+    settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": stilebase.transport, "on_error": errors.append}
+    middleware = adapter.GateMiddleware(lambda request: HttpResponse(PAGE))
+    assert middleware(RequestFactory().get("/", HTTP_USER_AGENT=GPTBOT)).content == PAGE.encode()
+    paid = middleware(RequestFactory().get("/", HTTP_USER_AGENT=GPTBOT, HTTP_PAYMENT_SIGNATURE=PAYMENT))
+    assert paid.status_code == 503 and PAGE.encode() not in paid.content
+    assert len([e for e in errors if "can't build" in str(e)]) == 2
+
+
+def test_django_gate_answers_carry_their_length() -> None:
+    _django()
+    from django.conf import settings
+    from django.test import RequestFactory
+
+    from stilebase_sdk.gate.django import GateMiddleware
+
+    for answer, length in (
+        ({"action": "respond", "status": 402, "body": "pay"}, "3"),
+        ({"action": "respond", "status": 204, "body": "x"}, None),
+    ):
+        settings.STILEBASE_GATE = {"key": KEY, "api_url": API, "transport": FakeStilebase(decide=(200, answer)).transport}
+        answered = GateMiddleware(lambda request: None)(RequestFactory().get("/", HTTP_USER_AGENT=GPTBOT))
+        assert answered.get("Content-Length") == length

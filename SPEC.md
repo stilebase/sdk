@@ -157,10 +157,10 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
    `settle_after.max_bytes` must be a positive integer, and a `settle_after` that isn't an object makes the answer
    unusable. `response_headers` must be an object of strings when present (it applies to a `settle_after` too).
    **Headers from Stilebase** (`headers`, `response_headers`) are kept only when every server accepts them: the name
-   an HTTP token (all of it), the value printable ASCII and tabs only (`\t`, `0x20`–`0x7e`), without leading or
-   trailing spaces or tabs. Any other header, and always `connection`, `keep-alive`, `proxy-connection`,
-   `transfer-encoding`, `upgrade`, `te`, `trailer` and `content-length` (the adapter sets the real length), **is left
-   out**: the rest of the answer stands. `remember.seconds` that isn't a positive integer is
+   an HTTP token (all of it), the value printable ASCII only (`0x20`–`0x7e`, no tabs), without leading or trailing
+   spaces. Any other header, and always the hop-by-hop ones (`connection`, `keep-alive`, `proxy-authenticate`,
+   `proxy-authorization`, `proxy-connection`, `te`, `trailer`, `trailers`, `transfer-encoding`, `upgrade`) and
+   `content-length` (the adapter sets the real length), **is left out**: the rest of the answer stands. `remember.seconds` that isn't a positive integer is
    ignored, as is a malformed `capture` (its `token` a string, its
    `max_bytes` a positive integer). `retry_after` that isn't an integer from 1 to 3600 is 5.
 
@@ -244,5 +244,7 @@ Every adapter builds what it sends the same way:
   - a paid answer that can't be held: `502`, body `{"error":"answer_not_payable"}`.
 - **`respond`**: Stilebase's status, headers and body, plus `Cache-Control: no-store` (replacing any); no other header
   is added (no default `Content-Type`).
-- **The gate can't send its own answer** anyway (the server refuses it): an error, as the server reports it, never the
-  page: a refused 402 is not a reason to serve the paid page.
+- **The gate can't send its own answer** anyway (the server refuses it, which the header rule above makes all but
+  impossible): as for any failure, a request without a payment goes to the site, and one with a payment gets a bare
+  `503`, never the page. The gate reports it.
+- **A status line** always has a reason phrase: the standard one, or `Unknown` for a status without one (`520 Unknown`).

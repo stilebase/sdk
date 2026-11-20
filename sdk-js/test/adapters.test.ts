@@ -22,11 +22,26 @@ describe("express", () => {
   let server: ReturnType<ReturnType<typeof express>["listen"]> | undefined;
   afterEach(() => server?.close());
 
-  async function site(options: Parameters<typeof expressGate>[0] = {}) {
+  async function site(options: Parameters<typeof expressGate>[0] = {}, refuse?: string) {
     const app = express();
+    if (refuse) {
+      // A server that refuses one header the gate sends (as a stricter runtime might).
+      app.use((_req, res, next) => {
+        const setHeader = res.setHeader.bind(res);
+        res.setHeader = ((name: string, value: unknown) => {
+          if (name.toLowerCase() === refuse) throw new TypeError("refused");
+          return setHeader(name, value as string);
+        }) as typeof res.setHeader;
+        next();
+      });
+    }
     app.use(expressGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined, ...options }));
     app.get("/listings", (_req, res) => {
       res.set("x-site", "yes").send("the listings");
+    });
+    app.get("/cookies", (_req, res) => {
+      res.writeHead(200, ["Set-Cookie", "a=1", "set-cookie", "b=2", "x-site", "route"]);
+      res.end("ok");
     });
     app.get("/stream", (_req, res) => {
       res.status(200);
@@ -103,6 +118,22 @@ describe("express", () => {
     const answered = await fetch(`${await site()}/listings`, { headers: GPTBOT });
     expect([answered.status, await answered.text(), answered.headers.get("x-ok"), answered.headers.get("x-euro"), answered.headers.get("x-ctl")]).toEqual([402, "pay", "a b", null, null]);
     expect(answered.headers.get("content-length")).toBe("3");
+  });
+
+  it("fails open when its own answer is refused: the site for a visitor, never the page for a payment", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "respond", status: 402, headers: { "x-refused": "1" }, body: "pay" } });
+    const visitor = await fetch(`${await site({}, "x-refused")}/listings`, { headers: GPTBOT });
+    expect([visitor.status, await visitor.text()]).toEqual([200, "the listings"]);
+    server?.close();
+    const payer = await fetch(`${await site({}, "x-refused")}/listings`, { headers: PAID });
+    expect(payer.status).toBe(503);
+    expect(await payer.text()).not.toContain("the listings");
+  });
+
+  it("keeps the route's repeated headers when Stilebase's win", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", response_headers: { "x-site": "stilebase" } } });
+    const served = await fetch(`${await site()}/cookies`, { headers: BROWSER });
+    expect([served.headers.getSetCookie(), served.headers.get("x-site")]).toEqual([["a=1", "b=2"], "stilebase"]);
   });
 
   it("lets Stilebase's headers win over the route's, whenever it sets them", async () => {

@@ -11,12 +11,11 @@ import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping
-from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote
 
 from ._async import AsyncGate
-from ._core import Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable
+from ._core import Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable, reason
 from ._request import GateRequest, address_from, headers_of
 
 Scope = MutableMapping[str, Any]
@@ -75,9 +74,11 @@ class GateMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        decision = await self.gate.check(self.request(scope))
+        request = self.request(scope)
+        decision = await self.gate.check(request)
         if isinstance(decision, Respond):
-            await _send_response(send, decision)  # refused by the server: its error, never the site (SPEC.md, section 10)
+            if not await self._gate_answer(send, decision, request.payment is not None):
+                await self.app(scope, receive, send)  # refused before anything went out, nothing paid: the site
             return
         if decision.hold is not None:
             await self._held(scope, receive, send, decision)
@@ -124,17 +125,25 @@ class GateMiddleware:
         async def finish(answer: Respond | None) -> None:
             held["done"] = True
             if answer is not None:
-                await _send_response(send, answer)
+                await self._gate_answer(send, answer, True)
                 return
             status = int(held["start"].get("status", 200))
             body = b"".join(held["parts"])
             outcome = await self.gate.settle(hold, status, body)
             if isinstance(outcome, Respond):
-                await _send_response(send, outcome)
+                await self._gate_answer(send, outcome, True)
                 return
             headers = merge_headers(_text(held["start"].get("headers", [])), decision.response_headers, outcome.response_headers)
-            await send({**held["start"], "headers": _raw(headers)})
-            await send({"type": "http.response.body", "body": body if body_allowed(status) else b"", "more_body": False})
+            started = False
+            try:
+                await send({**held["start"], "headers": _raw(headers)})
+                started = True
+                await send({"type": "http.response.body", "body": body if body_allowed(status) else b"", "more_body": False})
+            except Exception as error:
+                self.gate.report(error)  # the server refused the paid answer
+                if not started:
+                    await _bare_503(send, self.gate)
+                return
             if decision.capture is not None:
                 copy = Copy(decision.capture.max_bytes)
                 copy.add(body)
@@ -174,6 +183,28 @@ class GateMiddleware:
         if not held["done"] and "start" in held:
             await finish(None)  # the app returned without a last body message: what it sent is its answer
 
+    async def _gate_answer(self, send: Send, decision: Respond, payment: bool) -> bool:
+        """Send an answer the gate made (SPEC.md, section 10). Refused by the server before anything went out: reported;
+        False for a request without a payment (the site answers it); one with a payment gets a bare 503."""
+        started = False
+
+        async def tracking(message: Message) -> None:
+            nonlocal started
+            await send(message)
+            started = started or message["type"] == "http.response.start"
+
+        try:
+            await _send_response(tracking, decision)
+            return True
+        except Exception as error:
+            self.gate.report(error)
+            if started:
+                return True  # it began going out: nothing else can be sent
+        if not payment:
+            return False
+        await _bare_503(send, self.gate)
+        return True
+
     def request(self, scope: Scope) -> GateRequest:
         pairs = tuple((k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers", []))
         client = scope.get("client")
@@ -206,15 +237,20 @@ def _text(headers: Any) -> list[tuple[str, str]]:
     return [(bytes(k).decode("latin-1"), bytes(v).decode("latin-1")) for k, v in headers]
 
 
+async def _bare_503(send: Send, gate: AsyncGate) -> None:
+    """For a payment whose answer couldn't be sent: whatever bare 503 the server still takes, never the page."""
+    try:
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+    except Exception as error:
+        gate.report(error)
+
+
 async def _send_response(send: Send, decision: Respond) -> None:
     """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is, with its real
-    Content-Length (none for 204, 205, 304). If the server refuses it, its error goes up: never the site's page."""
+    Content-Length (none for 204, 205, 304)."""
     headers = _raw(decision.headers.items())
     if body_allowed(decision.status):
         headers.append((b"content-length", str(len(decision.body)).encode()))
-    try:
-        reason = HTTPStatus(decision.status).phrase
-    except ValueError:
-        reason = ""
-    await send({"type": "http.response.start", "status": decision.status, "headers": headers, "reason": reason})
+    await send({"type": "http.response.start", "status": decision.status, "headers": headers, "reason": reason(decision.status)})
     await send({"type": "http.response.body", "body": decision.body})

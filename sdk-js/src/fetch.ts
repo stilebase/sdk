@@ -166,9 +166,9 @@ function rebuilt(response: Response, body: BodyInit | null, ...overlays: Array<R
   }
 }
 
-/** The gate's own answer as a Response. A status or header the runtime refuses (a 1xx, a body on 204/205/304, a header
- * with a newline) never throws into the app: its body is dropped for a null-body status, the header is left out, and
- * a status that can't be sent at all becomes 502. */
+/** The gate's own answer as a Response (its headers are already ones every runtime accepts). It never throws into the
+ * app: a header the runtime still refuses is left out, a body is dropped for a null-body status, and a status that
+ * can't be sent at all becomes 502. */
 function toResponse(decision: { status: number; headers: Record<string, string>; body: string }): Response {
   const status = decision.status >= 200 && decision.status <= 599 ? decision.status : 502;
   const headers = new Headers();

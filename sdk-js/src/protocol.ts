@@ -226,8 +226,20 @@ function stringRecord(value: unknown): Record<string, string> | null {
 }
 
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-const HEADER_VALUE = /^(?:[\x21-\x7e](?:[\t\x20-\x7e]*[\x21-\x7e])?)?$/;
-const NEVER_SENT = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "content-length"]);
+const HEADER_VALUE = /^(?:[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?)?$/;
+const NEVER_SENT = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "proxy-connection",
+  "te",
+  "trailer",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
+  "content-length",
+]);
 
 export function acceptedHeader(name: string, value: string): boolean {
   return HEADER_NAME.test(name) && HEADER_VALUE.test(value) && !NEVER_SENT.has(name.toLowerCase());
