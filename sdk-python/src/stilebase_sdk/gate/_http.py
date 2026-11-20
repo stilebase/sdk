@@ -10,7 +10,7 @@ import httpx
 KEEPALIVE = 50.0
 # A decision cut off by its budget isn't cancelled: it runs on, at most this long, so the connection it was opening is
 # there for the next request (cancelling it would make every call after an idle spell start, and lose, a new handshake).
-KEEP_CONNECTING = 3.0  # a TLS handshake from anywhere fits; few connections held through an outage
+KEEP_CONNECTING = 5.0  # the late call in all (a handshake and a slow answer); few connections held in an outage
 # The connections each gate keeps to Stilebase: enough not to queue under load, bounded so a flood can't exhaust the
 # host. A wait for a free one that runs out (PoolTimeout) is the gate's own, never counted against Stilebase.
 LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100, keepalive_expiry=KEEPALIVE)
@@ -21,12 +21,6 @@ def kept(seconds: float) -> httpx.Timeout:
     """httpx's timeouts for a decision the gate waits `seconds` for but lets run on (KEEP_CONNECTING) once it stops
     waiting; the wait for a pool connection is still the budget's, as in `budget`."""
     return httpx.Timeout(max(seconds, KEEP_CONNECTING), pool=max(seconds - POOL_MARGIN, seconds / 2))
-
-
-def steps(seconds: float) -> httpx.Timeout:
-    """The sync gate's timeouts for a decision of `seconds`: httpx's sync client has no overall deadline, so the budget is
-    split across the steps (most of it to connecting, a handshake from far away), about 1.35 budgets at worst."""
-    return httpx.Timeout(connect=seconds * 0.6, write=seconds * 0.1, read=seconds * 0.4, pool=seconds * 0.25)
 
 
 def budget(seconds: float) -> httpx.Timeout:

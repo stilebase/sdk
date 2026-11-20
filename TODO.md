@@ -17,11 +17,12 @@ What's known and not yet done, each with why it waits. Review findings that aren
 ## Both SDKs
 
 - **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
-  runs on up to 3 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
+  runs on up to 5 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
   calls pass uncounted (`NOT_ASKED`); a cap on calls running late, or counting pool waits while some run late. JS
-  reports a late call twice (late, then its 3 s abort); Python reports only the first. Requests waiting on a late
+  reports a late call twice (late, then its 5 s abort); Python reports only the first. Requests waiting on a late
   leader: JS may still get its late answer, Python passes at the leader's budget. A late plain `pass` with `remember`
-  could still be remembered (it's dropped). The ASGI middleware never closes its gate, so a late call at shutdown is
+  could still be remembered (it's dropped). The sync gate aborts a call at its budget (per step: a request can wait
+  several budgets when Stilebase is slow); a small executor would give it an overall deadline and let calls run on. The ASGI middleware never closes its gate, so a late call at shutdown is
   destroyed pending. No test proves a late call's connection is pooled (the fakes have no pool). *Waits:* seen in
   production.
 

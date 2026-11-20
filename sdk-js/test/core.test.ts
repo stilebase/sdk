@@ -129,7 +129,7 @@ describe("deciding", () => {
     const started = Date.now();
     const decision = await g.check(request("/listings", GPTBOT), (p) => kept.push(p));
     expect(decision.action).toBe("pass"); // past its budget: the request goes on
-    expect(Date.now() - started).toBeLessThan(600); // the budget, never the call (800 ms)
+    expect(Date.now() - started).toBeLessThan(400); // the budget (50 ms), never the call (800 ms)
     expect(errors).toContain("Stilebase didn't answer within 50 ms");
     const pending = kept.length; // the settings load, and the decision past its budget: a Worker keeps them running
     await Promise.all(kept);

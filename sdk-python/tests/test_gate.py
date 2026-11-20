@@ -189,7 +189,7 @@ def test_a_decision_past_its_budget_runs_on_and_keeps_its_connection() -> None:
         loop = asyncio.get_running_loop()
         started = loop.time()
         assert await gate.check(AGENT) == Pass()  # past its budget: the request goes on
-        assert loop.time() - started < 0.6  # the budget, never the call (0.8 s)
+        assert loop.time() - started < 0.4  # the budget (0.05 s), never the call (0.8 s)
         assert "Stilebase didn't answer within 50 ms" in errors
         assert slow.to("decide") == []  # still running
         await gate.aclose()
@@ -202,16 +202,12 @@ def test_idle_connections_are_kept_a_minute() -> None:
     assert LIMITS.keepalive_expiry == 50.0
 
 
-def test_the_sync_gate_splits_a_decisions_budget_across_the_steps() -> None:
+def test_the_sync_gate_gives_each_step_a_decisions_whole_budget() -> None:
+    """It can't leave a call running, so a new connection's handshake gets the whole budget, not a share of it."""
     stilebase = FakeStilebase(settings_answer=(200, settings(timeout_ms=1000)), decide=(200, REQUIRED_402))
-    gate = sync_gate(stilebase)
-    gate.check(AGENT)
-    gate.check(PAYING)
-    person, paying = stilebase.to("decide")
-    assert (person.timeout["connect"], person.timeout["write"], person.timeout["read"]) == (0.6, 0.1, 0.4)
-    assert (
-        paying.timeout["read"] == 65.0
-    )  # a payment's budget stays per step  # httpx's default 5 s: a TLS handshake from far away costs the whole budget
+    sync_gate(stilebase).check(AGENT)
+    [person] = stilebase.to("decide")
+    assert (person.timeout["connect"], person.timeout["read"]) == (1.0, 1.0)
 
 
 def test_a_paid_answer_is_settled_with_its_delivery() -> None:
@@ -320,7 +316,7 @@ def test_every_call_carries_its_own_budget() -> None:
         assert stilebase.to("settings")[0].timeout["read"] == 3.0
         # The gate waits a payment's budget, then a person's; the calls themselves may run on (KEEP_CONNECTING), while the
         # wait for a pool connection stays within the budget.
-        assert [c.timeout["read"] for c in stilebase.to("decide")] == [7.0, 3.0]
+        assert [c.timeout["read"] for c in stilebase.to("decide")] == [7.0, 5.0]
         assert [c.timeout["pool"] for c in stilebase.to("decide")] == [6.95, 0.2]
         assert stilebase.to("settle")[0].timeout["read"] == 7.0  # never httpx's default 5 s
         assert stilebase.to("captures")[0].timeout["read"] == 10.0

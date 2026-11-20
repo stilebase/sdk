@@ -142,13 +142,15 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
    their own budget), and do what it says.
 
    **The connection outlives the budget.** A call past its budget is **not aborted**: the request goes on without
-   Stilebase (a failure, as below), and the call runs on in the background, at most 3 seconds in all (on Workers,
-   through `waitUntil`), its answer unused. Aborting it would also abort the connection it was opening, so after an idle spell
-   every call would start a new TLS handshake, which from far away takes longer than the budget, and lose it again:
-   the gate would let every agent through. Idle connections to Stilebase are kept nearly a minute (50 seconds) where the
-   HTTP client lets the gate choose (Stilebase's server says `Keep-Alive: timeout=60` for the clients that follow it).
-   A synchronous gate that can't leave a call running (the Python `SyncGate`) splits the budget across the network
-   steps instead, most of it to connecting (a new connection's handshake): 0.6 to connect, 0.1 to send, 0.4 to read.
+   Stilebase (a failure, as below), and the call runs on in the background, at most 5 seconds in all (on Workers,
+   through `waitUntil`), its answer unused. Aborting it would also abort the connection it was opening, so after an
+   idle spell every call would start a new TLS handshake, which from far away takes longer than the budget, and lose
+   it again: the gate would let every agent through. Idle connections to Stilebase are kept nearly a minute (50
+   seconds) where the HTTP client lets the gate choose (over HTTP/1.1, Stilebase's server says `Keep-Alive:
+   timeout=60` for the clients that follow it; HTTP/2 has no such header). A synchronous gate that can't leave a call
+   running (the Python `SyncGate`) gives each network step (connecting, the TLS handshake, sending, each read) the
+   whole budget instead, so a new connection's handshake fits; a request can then wait several budgets when Stilebase
+   is slow.
 5. **Do what the answer says** (an HTTP 200 with a JSON object):
 
    | `action` | The gate |
