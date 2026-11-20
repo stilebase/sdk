@@ -64,16 +64,20 @@ publish job gets only the built files and publishes them through trusted publish
 provenance. Pushing the tag is the release: there's no approval step after it. The publish jobs run in the `release`
 environment, which has no reviewers and only one rule: only `sdk-js-v*` and `sdk-py-v*` tags may use it. The trusted
 publishers on npm and PyPI accept only that environment, so a branch run (an edited `release.yml` included) can't
-publish through them. Bump the version and `CHANGELOG.md` in a pull request first.
+publish through them. Bump the version and `CHANGELOG.md` in a pull request first. **Don't push a tag while any item
+in `TODO.md` under "Before releasing <that version>" is open**: they're what has to be true at Stilebase for the
+release to work (a gate whose calls fail lets everyone through).
 
 Before pushing a tag, check that the tagged commit is on `main` and that its `release.yml` is the same as on the head
 of `main` (or that you understand every difference): the tagged commit's copy is the one that runs, its "on main"
 check included. To abandon a release whose run didn't publish, delete the run (a re-run would publish it).
 
-The first npm release can't use trusted publishing yet (npm configures it on an existing package). Push the
-`sdk-js-v0.1.0` tag and let the workflow build, check and smoke-test it; its publish step fails. Download that run's
-`npm-package` artifact, check its SHA-256 against the build job's output, and publish exactly that file by hand:
-`npm publish stilebase-sdk-0.1.0.tgz --access public --ignore-scripts` (logged in with 2FA). Then add the trusted
+The first npm release can't use trusted publishing yet (npm configures it on an existing package). First create the
+free npm organisation `stilebase` (it owns the `@stilebase` scope; do it early, it publishes nothing). Push the first
+version's tag (`sdk-js-v<version>`, today 0.2.0) and let the workflow build, check and smoke-test it; its publish step
+fails. Download that run's `npm-package` artifact, check its SHA-256 against the build job's output, and publish
+exactly that file by hand: `npm publish stilebase-sdk-<version>.tgz --access public --ignore-scripts` (logged in with
+2FA). Then add the trusted
 publisher (`stilebase/sdk`, `release.yml`, environment `release`) and require 2FA with tokens disallowed. Every later
 release goes through the workflow.
 

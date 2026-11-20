@@ -49,10 +49,8 @@ What's known and not yet done, each with why it waits. Review findings that aren
 
 ## At Stilebase, not in the SDKs
 
-- **Price unusual page URLs conservatively** (percent-encoding, dot segments, a `#`): a router may serve another page
-  than the one the gate names. *Waits:* a server-side change.
-- **Name the pass cookie `__Host-stilebase_pass`** in the settings, so a sibling subdomain can't plant one. *Waits:* a
-  settings change; strict detection is off by default.
+Server-side findings from these reviews (pricing unusual page URLs conservatively, a `__Host-` name for the pass
+cookie) are tracked at Stilebase, not here.
 
 ## @stilebase/sdk
 
@@ -67,7 +65,7 @@ What's known and not yet done, each with why it waits. Review findings that aren
 ## stilebase-sdk
 
 - **Django's middleware is sync only.** Under Django on ASGI every request hops to a thread, and a request with a
-  payment holds one for up to `settle_timeout_ms` (65 s). It needs an async middleware (`async_capable`). *Waits:*
-  sync Django, the common case, is fine.
+  payment holds one through two calls (`decide` and `settle`, each up to `settle_timeout_ms`, 65 s) plus the view: over
+  two minutes at worst. It needs an async middleware (`async_capable`). *Waits:* sync Django, the common case, is fine.
 - **The ASGI middleware doesn't gate WebSocket connections** (it passes every scope that isn't `http`). *Waits:* few
   sites serve their content over WebSockets.
