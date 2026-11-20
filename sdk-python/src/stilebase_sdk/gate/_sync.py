@@ -31,9 +31,10 @@ from ._core import (
     capture_body,
     decide_body,
     delivery,
+    holdable,
     json_body,
+    not_payable,
     read_answer,
-    too_large,
     unknown_payment,
 )
 from ._request import GateRequest
@@ -57,9 +58,8 @@ class SyncGate(Engine):
     def check(self, request: GateRequest) -> Decision:
         if not self.active:
             return PASS
-        settings: Settings | None = None
         asking: Asking | None = None
-        recorded = False
+        answered = False
         try:
             settings = self._settings()
             before = self.before_asking(request, settings)
@@ -69,20 +69,20 @@ class SyncGate(Engine):
             body = decide_body(request, settings, self.options.assume_https)
             budget = settings.settle_timeout if request.payment is not None else settings.timeout
             answer = self._ask("decide", body, budget)
-            recorded = True
+            answered = True
             return self.after_asking(request, settings, body, answer, asking)
         except Exception as error:
             self.report(error)
             return unknown_payment() if request.payment is not None else PASS
         finally:
-            if not recorded:  # failed before its answer was read: counted, and its probe freed
-                self.gave_up(settings, asking)
+            if not answered:  # ended without Stilebase's answer (a fault here): counts nothing
+                self.release(asking)
 
     def settle(self, hold: Hold, status: int, body: bytes) -> Decision:
         """The site answered a paid request (`body` its whole body, held): settle it (SPEC.md, section 7). `Pass`: send
         the held answer with its `response_headers`; anything else: send that instead."""
-        if len(body) > hold.max_bytes:
-            return too_large()
+        if len(body) > hold.max_bytes or not holdable(status):
+            return not_payable()
         try:
             settings = self.settings or Settings()
             url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
@@ -153,7 +153,10 @@ class SyncGate(Engine):
 
     def _load_settings(self) -> None:
         try:
-            answer = self._http.get(self.api + self.path("settings"), headers=self.settings_headers(), timeout=SETTINGS_TIMEOUT)
+            # httpx's sync client has no overall deadline: its steps share the 3 s, so the whole load stays near it (a
+            # read that trickles in byte by byte can still run longer: TODO.md).
+            timeout = httpx.Timeout(connect=1.0, write=0.5, read=1.0, pool=0.5)
+            answer = self._http.get(self.api + self.path("settings"), headers=self.settings_headers(), timeout=timeout)
             self.take_settings(answer.status_code, json_body(answer.content))
         except Exception as error:
             self.settings_at = self.options.now()

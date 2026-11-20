@@ -362,3 +362,103 @@ def test_a_held_answer_that_cant_carry_a_body_is_sent_without_one() -> None:
     held = GateMiddleware(lambda request: HttpResponseNotModified())(RequestFactory().get("/", HTTP_PAYMENT_SIGNATURE=PAYMENT))
     assert (held.status_code, held.content, held["payment-response"]) == (304, b"", RECEIPT)
     assert len(stilebase.to("settle")) == 3
+
+
+# Review cycle 3
+
+
+NOT_PAYABLE = b'{"error":"answer_not_payable"}'
+
+
+def test_wsgi_keeps_a_paid_page_whose_iterable_fails_to_close() -> None:
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    class Closing:
+        def __iter__(self) -> Any:
+            return iter([PAGE.encode()])
+
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    def app(environ: Any, start_response: Any) -> Any:
+        start_response("200 OK", [("Content-Type", "text/plain")])
+        return Closing()
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    errors: list[Exception] = []
+    gate = GateMiddleware(app, key=KEY, api_url=API, transport=stilebase.transport, on_error=errors.append)
+    started: list[Any] = []
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "HTTP_PAYMENT_SIGNATURE": PAYMENT, "wsgi.url_scheme": "https"}
+    body = gate(environ, lambda status, headers: started.append((status, headers)))
+    assert list(body) == [PAGE.encode()] and started[0][0] == "200 OK"
+    assert any("close failed" in str(e) for e in errors)
+
+
+def test_wsgi_an_app_that_never_answers_gets_not_payable() -> None:
+    from stilebase_sdk.gate.wsgi import GateMiddleware
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    gate = GateMiddleware(lambda environ, start_response: [], key=KEY, api_url=API, transport=stilebase.transport)
+    started: list[Any] = []
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "HTTP_PAYMENT_SIGNATURE": PAYMENT, "wsgi.url_scheme": "https"}
+    assert list(gate(environ, lambda status, headers: started.append(status))) == [NOT_PAYABLE]
+    assert started == ["502 Bad Gateway"] and stilebase.to("settle") == []
+
+
+def test_asgi_sends_the_paid_page_before_background_work_and_keeps_it_if_that_fails() -> None:
+    from starlette.applications import Starlette
+    from starlette.background import BackgroundTask
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    order: list[str] = []
+
+    def later() -> None:
+        order.append("background")
+        raise RuntimeError("background failed")
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    inner = Starlette(routes=[Route("/", lambda request: PlainTextResponse(PAGE, background=BackgroundTask(later)))])
+    errors: list[Exception] = []
+    app = GateMiddleware(inner, key=KEY, api_url=API, transport=stilebase.async_transport, on_error=errors.append)
+    sent = _asgi_call(app, "/", [(b"payment-signature", PAYMENT.encode())], {})
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"] and sent[1]["body"] == PAGE.encode()
+    assert order == ["background"] and len(stilebase.to("settle")) == 1
+    assert any("background failed" in str(e) for e in errors)
+
+
+def test_set_cookie_never_reaches_a_capture() -> None:
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    def page(request: Any) -> PlainTextResponse:
+        response = PlainTextResponse(PAGE)
+        response.set_cookie("session", "secret")
+        return response
+
+    stilebase = FakeStilebase(decide=(200, CAPTURE))
+    app = Starlette(routes=[Route("/", page)])
+    app.add_middleware(GateMiddleware, key=KEY, api_url=API, transport=stilebase.async_transport)
+    with TestClient(app) as client:
+        assert "session=secret" in client.get("/").headers["set-cookie"]  # the visitor still gets it
+    names = [name for name, _ in captured(stilebase)["headers"]]
+    assert "set-cookie" not in names and "content-type" in names
+
+
+def test_a_protocol_switch_is_never_held() -> None:
+    from stilebase_sdk.gate.asgi import GateMiddleware
+
+    async def switching(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 101, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER))
+    app = GateMiddleware(switching, key=KEY, api_url=API, transport=stilebase.async_transport)
+    sent = _asgi_call(app, "/", [(b"payment-signature", PAYMENT.encode())], {})
+    assert (sent[0]["status"], sent[1]["body"]) == (502, NOT_PAYABLE) and stilebase.to("settle") == []

@@ -5,7 +5,21 @@ import { describe, expect, it } from "vitest";
 import vectors from "../../conformance/vectors.json";
 import settingsExample from "../../conformance/settings.example.json";
 import { createGate } from "../src/core.js";
-import { type GateRequest, type GateSettings, decideBody, normalizeIp, parseSettings, readAnswer, rememberMaterial, skipped } from "../src/protocol.js";
+import {
+  type GateRequest,
+  type GateSettings,
+  bodyAllowed,
+  captureHeaders,
+  decideBody,
+  mergeHeaders,
+  normalizeIp,
+  notPayableAnswer,
+  parseSettings,
+  readAnswer,
+  rememberMaterial,
+  skipped,
+  unknownPaymentAnswer,
+} from "../src/protocol.js";
 import { parseSiteKey, sha256Hex, signedHeaders } from "../src/signing.js";
 import { API, FakeStilebase, KEY, NOW, PAYMENT, request } from "./fake-stilebase.js";
 
@@ -51,16 +65,34 @@ describe("conformance", () => {
       const gate = createGate({ key: KEY, apiUrl: API, fetch: stilebase.fetch, now: () => NOW });
       const decision = await gate.check(request("/listings", paying ? { "payment-signature": PAYMENT } : {}));
       const expected = paying ? v.with_payment : v.no_payment;
-      const unknown = decision.action === "respond" && decision.status === 503 && decision.body.includes("Payment settlement unavailable");
+      const unknown = decision.action === "respond" && decision.status === 503 && decision.body.includes("payment_outcome_unknown");
       const actual = decision.action === "hold" ? "settle_after" : unknown ? "unknown_payment" : decision.action;
       expect(actual).toBe(expected);
       if ("response_headers" in v && (decision.action === "pass" || decision.action === "hold")) expect(decision.responseHeaders).toEqual(v.response_headers);
       if ("respond" in v && decision.action === "respond") expect({ status: decision.status, body: decision.body }).toEqual(v.respond);
       if ("retry_after" in v && decision.action === "respond") expect(decision.headers["retry-after"]).toBe(String(v.retry_after));
+      if ("capture" in v && decision.action === "pass") expect(decision.capture).toEqual(v.capture ? { token: v.capture.token, maxBytes: v.capture.max_bytes } : null);
     }
     if ("remember_seconds" in v) {
       const answer = readAnswer(v.http_status, v.body);
       expect(answer.kind === "pass" ? answer.rememberSeconds : null).toBe(v.remember_seconds);
     }
+  });
+
+  describe("answers sent", () => {
+    it.each(vectors.answers_sent.merges)("merges headers %#", (v) => {
+      expect(mergeHeaders(v.site as Array<[string, string]>, ...(v.overlays as Array<Record<string, string>>))).toEqual(v.sent);
+    });
+    it.each(vectors.answers_sent.body_allowed)("a body with $status: $allowed", (v) => {
+      expect(bodyAllowed(v.status)).toBe(v.allowed);
+    });
+    it("keeps no cookies in a capture", () => {
+      for (const v of vectors.answers_sent.capture_headers) expect(captureHeaders(v.headers as Array<[string, string]>)).toEqual(v.kept);
+    });
+    it("sends the gate's own answers exactly", () => {
+      const own = vectors.answers_sent.gate_answers;
+      expect(unknownPaymentAnswer(own.unknown_payment.retry_after)).toEqual({ status: 503, headers: own.unknown_payment.headers, body: own.unknown_payment.body });
+      expect(notPayableAnswer()).toEqual({ status: 502, headers: own.not_payable.headers, body: own.not_payable.body });
+    });
   });
 });

@@ -9,10 +9,14 @@ import {
   type GateSettings,
   decideBody,
   defaultSettings,
+  notPayableAnswer,
+  respondAnswer,
+  unknownPaymentAnswer,
   isRecord,
   parseSettings,
   paymentOf,
   readAnswer,
+  captureHeaders,
   rememberMaterial,
   skipped,
 } from "./protocol.js";
@@ -115,7 +119,7 @@ class SiteGate implements Gate {
   private settingsApplied = 0;
   private failures = 0; // the breaker: decisions failed in a row, when it's open until, and a half-open probe out
   private openUntil = 0;
-  private probing = false;
+  private probingSince = 0; // the half-open probe out, and since when (0: none)
   private readonly remembered = new Map<string, number>(); // remember key -> expires (ms), oldest first
   private readonly asking = new Map<string, { answer: Promise<Answer>; since: number }>(); // decisions in flight
   private readonly warned = new Map<string, number>();
@@ -157,15 +161,18 @@ class SiteGate implements Gate {
     if (!settings || !settings.enabled) return PASS;
     if (!paying && skipped(request.path, settings.skip_paths)) return PASS;
     // The breaker: open, everyone passes (payments 503); half open, one request asks and the rest wait it out.
-    let probe = false;
+    // A probe not finished within its budget (plus a second) was cancelled by its runtime: the next request probes.
+    let probe = 0;
     if (this.openUntil) {
-      if (this.now() < this.openUntil || this.probing) return paying ? unknownPayment(UNKNOWN_RETRY_SECONDS) : PASS;
-      this.probing = probe = true;
+      const budget = (paying ? settings.settle_timeout_ms : settings.timeout_ms) + 1000;
+      const probing = this.probingSince && this.now() - this.probingSince < budget;
+      if (this.now() < this.openUntil || probing) return paying ? unknownPayment(UNKNOWN_RETRY_SECONDS) : PASS;
+      probe = this.probingSince = this.now();
     }
     try {
-      return await this.decided(request, settings, paying, probe);
+      return await this.decided(request, settings, paying, probe !== 0);
     } finally {
-      if (probe) this.probing = false;
+      if (probe && this.probingSince === probe) this.probingSince = 0;
     }
   }
 
@@ -193,10 +200,12 @@ class SiteGate implements Gate {
     }
     if (inFlight) {
       answer = await withinBudget(inFlight.answer, budget);
-      if (answer.kind === "pass") answer = { ...answer, capture: null }; // a capture is the asker's own
+      if (answer.kind === "pass") answer = { ...answer, capture: null, rememberSeconds: null }; // only the asker remembers or captures
     } else {
       const asked = this.ask(`/v1/gate/sites/${site.gatewayId}/decide`, body, budget);
       if (shared) {
+        // Entries a runtime left behind (cancelled leaders) are swept as new ones come.
+        for (const [k, e] of this.asking) if (this.now() - e.since > budget) this.asking.delete(k);
         const entry = { answer: asked, since: this.now() };
         this.asking.set(shared, entry);
         void asked.finally(() => this.asking.get(shared) === entry && this.asking.delete(shared));
@@ -231,7 +240,8 @@ class SiteGate implements Gate {
       const settings = this.settings ?? defaultSettings(); // dropped meanwhile: the payment is still settled
       const payload = { ...ticket.body, delivery: { status: delivery.status, size: delivery.body.byteLength, sha256: await sha256Hex(delivery.body) } };
       const answer = await this.ask(`/v1/gate/sites/${this.site.gatewayId}/settle`, payload, settings.settle_timeout_ms);
-      if (answer.kind === "pass") return { action: "send", responseHeaders: answer.responseHeaders };
+      // A settle_after in a settle answer is ignored: it's a pass.
+      if (answer.kind === "pass" || answer.kind === "settle_after") return { action: "send", responseHeaders: answer.responseHeaders };
       if (answer.kind === "respond") return respond(answer.status, answer.headers, answer.body);
       return unknownPayment(answer.kind === "unknown_payment" ? answer.retryAfter : UNKNOWN_RETRY_SECONDS);
     } catch (error) {
@@ -241,7 +251,7 @@ class SiteGate implements Gate {
   }
 
   tooLarge(): Respond {
-    return respond(502, { "content-type": "application/json" }, JSON.stringify({ error: "This answer is too large to be paid for" }));
+    return { action: "respond", ...notPayableAnswer() };
   }
 
   capture(capture: Capture, answer: CapturedAnswer, waitUntil?: WaitUntil): void {
@@ -252,7 +262,7 @@ class SiteGate implements Gate {
         const payload = {
           token: capture.token,
           status: answer.status,
-          headers: answer.headers.map(([n, v]) => [n.toLowerCase(), v]),
+          headers: captureHeaders(answer.headers),
           body: base64Bytes(answer.body),
           size: answer.size,
           truncated: answer.truncated,
@@ -356,7 +366,9 @@ class SiteGate implements Gate {
       }
       // Any other failure keeps the last good settings (a 401 after a rotated key, a 5xx, a timeout).
       if (answer.status !== 200) throw new Error(`Stilebase answered the settings ${answer.status}`);
-      const settings = parseSettings(await answer.json());
+      const document: unknown = await answer.json();
+      if (!isRecord(document)) throw new Error("Stilebase's settings aren't a JSON object: keeping the last good ones");
+      const settings = parseSettings(document);
       if (applies()) {
         this.settings = settings; // settings this version can't read: everyone passes (SPEC.md section 3)
         this.settingsAt = this.now();
@@ -402,15 +414,14 @@ class SiteGate implements Gate {
   }
 }
 
-/** An answer the gate makes itself, never kept by a cache in front of the site. */
+/** Stilebase's respond, as SPEC.md section 10 sends it. */
 function respond(status: number, headers: Record<string, string>, body: string): Respond {
-  return { action: "respond", status, headers: { ...headers, "cache-control": "no-store" }, body };
+  return { action: "respond", ...respondAnswer(status, headers, body) };
 }
 
 /** A payment whose outcome isn't known: never "not charged", never the page. */
-function unknownPayment(retryAfter: number): Respond {
-  const body = JSON.stringify({ error: "Payment settlement unavailable" });
-  return respond(503, { "content-type": "application/json", "retry-after": String(retryAfter) }, body);
+export function unknownPayment(retryAfter: number): Respond {
+  return { action: "respond", ...unknownPaymentAnswer(retryAfter) };
 }
 
 /** A clientIp's answer: a string, or no address (a promise's rejection is handled, never left to stop the process). */
@@ -453,7 +464,7 @@ async function withinBudget<T>(promise: Promise<T>, ms: number): Promise<T | Ans
 }
 
 /** STILEBASE_DISABLED: 1, true, yes or on. */
-function switchedOff(value: string | undefined): boolean {
+export function switchedOff(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 

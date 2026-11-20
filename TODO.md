@@ -1,8 +1,7 @@
 # TODO
 
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
-(`.claude/rules/development-workflow.md`), and findings the Cloudflare Worker shares (CLAUDE.md, "A connector, not a
-library"), go here.
+(`.claude/rules/development-workflow.md`) go here.
 
 ## Both SDKs
 
@@ -11,14 +10,14 @@ library"), go here.
 - **An end-to-end test against a running Stilebase API.** *Waits:* both SDKs pass the same conformance cases.
 - **Some unusual paths are named differently by the two SDKs:** the JS SDK reads the path through `new URL` (it
   resolves `..` and `%2e%2e`, turns `\` into `/`, encodes `"` `<` `>` `{` `}` `|`); the Python SDK keeps the path as the
-  server gave it. Only the page URL sent to Stilebase differs. *Waits:* rare; no page is freed by it.
+  server gave it. Only the path sent to Stilebase differs. *Waits:* rare; no page is freed by it.
 - **Cookie fields joined with ", "** (the Fetch API joins HTTP/2's separate Cookie fields so, on Deno and Bun): a
   forwarded cookie is found only in the first. The Worker splits at ";" only, and the conformance cases say nothing about it.
   *Waits:* strict detection is off by default; a shared case first.
-- **Python: the sync gate's budget is per network step.** httpx's sync client applies `timeout_ms` to each of
-  connect, write and read, so a trickling answer can hold a request up to about three times `timeout_ms`; the async
-  gate enforces the total with `asyncio.wait_for`. *Waits:* httpx's sync client has no overall deadline, and enforcing
-  one costs a thread per call or a watchdog that closes the connection; Stilebase's API answers or fails fast.
+- **Python: the sync gate's budgets are per network step.** httpx's sync client has no overall deadline: `decide`
+  applies `timeout_ms` to each of connect, write and read, and the first settings load splits its 3 s across the steps.
+  A read that trickles in can still run longer. The async gate enforces totals with `asyncio.wait_for`. *Waits:* a true
+  deadline costs a thread per call or a watchdog closing the connection; Stilebase's API answers or fails fast.
 - **An absolute-form target under uvicorn's h11** keeps its whole target as the path (`//host/x`), where Express names
   `/x`. *Waits:* Starlette doesn't route it either; no page is freed.
 - **Python: the sync and async gates repeat their calls** (settings, decide, settle, captures) around one core without
@@ -28,12 +27,6 @@ library"), go here.
 - **A rewrite before the gate:** Express names the visitor's page (originalUrl), while WSGI, and ASGI without
   `raw_path`, name the path after the rewrite. *Waits:* WSGI and ASGI hand the app no original URL to read; mount the
   gate before rewrites.
-- **Tests that could be sharper:** concurrent address-list loads (the generation check), a verification value with a
-  lone surrogate sent through the gate rather than `_respond`, and a `client_ip` Future that fails later (its error
-  retrieved). *Waits:* the behaviour is covered at one level below.
-
-## Releases
-
 - **One environment for both packages:** `release` admits both tag patterns, so the npm and PyPI trusted publishers
   are tied to the same environment, and only `release.yml`'s `if:` conditions keep an `sdk-js-v*` run from publishing
   to PyPI. Two environments (`release-npm` for `sdk-js-v*`, `release-pypi` for `sdk-py-v*`), each publisher registered
@@ -59,5 +52,3 @@ library"), go here.
 
 ## stilebase-sdk
 
-- **`_respond` scans every body for lone surrogates**, though only the verification value can hold one (the 402 is
-  escaped already). *Waits:* a few KB per 402.

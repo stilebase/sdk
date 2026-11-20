@@ -7,7 +7,22 @@ from typing import Any
 import pytest
 
 from stilebase_sdk.gate import GateRequest, Pass, Respond, Settings, normalize_ip, parse_site_key, signed_headers
-from stilebase_sdk.gate._core import Engine, GateOptions, decide_body, read_answer, remember_key, skipped
+from stilebase_sdk.gate._core import (
+    Asking,
+    Capture,
+    Engine,
+    GateOptions,
+    body_allowed,
+    capture_headers,
+    decide_body,
+    merge_headers,
+    not_payable,
+    read_answer,
+    remember_key,
+    respond,
+    skipped,
+    unknown_payment,
+)
 from tests.fake_stilebase import KEY, SETTINGS, VECTORS
 
 
@@ -85,13 +100,18 @@ def test_answers(case: dict[str, Any]) -> None:
         engine = Engine(GateOptions(key=KEY, on_error=lambda e: None), "test")
         headers = (("payment-signature", "x"),) if payment else ()
         request = GateRequest("GET", "/listings/2", headers, ip="203.0.113.7")
-        decision = engine.after_asking(request, settings, {"b": 1}, read_answer(case["http_status"], case["body"]))
+        asking = Asking(probe=False, key=remember_key(request, settings))
+        decision = engine.after_asking(request, settings, {"b": 1}, read_answer(case["http_status"], case["body"]), asking)
         assert outcome(decision) == expected, (case["name"], payment)
         if "response_headers" in case:
             assert isinstance(decision, Pass) and dict(decision.response_headers) == case["response_headers"]
         if "respond" in case:
             assert isinstance(decision, Respond)
             assert (decision.status, decision.body.decode()) == (case["respond"]["status"], case["respond"]["body"])
+        if "capture" in case:
+            assert isinstance(decision, Pass)
+            expected = case["capture"]
+            assert decision.capture == (Capture(expected["token"], expected["max_bytes"]) if expected else None)
         if "retry_after" in case:
             assert isinstance(decision, Respond) and decision.headers["retry-after"] == str(case["retry_after"])
         if case.get("remember_seconds") and not payment:
@@ -108,3 +128,36 @@ def test_the_settings_example_is_read() -> None:
     assert settings.read()["strip_headers"] == ["cookie", "authorization", "proxy-authorization"]
     assert Settings.parse({**SETTINGS, "settings_version": 2}) is None
     assert Settings.parse({**SETTINGS, "enabled": "yes"}) is None
+
+
+SENT = VECTORS["answers_sent"]
+
+
+@pytest.mark.parametrize("case", SENT["merges"])
+def test_merges(case: dict[str, Any]) -> None:
+    merged = merge_headers([(n, v) for n, v in case["site"]], *case["overlays"])
+    assert [list(pair) for pair in merged] == case["sent"]
+
+
+@pytest.mark.parametrize("case", SENT["body_allowed"])
+def test_body_allowed(case: dict[str, Any]) -> None:
+    assert body_allowed(case["status"]) is case["allowed"]
+
+
+@pytest.mark.parametrize("case", SENT["capture_headers"])
+def test_capture_headers(case: dict[str, Any]) -> None:
+    assert [list(pair) for pair in capture_headers([(n, v) for n, v in case["headers"]])] == case["kept"]
+
+
+def test_gate_answers() -> None:
+    for built, expected in (
+        (unknown_payment(SENT["gate_answers"]["unknown_payment"]["retry_after"]), SENT["gate_answers"]["unknown_payment"]),
+        (not_payable(), SENT["gate_answers"]["not_payable"]),
+    ):
+        assert (built.status, built.headers, built.body.decode()) == (expected["status"], expected["headers"], expected["body"])
+
+
+def test_respond_replaces_cache_control_and_drops_bodies_that_cant_be_sent() -> None:
+    answer = respond(402, {"Cache-Control": "max-age=60", "X-A": "1"}, "{}")
+    assert (answer.headers, answer.body) == ({"cache-control": "no-store", "x-a": "1"}, b"{}")
+    assert respond(304, {}, "ignored").body == b""

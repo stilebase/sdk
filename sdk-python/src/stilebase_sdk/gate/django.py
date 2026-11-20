@@ -10,17 +10,15 @@ The key comes from STILEBASE_KEY (the environment, or STILEBASE_GATE["key"]).
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 from django.conf import settings
 from django.http import HttpResponse
 
-from ._core import Capture, Copy, GateOptions, Pass, Respond, too_large
+from ._core import Capture, Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable
 from ._request import GateRequest, address_from, headers_of
 from ._sync import SyncGate
-
-BODILESS = frozenset({204, 205, 304})
 
 
 class GateMiddleware:
@@ -46,8 +44,7 @@ class GateMiddleware:
         ttfb = int((time.monotonic() - started) * 1000)
         if decision.hold is not None:
             return self._held(response, decision, ttfb)
-        for name, value in decision.response_headers.items():
-            response[name] = value
+        _overlay(response, decision.response_headers)
         if decision.capture is not None:
             self._copy(response, decision.capture, ttfb)
         return response
@@ -56,8 +53,8 @@ class GateMiddleware:
         """A paid request: the view's answer is held, settled, and only then sent (SPEC.md, section 7)."""
         hold = decision.hold
         assert hold is not None
-        if getattr(response, "is_async", False):
-            return _response(too_large())
+        if getattr(response, "is_async", False) or not holdable(response.status_code):
+            return _response(not_payable())  # an async stream, or a protocol switch: never held, never settled
         if getattr(response, "streaming", False):
             parts: list[bytes] = []
             size = 0
@@ -75,7 +72,7 @@ class GateMiddleware:
                     close()
                 _release(response)
             if size > hold.max_bytes:
-                return _response(too_large())
+                return _response(not_payable())
             body = b"".join(parts)
             held = HttpResponse(body, status=response.status_code, reason=response.reason_phrase)
             for name, value in response.items():
@@ -86,14 +83,13 @@ class GateMiddleware:
         else:
             body = bytes(response.content)
             if len(body) > hold.max_bytes:
-                return _response(too_large())
+                return _response(not_payable())
         outcome = self.gate.settle(hold, response.status_code, body)
         if isinstance(outcome, Respond):
             return _response(outcome)
-        if response.status_code in BODILESS and not getattr(response, "streaming", False):
+        if not body_allowed(response.status_code):
             response.content = b""  # a status that can't carry a body is sent without one
-        for name, value in {**decision.response_headers, **outcome.response_headers}.items():
-            response[name] = value
+        _overlay(response, decision.response_headers, outcome.response_headers)
         if decision.capture is not None:
             self._copy(response, decision.capture, ttfb)
         return response
@@ -146,7 +142,15 @@ def _release(response: Any) -> None:
         resource_closers.clear()
 
 
+def _overlay(response: Any, *overlays: Mapping[str, str]) -> None:
+    """The answer's headers on a view's response: merged by the gate's helper (each replaces its namesake; Django's
+    headers compare names case-insensitively, as the helper does)."""
+    for name, value in merge_headers([], *overlays):
+        response[name] = value
+
+
 def _response(decision: Respond) -> HttpResponse:
+    """An answer built by the gate's helpers (`respond`, `unknown_payment`, `not_payable`), as it is."""
     response = HttpResponse(decision.body, status=decision.status)
     for name, value in decision.headers.items():
         response[name] = value

@@ -437,3 +437,123 @@ def test_a_shared_decision_waiting_past_its_budget_is_forgotten() -> None:
         await gate.aclose()
 
     asyncio.run(run())
+
+
+# Review cycle 3
+
+
+def test_a_cancelled_request_counts_nothing_for_itself_or_its_waiters() -> None:
+    async def run() -> None:
+        stilebase = FakeStilebase(decide=(200, REQUIRED_402), delay=0.5)
+        gate = async_gate(stilebase)
+        stilebase.delay = 0.0
+        await gate.check(AGENT)  # settings
+        stilebase.delay = 0.5
+        leader = asyncio.create_task(gate.check(AGENT))
+        await asyncio.sleep(0.05)
+        waiter = asyncio.create_task(gate.check(AGENT))
+        await asyncio.sleep(0.05)
+        leader.cancel()
+        assert await waiter == Pass()  # the leader's answer never came: the waiter passes
+        assert gate.breaker._failures == 0  # and nothing was counted
+        await gate.aclose()
+
+    asyncio.run(run())
+
+
+def test_a_cancelled_probe_frees_its_slot_without_counting() -> None:
+    async def run() -> None:
+        clock = Clock()
+        stilebase = FakeStilebase(decide=(500, {}))
+        gate = async_gate(stilebase, clock)
+        for _ in range(5):
+            await gate.check(AGENT)
+        clock.at += 31  # half open
+        stilebase.decide, stilebase.delay = (200, REQUIRED_402), 0.5
+        probe = asyncio.create_task(gate.check(AGENT))
+        await asyncio.sleep(0.05)
+        probe.cancel()
+        await asyncio.sleep(0)
+        failures = gate.breaker._failures
+        stilebase.delay = 0.0
+        assert isinstance(await gate.check(AGENT), Respond)  # the next request probes, and closes it
+        assert failures == 5 and gate.breaker._failures == 0
+        await gate.aclose()
+
+    asyncio.run(run())
+
+
+def test_a_stale_probe_is_forgotten() -> None:
+    from stilebase_sdk.gate._core import Breaker, Settings
+
+    breaker, settings = Breaker(), Settings()
+    first = breaker.admit(0, settings, "k", 0.3)
+    assert first is not None
+    for _ in range(5):
+        breaker.record(False, 0, settings, first)
+    probe = breaker.admit(31, settings, "k", 0.3)
+    assert probe is not None and probe.probe
+    assert breaker.admit(31.5, settings, "k", 0.3) is None  # still within the probe's budget plus a second
+    newer = breaker.admit(32.5, settings, "k", 0.3)
+    assert newer is not None and newer.probe  # forgotten: the next request probes
+    breaker.record(False, 32.6, settings, probe)  # the old probe's late failure decides nothing
+    breaker.record(True, 32.7, settings, newer)
+    assert not breaker.is_open(32.8)
+
+
+def test_the_first_settings_wait_is_bounded_in_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    import stilebase_sdk.gate._async as driver
+
+    monkeypatch.setattr(driver, "SETTINGS_TIMEOUT", 0.2)
+
+    async def run() -> float:
+        stilebase = FakeStilebase(decide=(200, REQUIRED_402), settings_delay=2.0)
+        gate = async_gate(stilebase)
+        started = time.monotonic()
+        assert await gate.check(AGENT) == Pass()
+        elapsed = time.monotonic() - started
+        await gate.aclose()
+        return elapsed
+
+    assert asyncio.run(run()) < 1.0
+
+
+def test_the_remember_key_is_computed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    import stilebase_sdk.gate._core as core
+
+    calls: list[object] = []
+    real = core.remember_key
+
+    def counted(request: GateRequest, settings: Any) -> str:
+        calls.append(request)
+        return real(request, settings)
+
+    monkeypatch.setattr(core, "remember_key", counted)
+    stilebase = FakeStilebase(decide=(200, REMEMBER))
+    sync_gate(stilebase).check(PERSON)
+    assert len(calls) == 1
+
+    async def run() -> None:
+        gate = async_gate(FakeStilebase(decide=(200, REMEMBER)))
+        await gate.check(PERSON)
+        await gate.aclose()
+
+    calls.clear()
+    asyncio.run(run())
+    assert len(calls) == 1
+
+
+def test_a_settle_after_in_a_settle_answer_is_ignored() -> None:
+    stilebase = FakeStilebase(decide=(200, SETTLE_AFTER), settle=(200, {**PAID, "settle_after": {"max_bytes": 5}}))
+    gate = sync_gate(stilebase)
+    decision = gate.check(PAYING)
+    assert isinstance(decision, Pass) and decision.hold is not None
+    assert gate.settle(decision.hold, 200, b"page") == Pass({"payment-response": RECEIPT})
+
+
+def test_a_protocol_switch_is_never_settled() -> None:
+    stilebase = FakeStilebase()
+    outcome = sync_gate(stilebase).settle(Hold({}, 100), 101, b"")
+    assert isinstance(outcome, Respond) and outcome.status == 502 and stilebase.to("settle") == []

@@ -2,9 +2,9 @@
 //   export default { fetch: withGate(handler) }       (Workers: STILEBASE_KEY as a secret, read from env)
 //   Deno.serve(withGate(handler))
 
-import { type Gate, type GateOptions, type WaitUntil, addressFrom, addressOf, createGate } from "./core.js";
+import { type Gate, type GateOptions, type WaitUntil, addressFrom, addressOf, createGate, switchedOff } from "./core.js";
 import type { Capture, GateRequest } from "./protocol.js";
-import { normalizeIp } from "./protocol.js";
+import { bodyAllowed, mergeHeaders, normalizeIp } from "./protocol.js";
 
 export interface FetchGateOptions<Rest extends unknown[] = unknown[]> extends GateOptions {
   /** Read the visitor's address from this header (one your proxy or CDN sets). Default: on Cloudflare,
@@ -31,7 +31,7 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
         ...options,
         key: options.key ?? fromEnv(rest[0], "STILEBASE_KEY"),
         apiUrl: options.apiUrl ?? fromEnv(rest[0], "STILEBASE_API_URL"),
-        disabled: options.disabled ?? (["1", "true", "yes", "on"].includes((fromEnv(rest[0], "STILEBASE_DISABLED") ?? "").trim().toLowerCase()) ? true : undefined),
+        disabled: options.disabled ?? (switchedOff(fromEnv(rest[0], "STILEBASE_DISABLED")) ? true : undefined),
       },
       "fetch",
     );
@@ -46,17 +46,18 @@ export function withGate<Rest extends unknown[]>(handler: Handler<Rest>, options
     const ttfbMs = Date.now() - started;
 
     if (decision.action === "hold") {
+      // A protocol switch (a WebSocket's 101) can't be held or paid for: not settled.
+      if (response.status === 101) return toResponse(gate.tooLarge());
       const held = await readUpTo(response.body, decision.maxBytes);
       if (held.truncated) return toResponse(gate.tooLarge());
       const settled = await gate.settle(decision.ticket, { status: response.status, body: held.bytes });
       if (settled.action === "respond") return toResponse(settled);
       if (decision.capture) gate.capture(decision.capture, captured(response, held, decision.capture, ttfbMs), waitUntil);
-      const noBody = [101, 204, 205, 304].includes(response.status);
-      return rebuilt(response, noBody ? null : held.bytes, { ...decision.responseHeaders, ...settled.responseHeaders });
+      return rebuilt(response, bodyAllowed(response.status) ? held.bytes : null, decision.responseHeaders, settled.responseHeaders);
     }
 
     let served = response;
-    if (Object.keys(decision.responseHeaders).length) served = rebuilt(response, response.body, decision.responseHeaders);
+    if (Object.keys(decision.responseHeaders).length && response.status !== 101) served = rebuilt(response, response.body, decision.responseHeaders);
     if (!decision.capture || !served.body) return served;
     // A copy as it goes out, at the visitor's pace: the stream is never held back, changed or buffered beyond the copy.
     const capture = decision.capture;
@@ -170,22 +171,22 @@ function captured(response: Response, copy: { bytes: Uint8Array; size: number; t
   };
 }
 
-/** The response with these headers set (a fresh Response: the handler's headers may be immutable). */
-function rebuilt(response: Response, body: BodyInit | null, headers: Record<string, string>): Response {
-  let copy: Response;
-  try {
-    copy = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
-  } catch {
-    copy = new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
-  }
-  for (const [name, value] of Object.entries(headers)) {
+/** The response with the overlays' headers replacing same-name ones (SPEC.md section 10; a fresh Response: the
+ * handler's headers may be immutable). */
+function rebuilt(response: Response, body: BodyInit | null, ...overlays: Array<Record<string, string>>): Response {
+  const headers = new Headers();
+  for (const [name, value] of mergeHeaders(response.headers, ...overlays)) {
     try {
-      copy.headers.set(name, value);
+      headers.append(name, value);
     } catch {
       // a header the runtime refuses: the page is still served
     }
   }
-  return copy;
+  try {
+    return new Response(body, { status: response.status, statusText: response.statusText, headers });
+  } catch {
+    return new Response(null, { status: response.status, statusText: response.statusText, headers });
+  }
 }
 
 /** The gate's own answer as a Response. A status or header the runtime refuses (a 1xx, a body on 204/205/304, a header
@@ -201,7 +202,7 @@ function toResponse(decision: { status: number; headers: Record<string, string>;
       // a header the runtime refuses is left out
     }
   }
-  const empty = status === 204 || status === 205 || status === 304;
+  const empty = !bodyAllowed(status);
   try {
     return new Response(empty ? null : decision.body, { status, headers });
   } catch {

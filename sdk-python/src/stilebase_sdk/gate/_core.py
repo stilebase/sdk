@@ -76,9 +76,10 @@ class Settings:
     def parse(cls, value: Any) -> Settings | None:
         """Settings as Stilebase sent them: None (everyone passes) unless `settings_version` is 1 and `enabled` a
         boolean; any other field missing, of the wrong type or (a number) not a positive integer takes its default."""
-        if not isinstance(value, dict) or value.get("settings_version") != SETTINGS_VERSION:
+        if not isinstance(value, dict):
             return None
-        if not isinstance(value.get("enabled"), bool):
+        version = value.get("settings_version")
+        if not (_integral(version) and version == SETTINGS_VERSION) or not isinstance(value.get("enabled"), bool):
             return None
         d = cls()
         breaker = _object(value.get("breaker"))
@@ -171,10 +172,10 @@ class Pass:
 
 @dataclass(frozen=True)
 class Respond:
-    """Answer the request with this instead of the site."""
+    """Answer the request with this instead of the site (built only by `respond`, `unknown_payment`, `not_payable`)."""
 
     status: int
-    headers: dict[str, str]
+    headers: dict[str, str]  # names lowercased
     body: bytes
 
 
@@ -182,23 +183,65 @@ Decision = Pass | Respond
 PASS = Pass()
 
 
+# What a gate sends (SPEC.md, section 10; conformance `answers_sent`). Every adapter builds its answers with these.
+
+BODILESS = frozenset({204, 205, 304})
+_NOT_COPIED = frozenset({"set-cookie", "set-cookie2"})  # cookies the site sets never go to Stilebase
+
+
+def body_allowed(status: int) -> bool:
+    """Whether an answer with this status carries a body (never 204, 205 or 304, whoever answered)."""
+    return status not in BODILESS
+
+
+def merge_headers(site: Sequence[tuple[str, str]], *overlays: Mapping[str, str]) -> list[tuple[str, str]]:
+    """The site's headers, then each overlay's: a header in an overlay replaces every header of the same name
+    (case-insensitive) where the first of them stood, or comes last; names lowercased. Later overlays win (settle's
+    over decide's)."""
+    merged = [(name.lower(), value) for name, value in site]
+    for overlay in overlays:
+        for name, value in overlay.items():
+            lowered = name.lower()
+            first = next((i for i, (n, _) in enumerate(merged) if n == lowered), None)
+            if first is None:
+                merged.append((lowered, value))
+                continue
+            merged[first] = (lowered, value)
+            merged = [pair for i, pair in enumerate(merged) if i == first or pair[0] != lowered]
+    return merged
+
+
+def capture_headers(headers: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The headers a capture copies: names lowercased, never `Set-Cookie`."""
+    return [(name.lower(), value) for name, value in headers if name.lower() not in _NOT_COPIED]
+
+
 def respond(status: int, headers: Mapping[str, str], body: str | bytes) -> Respond:
-    """An answer the gate sends itself, never kept by a cache in front of the site."""
+    """Stilebase's `respond`: its status, headers and body, plus `Cache-Control: no-store` (replacing any); no body
+    when the status can't carry one."""
     data = body.encode("utf-8", "replace") if isinstance(body, str) else body
-    kept = {k: v for k, v in headers.items() if k.lower() != "cache-control"}
-    return Respond(status, {**kept, "cache-control": "no-store"}, data)
+    sent = dict(merge_headers(list(headers.items()), {"cache-control": "no-store"}))
+    return Respond(status, sent, data if body_allowed(status) else b"")
+
+
+def _gate_answer(status: int, error: str, extra: Mapping[str, str] | None = None) -> Respond:
+    headers = {"content-type": "application/json", "cache-control": "no-store", **(extra or {})}
+    return Respond(status, headers, json.dumps({"error": error}, separators=(",", ":")).encode())
 
 
 def unknown_payment(retry_after: int = UNKNOWN_RETRY) -> Respond:
     """A payment whose outcome isn't known: the agent may retry; it's never told it wasn't charged."""
-    body = json.dumps({"error": "Payment outcome unknown, try again"}, separators=(",", ":"))
-    return respond(503, {"content-type": "application/json", "retry-after": str(retry_after)}, body)
+    return _gate_answer(503, "payment_outcome_unknown", {"retry-after": str(retry_after)})
 
 
-def too_large() -> Respond:
-    """A paid answer bigger than the gate can hold: not settled, so the agent isn't charged."""
-    body = json.dumps({"error": "This answer is too large to be paid for through this gate"}, separators=(",", ":"))
-    return respond(502, {"content-type": "application/json"}, body)
+def not_payable() -> Respond:
+    """A paid answer the gate can't hold (too large, a protocol switch): not settled, so the agent isn't charged."""
+    return _gate_answer(502, "answer_not_payable")
+
+
+def holdable(status: int) -> bool:
+    """Whether a site's answer with this status can be held and paid for (never a protocol switch, 1xx)."""
+    return status >= 200
 
 
 # The rules (SPEC.md); pure, and checked against conformance/vectors.json.
@@ -307,7 +350,7 @@ def read_answer(status: int, body: Any) -> Answer:
     order = body.get("capture")
     if isinstance(order, dict):
         token, size = order.get("token"), order.get("max_bytes")
-        if isinstance(token, str) and _integral(size) and size >= 0:
+        if isinstance(token, str) and _integral(size) and size > 0:
             capture = Capture(token, int(size))
     remember = body.get("remember")
     seconds = remember.get("seconds") if isinstance(remember, dict) else None
@@ -331,7 +374,7 @@ def capture_body(
     return {
         "token": token,
         "status": status,
-        "headers": [[n, v] for n, v in headers],
+        "headers": [[n, v] for n, v in capture_headers(headers)],
         "body": base64.b64encode(body).decode(),
         "size": size,
         "truncated": truncated,
@@ -391,34 +434,40 @@ class RememberCache:
 
 
 class Breaker:
-    """SPEC.md, section 6 step 6. `failures` failed decisions in a row open it for `open_seconds` (nothing is asked);
-    then it's half open: exactly one request is asked, and its outcome closes the breaker or opens it again."""
+    """SPEC.md, section 6 step 6. `failures` of Stilebase's in a row open it for `open_seconds` (nothing is asked); then
+    it's half open: exactly one request (the probe) is asked, and its outcome closes the breaker or opens it again. A
+    probe that hasn't finished within its budget plus a second is forgotten; the next request probes."""
 
     def __init__(self) -> None:
         self._failures = 0
         self._open_until = 0.0
-        self._probing = False
+        self._probe: object | None = None  # the Asking of the request probing, while one is
+        self._probe_until = 0.0
         self._lock = threading.Lock()
 
     def is_open(self, now: float) -> bool:
-        """Open, or half open with its one request already being asked: nothing more is asked."""
+        """Open, or half open with its probe still being asked: nothing more is asked."""
         with self._lock:
-            return self._open_until > 0 and (now < self._open_until or self._probing)
+            return self._open_until > 0 and (now < self._open_until or self._probing(now))
 
-    def admit(self, now: float, settings: Settings) -> Asking | None:
+    def admit(self, now: float, settings: Settings, key: str, budget: float) -> Asking | None:
         """Whether this request may be asked: as usual while closed; half open, only the first (the probe)."""
         with self._lock:
             if self._open_until == 0:
-                return Asking(probe=False)
-            if now < self._open_until or self._probing:
+                return Asking(probe=False, key=key)
+            if now < self._open_until or self._probing(now):
                 return None
-            self._probing = True
-            return Asking(probe=True)
+            asking = Asking(probe=True, key=key)
+            self._probe, self._probe_until = asking, now + budget + 1
+            return asking
 
-    def record(self, ok: bool, now: float, settings: Settings, asking: Asking | None = None) -> None:
+    def record(self, ok: bool, now: float, settings: Settings, asking: Asking) -> None:
+        """Stilebase's answer to a request that asked (never to one that shared another's)."""
         with self._lock:
-            if asking is not None and asking.probe:
-                self._probing = False
+            if asking.probe and self._probe is not asking:
+                return  # a probe forgotten as stale: a newer one decides
+            if asking.probe:
+                self._probe = None
             if ok:
                 self._failures = 0
                 self._open_until = 0.0
@@ -427,12 +476,23 @@ class Breaker:
             if self._failures >= settings.breaker_failures:
                 self._open_until = now + settings.breaker_open_seconds
 
+    def release(self, asking: Asking) -> None:
+        """A request that ended without Stilebase's answer (cancelled: the visitor left): counts nothing, frees its probe."""
+        with self._lock:
+            if self._probe is asking:
+                self._probe = None
 
-@dataclass(frozen=True)
+    def _probing(self, now: float) -> bool:
+        return self._probe is not None and now < self._probe_until
+
+
+@dataclass(frozen=True, eq=False)
 class Asking:
-    """A request the breaker lets be asked; `probe`: the one request asked while it's half open."""
+    """A request the breaker lets be asked: `probe` the one asked while it's half open; `key` its remember key
+    (computed once)."""
 
     probe: bool
+    key: str
 
 
 class GateError(Exception):
@@ -525,37 +585,41 @@ class Engine:
             return unknown_payment() if payment else PASS
         if not payment and skipped(request.path, settings):
             return PASS
-        if not payment and self.remembered.get(remember_key(request, settings), now):
+        key = remember_key(request, settings)
+        if not payment and self.remembered.get(key, now):
             return PASS
-        asking = self.breaker.admit(now, settings)
-        if asking is None:  # half open, and another request is the one being asked
+        asking = self.breaker.admit(now, settings, key, settings.settle_timeout if payment else settings.timeout)
+        if asking is None:  # half open, and another request is the probe
             return unknown_payment() if payment else PASS
         return asking
 
     def after_asking(
-        self, request: GateRequest, settings: Settings, body: dict[str, Any], answer: Answer, asking: Asking | None = None
+        self, request: GateRequest, settings: Settings, body: dict[str, Any], answer: Answer, asking: Asking | None
     ) -> Decision:
-        """What the gate does with `decide`'s answer (SPEC.md, section 6, steps 5-6)."""
+        """What the gate does with `decide`'s answer (SPEC.md, section 6, steps 5-6). `asking` None: a request that
+        waited on another's decision: it does what it says, but never counts for the breaker, remembers or captures."""
         payment = request.payment is not None
-        self.breaker.record(answer.usable, self.options.now(), settings, asking)
+        if asking is not None:
+            self.breaker.record(answer.usable, self.options.now(), settings, asking)
         if not answer.usable:
             return unknown_payment() if payment else PASS
         decision = answer.decision
         if isinstance(decision, Pass):
+            capture = decision.capture if asking is not None else None
+            hold = None
             if decision.hold is not None:
-                limit = min(decision.hold.max_bytes, settings.max_bytes)  # the settings cap what any answer asks to hold
-                decision = Pass(decision.response_headers, Hold(body, limit), decision.capture)
-            elif answer.remember and not payment and not decision.response_headers and decision.capture is None:
+                hold = Hold(body, min(decision.hold.max_bytes, settings.max_bytes))  # the settings cap any hold
+            decision = Pass(decision.response_headers, hold, capture)
+            plain = hold is None and not decision.response_headers and decision.capture is None
+            if asking is not None and answer.remember and not payment and plain:
                 # Only a plain pass is remembered: one with headers, a capture or a hold is about this request alone.
-                key = remember_key(request, settings)
-                self.remembered.put(key, self.options.now() + answer.remember, settings.cache_max_entries)
+                self.remembered.put(asking.key, self.options.now() + answer.remember, settings.cache_max_entries)
         return decision
 
-    def gave_up(self, settings: Settings | None, asking: Asking | None) -> None:
-        """A request that was being asked failed before its answer was read: the breaker counts it (and frees its
-        probe)."""
-        if settings is not None and asking is not None:
-            self.breaker.record(False, self.options.now(), settings, asking)
+    def release(self, asking: Asking | None) -> None:
+        """A request that ended without Stilebase's answer (cancelled, or a fault in the gate): counts nothing."""
+        if asking is not None:
+            self.breaker.release(asking)
 
     def settled(self, status: int, body: Any) -> Decision:
         """What `settle` answered (SPEC.md, section 7, step 4): `Pass` (send the held answer with its headers), or what

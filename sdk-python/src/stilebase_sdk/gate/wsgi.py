@@ -12,12 +12,11 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import quote
 
-from ._core import Capture, Copy, GateOptions, Pass, Respond, too_large
+from ._core import Capture, Copy, GateOptions, Pass, Respond, body_allowed, holdable, merge_headers, not_payable
 from ._request import GateRequest, address_from, headers_of
 from ._sync import SyncGate
 
 StartResponse = Callable[..., Any]
-BODILESS = frozenset({204, 205, 304})
 WSGIApp = Callable[[dict[str, Any], StartResponse], Iterable[bytes]]
 
 
@@ -54,17 +53,17 @@ class GateMiddleware:
         return self._passing(environ, start_response, decision)
 
     def _passing(self, environ: dict[str, Any], start_response: StartResponse, decision: Pass) -> Iterable[bytes]:
-        """The app's answer, with the answer's headers added and copied as it goes out (never delayed)."""
-        added = list(decision.response_headers.items())
+        """The app's answer, with the answer's headers merged in and copied as it goes out (never delayed)."""
         order = decision.capture
         copy = Copy(order.max_bytes) if order is not None else None
         started = time.monotonic()
         seen: dict[str, Any] = {}
 
         def wrapped_start(status: str, headers: list[tuple[str, str]], *args: Any) -> Any:
-            seen["status"], seen["headers"] = status, [*headers, *added]
+            merged = merge_headers(headers, decision.response_headers) if decision.response_headers else list(headers)
+            seen["status"], seen["headers"] = status, merged
             seen["ttfb"] = int((time.monotonic() - started) * 1000)
-            write = start_response(status, [*headers, *added], *args)
+            write = start_response(status, merged, *args)
             if copy is None:
                 return write
 
@@ -84,51 +83,60 @@ class GateMiddleware:
         hold = decision.hold
         assert hold is not None
         started = time.monotonic()
-        held: dict[str, Any] = {"parts": [], "size": 0, "over": False}
+        held: dict[str, Any] = {"parts": [], "size": 0, "cut": False}
 
         def keep(data: bytes) -> None:
-            if held["over"]:
-                raise _TooLarge
+            if held["cut"]:
+                raise _NotPayable
             held["size"] += len(data)
             if held["size"] > hold.max_bytes:
-                held["over"], held["parts"] = True, []  # too large to be paid for: nothing more is read
-                raise _TooLarge
+                held["cut"], held["parts"] = True, []  # too large to be paid for: nothing more is read
+                raise _NotPayable
             held["parts"].append(bytes(data))
 
         def holding_start(status: str, headers: list[tuple[str, str]], exc_info: Any = None) -> Callable[[bytes], None]:
             held["status"], held["headers"] = status, list(headers)
             held["ttfb"] = int((time.monotonic() - started) * 1000)
+            if not holdable(_code(status)):  # a protocol switch can't be held or paid for
+                held["cut"] = True
+                raise _NotPayable
             return keep
 
         result: Iterable[bytes] | None = None
         try:
-            result = self.app(environ, holding_start)  # an app that raises: nothing was settled, nothing sent
-            for chunk in result:
-                keep(chunk)
-        except _TooLarge:
-            pass
+            try:
+                result = self.app(environ, holding_start)  # an app that raises: nothing was settled, nothing sent
+                for chunk in result:
+                    keep(chunk)
+            except _NotPayable:
+                pass
+            if held["cut"] or "status" not in held:  # can't be held, or the app answered nothing: never settled
+                return _respond(start_response, not_payable())
+            status = _code(held["status"])
+            body = b"".join(held["parts"])
+            outcome = self.gate.settle(hold, status, body)
+            if isinstance(outcome, Respond):
+                return _respond(start_response, outcome)
+            headers = merge_headers(held["headers"], decision.response_headers, outcome.response_headers)
+            start_response(held["status"], headers)
+            if decision.capture is not None:
+                copy = Copy(decision.capture.max_bytes)
+                copy.add(body)
+                self.gate.capture(decision.capture, status, headers, copy, held["ttfb"])
+            return [body] if body_allowed(status) else []
         finally:
+            # After the answer is built: an error closing the app's iterable never costs the visitor a paid page.
             close = getattr(result, "close", None)
             if close is not None:
-                close()
-        if held["over"] or "status" not in held:
-            return _respond(start_response, too_large())
-        status = _code(held["status"])
-        body = b"".join(held["parts"])
-        outcome = self.gate.settle(hold, status, body)
-        if isinstance(outcome, Respond):
-            return _respond(start_response, outcome)
-        headers = [*held["headers"], *decision.response_headers.items(), *outcome.response_headers.items()]
-        start_response(held["status"], headers)
-        if decision.capture is not None:
-            copy = Copy(decision.capture.max_bytes)
-            copy.add(body)
-            self.gate.capture(decision.capture, status, headers, copy, held["ttfb"])
-        return [] if status in BODILESS else [body]  # a status that can't carry a body is sent without one
+                try:
+                    close()
+                except Exception as error:
+                    self.gate.report(error)
 
 
-class _TooLarge(Exception):
-    """Raised into an app (from `write`) whose paid answer outgrew what the gate holds: it stops being read."""
+class _NotPayable(Exception):
+    """Raised into an app (from `write` or `start_response`) whose paid answer the gate can't hold: it stops being
+    read."""
 
 
 class _Copying:

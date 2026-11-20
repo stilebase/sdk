@@ -48,6 +48,16 @@ describe("settings", () => {
     expect((await g.check(request("/x", GPTBOT))).action).toBe("pass");
   });
 
+  it("keeps the last good ones when a refresh isn't a JSON object", async () => {
+    const g = gate();
+    await g.check(request("/", GPTBOT));
+    stilebase.settings = { status: 200, body: "null" };
+    now += 301_000;
+    await g.check(request("/", GPTBOT));
+    await new Promise((r) => setTimeout(r, 0));
+    expect((await g.check(request("/x", GPTBOT))).action).toBe("respond");
+  });
+
   it("refreshes them, keeping the last good ones on failure", async () => {
     const g = gate();
     await g.check(request("/", GPTBOT));
@@ -141,6 +151,29 @@ describe("deciding", () => {
     expect(stilebase.to(DECIDE)).toHaveLength(6); // one probe
     await g.check(request("/d", GPTBOT));
     expect(stilebase.to(DECIDE)).toHaveLength(7); // closed
+  });
+
+  it("forgets a half-open probe that never finished", async () => {
+    stilebase.decide = () => ({ status: 500 });
+    const g = gate();
+    for (let i = 0; i < 5; i += 1) await g.check(request(`/p${i}`, GPTBOT));
+    now += 31_000;
+    stilebase.decide = () => ({ status: 200, body: { action: "pass" }, delayMs: 100_000 }); // a probe that hangs
+    void g.check(request("/probe", GPTBOT));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(stilebase.to(DECIDE)).toHaveLength(6);
+    now += 2_000; // past its budget and a second
+    stilebase.decide = () => ({ status: 200, body: { action: "pass" } });
+    await g.check(request("/next", GPTBOT));
+    expect(stilebase.to(DECIDE)).toHaveLength(7);
+  });
+
+  it("lets only the request that asked remember", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", remember: { seconds: 600 }, capture: { token: "t", max_bytes: 5 } }, delayMs: 30 });
+    const g = gate();
+    await Promise.all([g.check(request("/l", BROWSER)), g.check(request("/l", BROWSER))]);
+    await g.check(request("/l", BROWSER));
+    expect(stilebase.to(DECIDE)).toHaveLength(2); // nobody remembered a pass that carried a capture
   });
 
   it("settles even when the settings were dropped meanwhile", async () => {

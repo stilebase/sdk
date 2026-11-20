@@ -3,8 +3,8 @@
 import type { ServerResponse } from "node:http";
 import { parse } from "node:url";
 
-import { type Gate, type GateDecision, type GateOptions, type SettleDecision, addressFrom, addressOf, createGate } from "./core.js";
-import { type Capture, type GateRequest, normalizeIp } from "./protocol.js";
+import { type Gate, type GateDecision, type GateOptions, type SettleDecision, addressFrom, addressOf, createGate, unknownPayment } from "./core.js";
+import { type Capture, type GateRequest, bodyAllowed, normalizeIp } from "./protocol.js";
 
 /** The parts of Express's request the gate uses (no dependency on Express's types). */
 export interface ExpressRequest {
@@ -48,7 +48,7 @@ export function gate(options: ExpressGateOptions = {}) {
               hold(res, siteGate, decision);
             } catch {
               // Holding couldn't be set up: never the paid page unsettled.
-              answer(res, { status: 503, headers: { "content-type": "application/json", "retry-after": "5", "cache-control": "no-store" }, body: JSON.stringify({ error: "Payment settlement unavailable" }) });
+              answer(res, unknownPayment(5));
               return;
             }
             return next();
@@ -94,7 +94,7 @@ function expressPath(req: ExpressRequest): string {
 function answer(res: ServerResponse, decision: { status: number; headers: Record<string, string>; body: string }): void {
   for (const [name, value] of Object.entries(decision.headers)) res.setHeader(name, value); // may throw: status untouched
   res.statusCode = decision.status;
-  res.end(decision.body);
+  res.end(bodyAllowed(decision.status) ? decision.body : undefined);
 }
 
 type Write = ServerResponse["write"];
@@ -107,6 +107,7 @@ function chunkOf(chunk: unknown, encoding?: unknown): Buffer | null {
   return null;
 }
 
+/** The headers about to be sent (a capture keeps them without Set-Cookie: core's captureHeaders). */
 function headerList(res: ServerResponse): Array<[string, string]> {
   return Object.entries(res.getHeaders()).flatMap(([name, value]) =>
     value === undefined ? [] : Array.isArray(value) ? value.map((v) => [name, String(v)] as [string, string]) : [[name, String(value)] as [string, string]],
@@ -176,15 +177,16 @@ function hold(res: ServerResponse, gate: Gate, decision: Extract<GateDecision, {
       for (const name of res.getHeaderNames()) res.removeHeader(name);
       for (const [name, value] of Object.entries(outcome.headers)) res.setHeader(name, value);
       res.statusCode = outcome.status;
-      end.apply(res, [outcome.body]);
+      end.apply(res, [bodyAllowed(outcome.status) ? outcome.body : undefined]);
       return;
     }
-    for (const [name, value] of Object.entries({ ...decision.responseHeaders, ...outcome.responseHeaders })) res.setHeader(name, value);
-    if (headArgs) res.writeHead(...(headArgs as Parameters<ServerResponse["writeHead"]>));
     const body = Buffer.concat(parts);
+    const allowed = bodyAllowed(res.statusCode);
+    // Paid for: whatever Node refuses below, the page still goes out (a refused header is left out).
+    for (const [name, value] of Object.entries({ ...decision.responseHeaders, ...outcome.responseHeaders })) safely(() => res.setHeader(name, value));
+    if (headArgs) safely(() => res.writeHead(...(headArgs as Parameters<ServerResponse["writeHead"]>)));
     if (capture) safely(() => gate.capture(capture, { status: res.statusCode, headers: headerList(res), body: body.subarray(0, capture.maxBytes), size, truncated: size > capture.maxBytes, ttfbMs: Date.now() - started }));
-    const noBody = [204, 205, 304].includes(res.statusCode);
-    end.apply(res, [noBody ? undefined : body, callback]);
+    end.apply(res, [allowed ? body : undefined, callback]);
   };
   // Whatever happens finishing (a header Node refuses), the request gets an answer and the process keeps running;
   // never the held page unless the settlement said so.
@@ -243,7 +245,10 @@ function hold(res: ServerResponse, gate: Gate, decision: Extract<GateDecision, {
     if (done) return res; // too large: answered already
     done = true;
     callback = args.find((a) => typeof a === "function") as (() => void) | undefined;
-    gate.settle(ticket, { status: res.statusCode, body: Buffer.concat(parts) }).then(finishSafely, () => finishSafely(gate.tooLarge()));
+    // A protocol switch can't be held or paid for: not settled.
+    if (res.statusCode === 101) return finishSafely(gate.tooLarge()), res;
+    // A settlement that fails unexpectedly may have charged: never "not charged", never the page.
+    gate.settle(ticket, { status: res.statusCode, body: Buffer.concat(parts) }).then(finishSafely, () => finishSafely(unknownPayment(5)));
     return res;
   }) as ServerResponse["end"];
 }

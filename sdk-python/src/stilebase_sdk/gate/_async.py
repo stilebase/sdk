@@ -23,15 +23,14 @@ from ._core import (
     Engine,
     GateOptions,
     Hold,
-    Pass,
     Settings,
     capture_body,
     decide_body,
     delivery,
+    holdable,
     json_body,
+    not_payable,
     read_answer,
-    remember_key,
-    too_large,
     unknown_payment,
 )
 from ._request import GateRequest
@@ -54,9 +53,8 @@ class AsyncGate(Engine):
     async def check(self, request: GateRequest) -> Decision:
         if not self.active:
             return PASS
-        settings: Settings | None = None
         asking: Asking | None = None
-        recorded = False
+        answered = False
         try:
             settings = await self._settings()
             before = self.before_asking(request, settings)
@@ -64,15 +62,13 @@ class AsyncGate(Engine):
                 return before if not isinstance(before, Asking) else PASS
             asking = before
             body = decide_body(request, settings, self.options.assume_https)
-            if request.payment is not None:
-                answer = await self._ask("decide", body, settings.settle_timeout)
-                recorded = True
+            payment = request.payment is not None
+            if payment or request.method.upper() not in ("GET", "HEAD") or asking.probe:
+                # Only reads without a payment share an answer; a probe asks alone.
+                answer = await self._ask("decide", body, settings.settle_timeout if payment else settings.timeout)
+                answered = True
                 return self.after_asking(request, settings, body, answer, asking)
-            if request.method.upper() not in ("GET", "HEAD") or asking.probe:  # only reads share; a probe asks alone
-                answer = await self._ask("decide", body, settings.timeout)
-                recorded = True
-                return self.after_asking(request, settings, body, answer, asking)
-            key = f"{request.method.upper()} {remember_key(request, settings)}"
+            key = f"{request.method.upper()} {asking.key}"
             loop = asyncio.get_running_loop()
             shared = self._asking.get(key)
             if shared is not None and loop.time() - shared[1] > settings.timeout:
@@ -80,41 +76,37 @@ class AsyncGate(Engine):
                 self._asking.pop(key, None)
                 shared = None
             if shared is not None:  # another request like this one is being asked about: its answer is ours
+                self.release(asking)  # waiting on another's decision: this one asks nothing, counts nothing
+                asking = None
                 try:
                     answer = await asyncio.wait_for(asyncio.shield(shared[0]), settings.timeout)
-                except Exception:
+                except asyncio.TimeoutError:
                     answer = UNUSABLE
-                recorded = True  # the leader counts for the breaker
-                if not answer.usable:
-                    return PASS
-                if isinstance(answer.decision, Pass) and answer.decision.capture is not None:
-                    # A capture is for the request it was asked about, never for the ones that shared its answer.
-                    answer = Answer(True, Pass(answer.decision.response_headers, answer.decision.hold, None), answer.remember)
-                return self.after_asking(request, settings, body, answer)
+                return self.after_asking(request, settings, body, answer, None) if answer.usable else PASS
             future: asyncio.Future[Answer] = loop.create_future()
             self._asking[key] = (future, loop.time())
-            answer = UNUSABLE
+            answer = UNUSABLE  # what waiters get if this request is cancelled: they pass, and nothing is counted
             try:
                 answer = await self._ask("decide", body, settings.timeout)
+                answered = True
             finally:
                 if self._asking.get(key, (None, 0.0))[0] is future:
                     self._asking.pop(key, None)
                 if not future.done():
                     future.set_result(answer)
-            recorded = True
             return self.after_asking(request, settings, body, answer, asking)
         except Exception as error:
             self.report(error)
             return unknown_payment() if request.payment is not None else PASS
         finally:
-            if not recorded:  # failed or cancelled before its answer was read: counted, and its probe freed
-                self.gave_up(settings, asking)
+            if not answered:  # ended without Stilebase's answer (cancelled, a fault here): counts nothing
+                self.release(asking)
 
     async def settle(self, hold: Hold, status: int, body: bytes) -> Decision:
         """The site answered a paid request (`body` its whole body, held): settle it (SPEC.md, section 7). `Pass`: send
         the held answer with its `response_headers`; anything else: send that instead."""
-        if len(body) > hold.max_bytes:
-            return too_large()
+        if len(body) > hold.max_bytes or not holdable(status):
+            return not_payable()
         try:
             settings = self.settings or Settings()
             url, data, headers = self.signed_post("settle", {**hold.body, "delivery": delivery(status, body)})
@@ -166,7 +158,7 @@ class AsyncGate(Engine):
 
     async def _settings(self) -> Settings | None:
         if not self.settings_at:
-            await asyncio.wait({self._load()}, timeout=SETTINGS_TIMEOUT)  # this request's deadline, never the load's
+            await asyncio.wait({self._load()}, timeout=SETTINGS_TIMEOUT + 0.1)  # this request's deadline, never the load's
         elif self.settings_due():
             self._load()
         return self.settings
@@ -179,9 +171,8 @@ class AsyncGate(Engine):
 
     async def _load_settings(self) -> None:
         try:
-            answer = await self.http.get(
-                self.api + self.path("settings"), headers=self.settings_headers(), timeout=SETTINGS_TIMEOUT
-            )
+            fetch = self.http.get(self.api + self.path("settings"), headers=self.settings_headers(), timeout=SETTINGS_TIMEOUT)
+            answer = await asyncio.wait_for(fetch, SETTINGS_TIMEOUT)  # 3 s in all, however slowly it arrives
             self.take_settings(answer.status_code, json_body(answer.content))
         except Exception as error:
             self.settings_at = self.options.now()

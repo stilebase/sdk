@@ -69,16 +69,17 @@ A gate keeps its connection to Stilebase open and reuses it.
 | `skip_paths` | `prefixes` and `extensions` passed without asking (section 5) |
 | `settle_after.max_bytes` | The largest paid answer the gate holds (section 7) |
 
-**Reading them** (conformance `settings`): `settings_version` must be 1 and `enabled` a boolean, or everyone passes.
+**Reading them** (conformance `settings`): `settings_version` must be the integer 1 (not `true`) and `enabled` a
+boolean, or everyone passes.
 Any other field that's missing, of the wrong type, or (for a number) not a positive integer takes its default:
 `refresh_seconds` 300, `timeout_ms` 300, `settle_timeout_ms` 65000, `breaker` 5 failures / 30 seconds,
 `cache_max_entries` 10000, `settle_after.max_bytes` 10485760, `remember_by` `["client_ip", "user-agent", "path"]`, and
 empty lists for `strip_headers`, `forward_cookies` and `skip_paths`. `cookie`, `authorization` and
 `proxy-authorization` are never sent, whatever `strip_headers` says.
 
-The settings are fetched on the first request (waiting at most 3 seconds; meanwhile, and until there are settings,
+The settings are fetched on the first request (waiting at most 3 seconds in all, however slowly they arrive; meanwhile, and until there are settings,
 everyone passes), then in the background every `refresh_seconds`. A failed fetch keeps the last good settings (a 401
-after a rotated key, a 5xx, a timeout, a body that isn't a JSON object); a **404** (the gateway was removed) drops
+after a rotated key, a 5xx, a timeout, a body that isn't a JSON object, `null` included); a **404** (the gateway was removed) drops
 them, and everyone passes until a fetch succeeds again.
 
 ## 4. The visitor's address
@@ -153,18 +154,22 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
    missing or `null` is none, otherwise an object of strings; `body` missing is `""`, otherwise a string.
    `settle_after.max_bytes` must be a positive integer, and a `settle_after` that isn't an object makes the answer
    unusable. `response_headers` must be an object of strings when present (it applies to a `settle_after` too).
-   `remember.seconds` that isn't a positive integer is ignored, as is a malformed `capture`. `retry_after` that isn't
-   an integer from 1 to 3600 is 5.
+   `remember.seconds` that isn't a positive integer is ignored, as is a malformed `capture` (its `token` a string, its
+   `max_bytes` a positive integer). `retry_after` that isn't an integer from 1 to 3600 is 5.
 
    Anything else (an unknown `action`, a field of the wrong type, an error status, a body that isn't JSON, no answer
    within the budget): the request passes, **except** a request with a payment, which gets `503` with `Retry-After: 5`.
    Fields a gate doesn't know are ignored.
    A decision shared while in flight that's been waiting longer than its budget is forgotten (the runtime may have
-   cancelled it), and the next request asks again.
+   cancelled it), and the next request asks again. A request that waited on another's decision does what it says but
+   never remembers it and never captures: only the request that asked does.
 6. **The breaker:** a decision that failed (no answer, an error status, a malformed answer) counts one failure; any
    usable answer resets the count. At `breaker.failures` in a row the breaker **opens** for `breaker.open_seconds`:
    everyone passes, requests with a payment get `503` with `Retry-After: 5`. Then it's **half open**: one request is
-   asked (the others pass as while open); a usable answer closes it, a failure opens it again.
+   asked (the others pass as while open); a usable answer closes it, a failure opens it again. A probe that hasn't
+   finished within its budget (plus a second) is forgotten, and the next request probes. Only Stilebase's failures
+   count: a request the server or runtime cancels (the visitor left) counts nothing, for itself or for requests
+   waiting on its decision.
 
 Every answer the gate makes itself (`respond`, the 503s, the 502) carries `Cache-Control: no-store`.
 
@@ -175,15 +180,16 @@ On `pass` + `settle_after`, the agent is charged only for a page the site delive
 1. Let the request through to the site, and **hold its answer**: status, headers and body, sending nothing to the
    agent yet.
 2. A body larger than `settle_after.max_bytes` (the answer's, capped by the settings') can't be held: the gate stops
-   reading it, answers `502` and doesn't settle (the agent isn't charged).
+   reading it, answers `502` and doesn't settle (the agent isn't charged). Nor can a protocol switch (`101`, a
+   WebSocket): `502`, not settled.
    A server feature that sends a body around the gate (ASGI's `http.response.pathsend` or `zerocopysend`) is turned off
    for a held request, so the gate sees the whole body.
 3. `POST <stilebase>/v1/gate/sites/<gateway id>/settle`, signed: the same body as `decide` (the payment header
    included) plus `"delivery": {"status": <the site's status>, "size": <the body's bytes>, "sha256": "<lowercase hex>"}`.
    The budget is `settle_timeout_ms`.
 4. The answer:
-   - `pass` (with `response_headers`, e.g. `PAYMENT-RESPONSE`, added to any decide gave): send the held answer with
-     those headers. A status that can't carry a body (204, 205, 304) is sent without one.
+   - `pass` (with `response_headers`, e.g. `PAYMENT-RESPONSE`): send the held answer (section 10). A `settle_after`
+     in a settle answer is ignored.
    - `respond`: send that instead; the held answer is dropped.
    - `unknown_payment`, anything else, or no answer: `503` with `Retry-After`; the held answer is dropped.
 
@@ -205,7 +211,8 @@ request (AgentView: how the site answers people and AI agents). The gate:
 
 1. Serves the request exactly as it would without `capture`: the answer to the visitor is never delayed, changed or
    cut short.
-2. Copies the answer as it goes out: status, headers, and the first `max_bytes` bytes of the body (as sent, still
+2. Copies the answer as it goes out: status, headers **without `Set-Cookie`** (cookies the site sets are never sent to
+   Stilebase), and the first `max_bytes` bytes of the body (as sent, still
    compressed if the site compressed it), plus the body's total size and whether the copy was cut (`truncated`).
 3. Sends the copy in the background: `POST <stilebase>/v1/gate/sites/<gateway id>/captures`, signed:
    `{"token", "status", "headers": [[name, value]…], "body": "<base64>", "size", "truncated", "ttfb_ms"}`, at most
@@ -213,3 +220,15 @@ request (AgentView: how the site answers people and AI agents). The gate:
    never in the way.
 
 A gate that doesn't support `capture` ignores it (unknown fields are ignored); Stilebase then sees no copies.
+
+## 10. The answers a gate sends (conformance `answers_sent`)
+
+Every adapter builds what it sends the same way:
+
+- **Headers added to the site's answer** (`response_headers` from decide, then from settle): each **replaces** a header
+  of the same name (case-insensitive), never adds a second one; settle's win over decide's.
+- **No body** with `204`, `205` or `304`, whoever answered (the site, held; or Stilebase's `respond`).
+- **The gate's own answers**, each with `Content-Type: application/json` and `Cache-Control: no-store`:
+  - a payment whose outcome isn't known: `503`, `Retry-After: <n>`, body `{"error":"payment_outcome_unknown"}`;
+  - a paid answer that can't be held: `502`, body `{"error":"answer_not_payable"}`.
+- **`respond`**: Stilebase's status, headers and body, plus `Cache-Control: no-store` (replacing any).

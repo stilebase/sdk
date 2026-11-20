@@ -229,3 +229,59 @@ export function normalizeIp(value: string | null | undefined): string | null {
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+// What a gate sends (SPEC.md section 10, conformance answers_sent): one place for every adapter.
+
+/** The site's headers with each overlay's replacing same-name ones (case-insensitive); names lowercased, the order of
+ * first appearance kept, a header the site repeats (set-cookie) kept as it is unless an overlay replaces it. */
+export function mergeHeaders(site: Iterable<[string, string]>, ...overlays: Array<Record<string, string>>): Array<[string, string]> {
+  const replaced = new Map<string, string>();
+  for (const overlay of overlays) for (const [name, value] of Object.entries(overlay)) replaced.set(name.toLowerCase(), value);
+  const sent: Array<[string, string]> = [];
+  const done = new Set<string>();
+  for (const [name, value] of site) {
+    const lower = name.toLowerCase();
+    if (!replaced.has(lower)) sent.push([lower, value]);
+    else if (!done.has(lower)) {
+      sent.push([lower, replaced.get(lower)!]);
+      done.add(lower);
+    }
+  }
+  for (const [name, value] of replaced) if (!done.has(name)) sent.push([name, value]);
+  return sent;
+}
+
+/** Whether an answer with this status may carry a body: not 204, 205 or 304. */
+export function bodyAllowed(status: number): boolean {
+  return status !== 204 && status !== 205 && status !== 304;
+}
+
+/** A capture's headers: never the cookies the site sets. */
+export function captureHeaders(headers: Iterable<[string, string]>): Array<[string, string]> {
+  return [...headers].map(([n, v]) => [n.toLowerCase(), v] as [string, string]).filter(([n]) => n !== "set-cookie" && n !== "set-cookie2");
+}
+
+/** An answer the gate sends itself. */
+export interface Sent {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+const OWN = { "content-type": "application/json", "cache-control": "no-store" };
+
+/** A payment whose outcome isn't known: never "not charged", never the page. */
+export function unknownPaymentAnswer(retryAfter: number): Sent {
+  return { status: 503, headers: { ...OWN, "retry-after": String(retryAfter) }, body: JSON.stringify({ error: "payment_outcome_unknown" }) };
+}
+
+/** A paid answer the gate can't hold (too large, a protocol switch): not settled. */
+export function notPayableAnswer(): Sent {
+  return { status: 502, headers: { ...OWN }, body: JSON.stringify({ error: "answer_not_payable" }) };
+}
+
+/** Stilebase's `respond`, never kept by a cache in front of the site. */
+export function respondAnswer(status: number, headers: Record<string, string>, body: string): Sent {
+  const merged = Object.fromEntries(mergeHeaders(Object.entries(headers), { "cache-control": "no-store" }));
+  return { status, headers: merged, body: bodyAllowed(status) ? body : "" };
+}

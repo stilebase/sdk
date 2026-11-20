@@ -662,6 +662,37 @@
         "no_payment": "pass",
         "with_payment": "pass",
         "remember_seconds": null
+      },
+      {
+        "name": "a capture with max_bytes 0 is ignored",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "capture": {
+            "token": "t",
+            "max_bytes": 0
+          }
+        },
+        "no_payment": "pass",
+        "with_payment": "pass",
+        "capture": null
+      },
+      {
+        "name": "a capture is kept",
+        "http_status": 200,
+        "body": {
+          "action": "pass",
+          "capture": {
+            "token": "t",
+            "max_bytes": 100
+          }
+        },
+        "no_payment": "pass",
+        "with_payment": "pass",
+        "capture": {
+          "token": "t",
+          "max_bytes": 100
+        }
       }
     ]
   },
@@ -885,7 +916,185 @@
             "max_bytes": 10485760
           }
         }
+      },
+      {
+        "name": "a boolean isn't version 1",
+        "body": {
+          "settings_version": true,
+          "enabled": true
+        },
+        "read": null
       }
     ]
+  },
+  "answers_sent": {
+    "about": "SPEC.md section 10: what a gate sends. merge: the site's headers, then each overlay replacing same-name headers (case-insensitive); names compared lowercased, order of first appearance kept. body_allowed per status. capture_headers: what a capture copy keeps. gate bodies: the exact JSON.",
+    "merges": [
+      {
+        "site": [
+          [
+            "Content-Type",
+            "text/html"
+          ],
+          [
+            "Cache-Control",
+            "max-age=60"
+          ]
+        ],
+        "overlays": [
+          {
+            "cache-control": "no-store"
+          }
+        ],
+        "sent": [
+          [
+            "content-type",
+            "text/html"
+          ],
+          [
+            "cache-control",
+            "no-store"
+          ]
+        ]
+      },
+      {
+        "site": [
+          [
+            "content-type",
+            "text/html"
+          ],
+          [
+            "payment-response",
+            "old"
+          ]
+        ],
+        "overlays": [
+          {
+            "payment-response": "from-decide",
+            "x-a": "1"
+          },
+          {
+            "Payment-Response": "from-settle"
+          }
+        ],
+        "sent": [
+          [
+            "content-type",
+            "text/html"
+          ],
+          [
+            "payment-response",
+            "from-settle"
+          ],
+          [
+            "x-a",
+            "1"
+          ]
+        ]
+      },
+      {
+        "site": [
+          [
+            "set-cookie",
+            "a=1"
+          ],
+          [
+            "set-cookie",
+            "b=2"
+          ]
+        ],
+        "overlays": [
+          {}
+        ],
+        "sent": [
+          [
+            "set-cookie",
+            "a=1"
+          ],
+          [
+            "set-cookie",
+            "b=2"
+          ]
+        ]
+      }
+    ],
+    "body_allowed": [
+      {
+        "status": 200,
+        "allowed": true
+      },
+      {
+        "status": 204,
+        "allowed": false
+      },
+      {
+        "status": 205,
+        "allowed": false
+      },
+      {
+        "status": 304,
+        "allowed": false
+      },
+      {
+        "status": 402,
+        "allowed": true
+      },
+      {
+        "status": 500,
+        "allowed": true
+      }
+    ],
+    "capture_headers": [
+      {
+        "headers": [
+          [
+            "Content-Type",
+            "text/html"
+          ],
+          [
+            "Set-Cookie",
+            "session=x"
+          ],
+          [
+            "set-cookie2",
+            "y"
+          ],
+          [
+            "X-A",
+            "1"
+          ]
+        ],
+        "kept": [
+          [
+            "content-type",
+            "text/html"
+          ],
+          [
+            "x-a",
+            "1"
+          ]
+        ]
+      }
+    ],
+    "gate_answers": {
+      "unknown_payment": {
+        "status": 503,
+        "retry_after": 5,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+          "retry-after": "5"
+        },
+        "body": "{\"error\":\"payment_outcome_unknown\"}"
+      },
+      "not_payable": {
+        "status": 502,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": "{\"error\":\"answer_not_payable\"}"
+      }
+    }
   }
 }

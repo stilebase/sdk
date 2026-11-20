@@ -178,6 +178,28 @@ describe("fetch", () => {
     expect([paid.status, paid.headers.get("x-from-decide"), paid.headers.get("payment-response")]).toEqual([204, "1", "eyJzdWNjZXNzIjp0cnVlfQ=="]);
   });
 
+  it("doesn't hold or charge a protocol switch", async () => {
+    stilebase.decide = holding();
+    const upgrade = withGate(async () => {
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, "status", { value: 101 });
+      return response;
+    }, { key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
+    const answered = await upgrade(new Request("https://shop.example.com/ws", { headers: PAID }));
+    expect([answered.status, await answered.text()]).toEqual([502, '{"error":"answer_not_payable"}']);
+    expect(stilebase.to(SETTLE)).toEqual([]);
+  });
+
+  it("never sends the site's cookies in a capture", async () => {
+    stilebase.decide = () => ({ status: 200, body: { action: "pass", capture: { token: "t", max_bytes: 10 } } });
+    const cookies = withGate(async () => new Response("hi", { headers: { "set-cookie": "session=secret", "x-a": "1" } }), { key: KEY, apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
+    const served = await cookies(new Request("https://shop.example.com/", { headers: BROWSER }));
+    expect([served.headers.get("set-cookie"), await served.text()]).toEqual(["session=secret", "hi"]);
+    await new Promise((r) => setTimeout(r, 10));
+    const sent = stilebase.to(CAPTURES)[0]!.body!.headers as Array<[string, string]>;
+    expect(sent.map(([n]) => n)).not.toContain("set-cookie");
+  });
+
   it("reads the Worker's env and Cloudflare's edge facts", async () => {
     const wrapped = withGate(handler, { apiUrl: API, fetch: stilebase.fetch, onError: () => undefined });
     const request = new Request("https://shop.example.com/listings", { headers: { ...GPTBOT, "cf-connecting-ip": "198.51.100.9" } });

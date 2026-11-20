@@ -72,6 +72,7 @@ class FakeStilebase:
     settle: Answer | Callable[[dict[str, Any]], Answer] = (200, PAID)
     down: bool = False
     delay: float = 0.0
+    settings_delay: float = 0.0
     raw_decide: bytes | None = None
     raw_settings: bytes | None = None
     calls: list[Call] = field(default_factory=list)
@@ -124,10 +125,12 @@ class FakeStilebase:
         fake = self
 
         async def handler(request: httpx.Request) -> httpx.Response:
-            if fake.delay and request.url.path.endswith("/decide"):
-                import asyncio
+            import asyncio
 
+            if fake.delay and request.url.path.endswith("/decide"):
                 await asyncio.sleep(fake.delay)
+            if fake.settings_delay and request.url.path.endswith("/settings"):
+                await asyncio.sleep(fake.settings_delay)
             return fake._answer(request)
 
         return httpx.MockTransport(handler)
