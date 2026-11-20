@@ -62,3 +62,8 @@ What's known and not yet done, each with why it waits. Review findings that aren
 
 ## stilebase-sdk
 
+- **Django's middleware is sync only.** Under Django on ASGI every request hops to a thread, and a request with a
+  payment holds one for up to `settle_timeout_ms` (65 s). It needs an async middleware (`async_capable`). *Waits:*
+  sync Django, the common case, is fine.
+- **The ASGI middleware doesn't gate WebSocket connections** (it passes every scope that isn't `http`). *Waits:* few
+  sites serve their content over WebSockets.
