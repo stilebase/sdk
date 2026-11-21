@@ -3,20 +3,31 @@
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
 (`.claude/rules/development-workflow.md`) go here.
 
-## Before releasing 0.2.0 (the thin gate)
+## Before releasing 0.2.1 (the thin gate; 0.2.0 was never released)
 
-- **Stilebase's payment journal is live** (its settle records every payment whose outcome isn't known, and settles it
-  from the chain). *Waits:* its own change, at Stilebase.
-- **An end-to-end run on dev** (Base Sepolia, real test USDC) through every adapter: Express, Fetch (a Worker), ASGI,
-  WSGI and Django: a person served, an agent's 402, a paid page settled and delivered, a site error not charged, a
-  capture received, and Stilebase down (everyone served, a payment 503). *Waits:* the journal, then this run, by hand,
-  before tagging.
 - **Stilebase's production API (`https://stilebase.com`, the SDKs' default) serves the thin gate's calls**
   (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`). Check it before tagging: a gate whose calls fail lets
-  everyone through, so a release before that would let every agent read free. *Waits:* Stilebase's production deploy,
-  after the two above.
+  everyone through, so a release before that would let every agent read free. On November 21, 2026 production
+  answered 404. *Waits:* Stilebase's production deploy (on hold).
+
+Done: Stilebase's payment journal (merged, on dev). The end-to-end run on dev through every adapter (November 20,
+2026; its first run found a decision cut off at 300 ms aborted the connection it was opening, so after 5 s idle every
+agent passed free: fixed with a 1 s budget, calls not aborted, connections kept; the rerun passed). AgentView's
+collector among agents in flight, end to end against the API (never sharing a decision, never a visit). Not
+blocking: the capture case, which Stilebase only asks for from AgentView's continuous mode; until then no gate
+captures.
 
 ## Both SDKs
+
+- **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
+  runs on up to 5 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
+  calls pass uncounted (`NOT_ASKED`); a cap on calls running late, or counting pool waits while some run late. JS
+  reports a late call twice (late, then its 5 s abort); Python reports only the first. Requests waiting on a late
+  leader: JS may still get its late answer, Python passes at the leader's budget. A late plain `pass` with `remember`
+  could still be remembered (it's dropped). The sync gate aborts a call at its budget (per step: a request can wait
+  several budgets when Stilebase is slow); a small executor would give it an overall deadline and let calls run on. The ASGI middleware never closes its gate, so a late call at shutdown is
+  destroyed pending. No test proves a late call's connection is pooled (the fakes have no pool). *Waits:* seen in
+  production.
 
 - **More frameworks and languages:** Next.js, Fastify and Koa adapters for `@stilebase/sdk` (Hono works today through
   the fetch adapter); Go, PHP and Ruby gates on [SPEC.md](SPEC.md) and `conformance/`. *Waits:* demand.

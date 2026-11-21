@@ -35,7 +35,7 @@ Every call is signed with the secret:
 | --- | --- |
 | `Stilebase-Timestamp` | Unix seconds now. Stilebase refuses calls more than five minutes off |
 | `Stilebase-Signature` | `v2=` + lowercase hex HMAC-SHA256 of the canonical string, keyed with the whole secret (`sbsec_…`) |
-| `Stilebase-Client` | `<package>/<version> gate/<adapter>`, e.g. `@stilebase/sdk/0.2.0 gate/express` |
+| `Stilebase-Client` | `<package>/<version> gate/<adapter>`, e.g. `@stilebase/sdk/0.2.1 gate/express` |
 
 The canonical string is five lines joined with `\n`:
 
@@ -59,7 +59,7 @@ A gate keeps its connection to Stilebase open and reuses it.
 | `settings_version` | Runs only on a version it knows (1); any other: everyone passes |
 | `enabled` | `false`: everyone passes, nothing is asked (Stilebase's kill switch) |
 | `refresh_seconds` | Fetches the settings again this often (300 when missing; never more often than every 30 seconds) |
-| `timeout_ms` | The whole budget for a decision, connecting included (300) |
+| `timeout_ms` | The whole budget for a decision, connecting included (1000) |
 | `settle_timeout_ms` | The budget for a call about a payment (65000) |
 | `breaker` | `failures` in a row open it; it stays open `open_seconds`, then one request tries again |
 | `remember_by` | The fields of the remember key, in order (section 6) |
@@ -72,7 +72,7 @@ A gate keeps its connection to Stilebase open and reuses it.
 **Reading them** (conformance `settings`): `settings_version` must be the integer 1 (not `true`) and `enabled` a
 boolean, or everyone passes.
 Any other field that's missing, of the wrong type, or (for a number) not a positive integer takes its default:
-`refresh_seconds` 300, `timeout_ms` 300, `settle_timeout_ms` 65000, `breaker` 5 failures / 30 seconds,
+`refresh_seconds` 300, `timeout_ms` 1000, `settle_timeout_ms` 65000, `breaker` 5 failures / 30 seconds,
 `cache_max_entries` 10000, `settle_after.max_bytes` 10485760, `remember_by` `["client_ip", "user-agent", "path"]` (an
 empty list takes it too: a key of nothing would let one pass serve everyone), and
 empty lists for `strip_headers`, `forward_cookies` and `skip_paths`. `cookie`, `authorization` and
@@ -139,7 +139,19 @@ answers with content (a framework that renders `/articles/1.js` as a page, say).
 
    The budget is `timeout_ms`, or `settle_timeout_ms` for a request with a payment. Requests with the same remember
    key and no payment that arrive while one is being asked **wait for that answer** instead of asking again (within
-   their own budget), and do what it says.
+   their own budget), and do what it says. A request carrying `Stilebase-Collect` (Stilebase's AgentView collector,
+   signed for that one request) never shares an answer, either way: it always asks, and nobody waits on it.
+
+   **The connection outlives the budget.** A call past its budget is **not aborted**: the request goes on without
+   Stilebase (a failure, as below), and the call runs on in the background, at most 5 seconds in all (on Workers,
+   through `waitUntil`), its answer unused. Aborting it would also abort the connection it was opening, so after an
+   idle spell every call would start a new TLS handshake, which from far away takes longer than the budget, and lose
+   it again: the gate would let every agent through. Idle connections to Stilebase are kept nearly a minute (50
+   seconds) where the HTTP client lets the gate choose (over HTTP/1.1, Stilebase's server says `Keep-Alive:
+   timeout=60` for the clients that follow it; HTTP/2 has no such header). A synchronous gate that can't leave a call
+   running (the Python `SyncGate`) gives each network step (connecting, the TLS handshake, sending, each read) the
+   whole budget instead, so a new connection's handshake fits; a request can then wait several budgets when Stilebase
+   is slow.
 5. **Do what the answer says** (an HTTP 200 with a JSON object):
 
    | `action` | The gate |

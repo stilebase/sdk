@@ -816,7 +816,7 @@
           "settings_version": 1,
           "enabled": true,
           "refresh_seconds": 300,
-          "timeout_ms": 300,
+          "timeout_ms": 1000,
           "settle_timeout_ms": 65000,
           "breaker": {
             "failures": 5,
@@ -849,7 +849,7 @@
           "settings_version": 1,
           "enabled": false,
           "refresh_seconds": 300,
-          "timeout_ms": 300,
+          "timeout_ms": 1000,
           "settle_timeout_ms": 65000,
           "breaker": {
             "failures": 5,
@@ -914,7 +914,7 @@
           "settings_version": 1,
           "enabled": true,
           "refresh_seconds": 300,
-          "timeout_ms": 300,
+          "timeout_ms": 1000,
           "settle_timeout_ms": 65000,
           "breaker": {
             "failures": 5,
@@ -957,7 +957,7 @@
           "settings_version": 1,
           "enabled": true,
           "refresh_seconds": 300,
-          "timeout_ms": 300,
+          "timeout_ms": 1000,
           "settle_timeout_ms": 65000,
           "breaker": {
             "failures": 5,
@@ -1043,7 +1043,7 @@
           "settings_version": 1,
           "enabled": true,
           "refresh_seconds": 300,
-          "timeout_ms": 300,
+          "timeout_ms": 1000,
           "settle_timeout_ms": 65000,
           "breaker": {
             "failures": 5,

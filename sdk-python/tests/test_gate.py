@@ -6,11 +6,13 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from stilebase_sdk.gate import AsyncGate, Capture, Copy, GateOptions, GateRequest, Hold, Pass, Respond, SyncGate
+from stilebase_sdk.gate._http import LIMITS
 from tests.fake_stilebase import (
     API,
     CHROME,
@@ -72,7 +74,7 @@ def test_the_decision_is_asked_for_and_obeyed() -> None:
     decision = gate.check(AGENT)
     assert isinstance(decision, Respond) and decision.status == 402 and decision.headers["cache-control"] == "no-store"
     [settings_call] = stilebase.to("settings")
-    assert settings_call.headers["stilebase-client"] == "stilebase-sdk/0.2.0 gate/sync"
+    assert settings_call.headers["stilebase-client"] == "stilebase-sdk/0.2.1 gate/sync"
     [asked] = stilebase.to("decide")
     assert asked.body["request"] == {"method": "GET", "scheme": "https", "path": "/listings/2"}
     assert asked.body["client_ip"] == "20.15.240.70"
@@ -172,6 +174,40 @@ def test_a_slow_answer_past_the_budget_lets_the_request_through() -> None:
         return decision
 
     assert asyncio.run(run()) == Pass()
+
+
+def test_a_decision_past_its_budget_runs_on_and_keeps_its_connection() -> None:
+    """Cancelling it would lose the connection it was opening: after an idle spell, every call would start a new TLS
+    handshake and be cut off again, and the gate would let every agent through."""
+    slow = FakeStilebase(settings_answer=(200, settings(timeout_ms=50)), decide=(200, REQUIRED_402), delay=0.8)
+
+    async def run() -> None:
+        errors: list[str] = []
+        tick = Clock()
+        options = GateOptions(key=KEY, api_url=API, transport=slow.async_transport, now=tick, clock=tick)
+        gate = AsyncGate(replace(options, on_error=lambda e: errors.append(str(e))))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        assert await gate.check(AGENT) == Pass()  # past its budget: the request goes on
+        assert loop.time() - started < 0.4  # the budget (0.05 s), never the call (0.8 s)
+        assert "Stilebase didn't answer within 50 ms" in errors
+        assert slow.to("decide") == []  # still running
+        await gate.aclose()
+        assert len(slow.to("decide")) == 1  # it ran to the end, never cancelled
+
+    asyncio.run(run())
+
+
+def test_idle_connections_are_kept_a_minute() -> None:
+    assert LIMITS.keepalive_expiry == 50.0
+
+
+def test_the_sync_gate_gives_each_step_a_decisions_whole_budget() -> None:
+    """It can't leave a call running, so a new connection's handshake gets the whole budget, not a share of it."""
+    stilebase = FakeStilebase(settings_answer=(200, settings(timeout_ms=1000)), decide=(200, REQUIRED_402))
+    sync_gate(stilebase).check(AGENT)
+    [person] = stilebase.to("decide")
+    assert (person.timeout["connect"], person.timeout["read"]) == (1.0, 1.0)
 
 
 def test_a_paid_answer_is_settled_with_its_delivery() -> None:
@@ -278,7 +314,10 @@ def test_every_call_carries_its_own_budget() -> None:
         gate.capture(Capture("t", 10), 200, [], Copy(10), 1)
         await gate.aclose()
         assert stilebase.to("settings")[0].timeout["read"] == 3.0
-        assert [c.timeout["read"] for c in stilebase.to("decide")] == [7.0, 0.25]  # a payment's budget, then a person's
+        # The gate waits a payment's budget, then a person's; the calls themselves may run on (KEEP_CONNECTING), while the
+        # wait for a pool connection stays within the budget.
+        assert [c.timeout["read"] for c in stilebase.to("decide")] == [7.0, 5.0]
+        assert [c.timeout["pool"] for c in stilebase.to("decide")] == [6.95, 0.2]
         assert stilebase.to("settle")[0].timeout["read"] == 7.0  # never httpx's default 5 s
         assert stilebase.to("captures")[0].timeout["read"] == 10.0
 
@@ -731,3 +770,25 @@ def test_requests_queued_for_a_connection_count_nothing(monkeypatch: pytest.Monk
         assert asyncio.run(run()) == 1
     finally:
         server.shutdown()
+
+
+def test_the_collector_never_shares_a_decision() -> None:
+    """Stilebase's AgentView collector asks for itself, and nobody waits on its pass."""
+
+    def answer(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        collector = any(n == "stilebase-collect" for n, _ in body.get("headers", []))
+        return (200, {"action": "pass"}) if collector else (200, REQUIRED_402)
+
+    stilebase = FakeStilebase(decide=answer, delay=0.05)
+
+    async def run() -> tuple[object, object]:
+        gate = async_gate(stilebase)
+        collector = GateRequest("GET", "/listings", (("user-agent", "GPTBot/1.2"), ("stilebase-collect", "t=1,n=0,v1=0")))
+        agent = GateRequest("GET", "/listings", (("user-agent", "GPTBot/1.2"),))
+        results = await asyncio.gather(gate.check(collector), gate.check(agent))
+        await gate.aclose()
+        return results[0], results[1]
+
+    collector, agent = asyncio.run(run())
+    assert collector == Pass() and isinstance(agent, Respond) and agent.status == 402
+    assert len(stilebase.to("decide")) == 2

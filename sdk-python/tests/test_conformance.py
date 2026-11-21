@@ -125,7 +125,7 @@ def test_answers(case: dict[str, Any]) -> None:
 def test_the_settings_example_is_read() -> None:
     settings = Settings.parse(SETTINGS)
     assert settings is not None
-    assert (settings.timeout, settings.settle_timeout, settings.breaker_failures) == (0.3, 65.0, 5)
+    assert (settings.timeout, settings.settle_timeout, settings.breaker_failures) == (1.0, 65.0, 5)
     assert settings.forward_cookies == ("stilebase_pass",) and ".png" in settings.skip_extensions
     assert settings.read()["strip_headers"] == ["cookie", "authorization", "proxy-authorization"]
     assert Settings.parse({**SETTINGS, "settings_version": 2}) is None

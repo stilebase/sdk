@@ -74,7 +74,7 @@ check included. To abandon a release whose run didn't publish, delete the run (a
 
 The first npm release can't use trusted publishing yet (npm configures it on an existing package). First create the
 free npm organisation `stilebase` (it owns the `@stilebase` scope; do it early, it publishes nothing). Push the first
-version's tag (`sdk-js-v<version>`, today 0.2.0) and let the workflow build, check and smoke-test it; its publish step
+version's tag (`sdk-js-v<version>`, today 0.2.1) and let the workflow build, check and smoke-test it; its publish step
 fails. Download that run's `npm-package` artifact, check its SHA-256 against the build job's output, and publish
 exactly that file by hand: `npm publish stilebase-sdk-<version>.tgz --access public --ignore-scripts` (logged in with
 2FA). Then add the trusted

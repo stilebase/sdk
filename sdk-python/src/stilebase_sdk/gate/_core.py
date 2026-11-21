@@ -55,7 +55,7 @@ class Settings:
 
     enabled: bool = True
     refresh_seconds: int = 300
-    timeout_ms: int = 300
+    timeout_ms: int = 1000
     settle_timeout_ms: int = 65_000
     breaker_failures: int = 5
     breaker_open_seconds: int = 30
@@ -561,7 +561,7 @@ class Engine:
 
     def __init__(self, options: GateOptions, adapter: str) -> None:
         self.options = options
-        self.client = f"{PACKAGE}/{VERSION} gate/{adapter}"  # e.g. "stilebase-sdk/0.2.0 gate/asgi"
+        self.client = f"{PACKAGE}/{VERSION} gate/{adapter}"  # e.g. "stilebase-sdk/0.2.1 gate/asgi"
         self.api = (options.api_url or os.environ.get("STILEBASE_API_URL") or DEFAULT_API_URL).rstrip("/")
         key = options.key if options.key is not None else os.environ.get("STILEBASE_KEY", "")
         self.site = parse_site_key(key)
