@@ -5,14 +5,17 @@ What's known and not yet done, each with why it waits. Review findings that aren
 
 ## Before releasing 0.2.1 (the thin gate; 0.2.0 was never released)
 
-- **Stilebase's payment journal is live** (its settle records every payment whose outcome isn't known, and settles it
-  from the chain). *Waits:* its own change, at Stilebase.
-- **An end-to-end run on dev** (Base Sepolia, real test USDC) through every adapter: Express, Fetch (a Worker), ASGI,
-  WSGI and Django: a person served, an agent's 402, a paid page settled and delivered, a site error not charged, a
-  capture received, and Stilebase down (everyone served, a payment 503). *Waits:* the journal, then this run, by hand,
-  before tagging. The first run (November 20, 2026, from Israel to dev in us-east-2) found that a decision cut off at
-  300 ms aborted the connection it was opening, so after 5 s idle every agent passed free: fixed (1 s budget, calls not
-  aborted, connections kept). The capture case waits for AgentView's API.
+- **Stilebase's production API (`https://stilebase.com`, the SDKs' default) serves the thin gate's calls**
+  (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`). Check it before tagging: a gate whose calls fail lets
+  everyone through, so a release before that would let every agent read free. On November 21, 2026 production
+  answered 404. *Waits:* Stilebase's production deploy (on hold).
+
+Done: Stilebase's payment journal (merged, on dev). The end-to-end run on dev through every adapter (November 20,
+2026; its first run found a decision cut off at 300 ms aborted the connection it was opening, so after 5 s idle every
+agent passed free: fixed with a 1 s budget, calls not aborted, connections kept; the rerun passed). AgentView's
+collector among agents in flight, end to end against the API (never sharing a decision, never a visit). Not
+blocking: the capture case, which Stilebase only asks for from AgentView's continuous mode; until then no gate
+captures.
 
 ## Both SDKs
 
@@ -57,10 +60,8 @@ What's known and not yet done, each with why it waits. Review findings that aren
 
 ## At Stilebase, not in the SDKs
 
-- **Price unusual page URLs conservatively** (percent-encoding, dot segments, a `#`): a router may serve another page
-  than the one the gate names. *Waits:* a server-side change.
-- **Name the pass cookie `__Host-stilebase_pass`** in the settings, so a sibling subdomain can't plant one. *Waits:* a
-  settings change; strict detection is off by default.
+Server-side findings from these reviews (pricing unusual page URLs conservatively, a `__Host-` name for the pass
+cookie) are tracked at Stilebase, not here.
 
 ## @stilebase/sdk
 
@@ -74,3 +75,8 @@ What's known and not yet done, each with why it waits. Review findings that aren
 
 ## stilebase-sdk
 
+- **Django's middleware is sync only.** Under Django on ASGI every request hops to a thread, and a request with a
+  payment holds one through two calls (`decide` and `settle`, each up to `settle_timeout_ms`, 65 s) plus the view: over
+  two minutes at worst. It needs an async middleware (`async_capable`). *Waits:* sync Django, the common case, is fine.
+- **The ASGI middleware doesn't gate WebSocket connections** (it passes every scope that isn't `http`). *Waits:* few
+  sites serve their content over WebSockets.
