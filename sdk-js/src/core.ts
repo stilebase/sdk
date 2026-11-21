@@ -32,6 +32,7 @@ const MAX_CAPTURES_WAITING = 20;
 const UNKNOWN_RETRY_SECONDS = 5;
 const EMPTY = new Uint8Array();
 const MAX_ASKING = 1000;
+const COLLECT_HEADER = "stilebase-collect"; // AgentView's signed collector (SPEC.md section 4)
 // A decision cut off by its budget isn't aborted: it runs on, at most this long, so the connection it was opening is
 // there for the next request (aborting it would make every call after an idle spell start, and lose, a new handshake).
 const KEEP_CONNECTING_MS = 5_000; // the late call in all (a handshake and a slow answer); few sockets held in an outage
@@ -194,9 +195,11 @@ class SiteGate implements Gate {
     const site = this.site!;
 
     const key = await sha256Hex(rememberMaterial(request, settings.remember_by));
-    // Requests alike share one decision while it's in flight: GETs and HEADs only, keyed with the method too.
+    // Requests alike share one decision while it's in flight: GETs and HEADs only, keyed with the method too. Never
+    // Stilebase's AgentView collector (its pass is its own, and a visitor's 402 isn't its answer).
     const method = request.method.toUpperCase();
-    const shared = !paying && (method === "GET" || method === "HEAD") ? `${method} ${key}` : null;
+    const collector = request.headers.some(([name]) => name.toLowerCase() === COLLECT_HEADER);
+    const shared = !paying && !collector && (method === "GET" || method === "HEAD") ? `${method} ${key}` : null;
     if (!paying) {
       const expires = this.remembered.get(key);
       if (expires !== undefined && expires > this.now()) return PASS;

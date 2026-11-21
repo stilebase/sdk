@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+A request carrying `Stilebase-Collect` (AgentView's collector) never shares an in-flight decision, either way:
+behind a gate that can't see visitors' addresses, an agent asking for the same page at that moment would otherwise
+get the collector's pass. Stilebase's Collect now needs 0.2.1 or later. (0.2.0 was never released.)
+
 ## 0.2.0
 
 The thin gate (SPEC.md): Stilebase decides every request. The gate forwards the request line and headers to

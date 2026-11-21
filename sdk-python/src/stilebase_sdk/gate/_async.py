@@ -37,6 +37,8 @@ from ._core import (
 from ._http import KEEP_CONNECTING, LIMITS, budget, kept
 from ._request import GateRequest
 
+COLLECT_HEADER = "stilebase-collect"  # AgentView's signed collector (SPEC.md section 4)
+
 
 class AsyncGate(Engine):
     """`await gate.check(request)` says what to do with a request; `await gate.settle(...)` settles a held answer;
@@ -65,8 +67,10 @@ class AsyncGate(Engine):
             asking = before
             body = decide_body(request, settings, self.options.assume_https)
             payment = request.payment is not None
-            if payment or request.method.upper() not in ("GET", "HEAD") or asking.probe:
-                # Only reads without a payment share an answer; a probe asks alone.
+            collector = bool(request.header(COLLECT_HEADER))
+            if payment or collector or request.method.upper() not in ("GET", "HEAD") or asking.probe:
+                # Only reads without a payment share an answer; a probe asks alone; Stilebase's AgentView collector
+                # never shares one (its pass is its own, and a visitor's 402 isn't its answer).
                 answer = await self._ask("decide", body, settings.settle_timeout if payment else settings.timeout)
                 answered = True
                 return self.after_asking(request, settings, body, answer, asking)
