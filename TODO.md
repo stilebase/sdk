@@ -3,19 +3,15 @@
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
 (`.claude/rules/development-workflow.md`) go here.
 
-## Before releasing 0.2.1 (the thin gate; 0.2.0 was never released)
+## Released 0.2.1 (the thin gate; 0.2.0 was never released)
 
-- **Stilebase's production API (`https://stilebase.com`, the SDKs' default) serves the thin gate's calls**
-  (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`). Check it before tagging: a gate whose calls fail lets
-  everyone through, so a release before that would let every agent read free. On November 21, 2026 production
-  answered 404. *Waits:* Stilebase's production deploy (on hold).
-
-Done: Stilebase's payment journal (merged, on dev). The end-to-end run on dev through every adapter (November 20,
-2026; its first run found a decision cut off at 300 ms aborted the connection it was opening, so after 5 s idle every
-agent passed free: fixed with a 1 s budget, calls not aborted, connections kept; the rerun passed). AgentView's
-collector among agents in flight, end to end against the API (never sharing a decision, never a visit). Not
-blocking: the capture case, which Stilebase only asks for from AgentView's continuous mode; until then no gate
-captures.
+Nothing open. Stilebase's production API serves the thin gate's calls (`/v1/gate/sites/{id}/settings`, `/decide`,
+`/settle`): checked November 22, 2026 (an unknown site answers "No Stilebase gateway for this site", not a missing
+route). Also done: Stilebase's payment journal; the end-to-end run on dev through every adapter (November 20, 2026; its
+first run found a decision cut off at 300 ms aborted the connection it was opening, so after 5 s idle every agent passed
+free: fixed with a 1 s budget, calls not aborted, connections kept; the rerun passed); AgentView's collector among
+agents in flight, end to end against the API (never sharing a decision, never a visit). Not blocking: the capture
+case, which Stilebase only asks for from AgentView's continuous mode; until then no gate captures.
 
 ## Both SDKs
 
