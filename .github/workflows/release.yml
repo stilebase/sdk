@@ -120,7 +120,7 @@ jobs:
           test -n "$EXPECTED" && test "$(ls release/*.tgz | wc -l)" = 1
           echo "$EXPECTED  $(ls release/*.tgz)" | sha256sum --strict --check
       - name: Publish the built tarball (no lifecycle scripts run here)
-        run: npm publish release/*.tgz --provenance --access public --ignore-scripts
+        run: npm publish ./release/*.tgz --provenance --access public --ignore-scripts
 
   pypi-build:
     if: startsWith(github.ref_name, 'sdk-py-v')
