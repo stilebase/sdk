@@ -29,6 +29,11 @@ captures.
   destroyed pending. No test proves a late call's connection is pooled (the fakes have no pool). *Waits:* seen in
   production.
 
+- **No local skip option:** a site's own health check or uptime probe, sent by a script's user agent (curl,
+  Python-urllib), is asked about like any request and gets the 402: the container is then marked unhealthy. Today the
+  site answers such paths before the gate (mounting the gate on the rest). An option such as `skip_paths` on the
+  middleware, matched as SPEC.md section 5 does, would do it for everyone. *Waits:* a design for how it combines with
+  Stilebase's `skip_paths` (a local one must never be able to free a paid page by accident).
 - **More frameworks and languages:** Next.js, Fastify and Koa adapters for `@stilebase/sdk` (Hono works today through
   the fetch adapter); Go, PHP and Ruby gates on [SPEC.md](SPEC.md) and `conformance/`. *Waits:* demand.
 - **An end-to-end test against a running Stilebase API.** *Waits:* both SDKs pass the same conformance cases.
