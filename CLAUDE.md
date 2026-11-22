@@ -76,8 +76,8 @@ The first npm release can't use trusted publishing yet (npm configures it on an 
 free npm organisation `stilebase` (it owns the `@stilebase` scope; do it early, it publishes nothing). Push the first
 version's tag (`sdk-js-v<version>`, today 0.2.1) and let the workflow build, check and smoke-test it; its publish step
 fails. Download that run's `npm-package` artifact, check its SHA-256 against the build job's output, and publish
-exactly that file by hand: `npm publish stilebase-sdk-<version>.tgz --access public --ignore-scripts` (logged in with
-2FA). Then add the trusted
+exactly that file by hand: `npm publish ./stilebase-sdk-<version>.tgz --access public --ignore-scripts` (logged in with
+2FA; the `./` matters: npm reads `dir/file.tgz` as a GitHub repository). Then add the trusted
 publisher (`stilebase/sdk`, `release.yml`, environment `release`) and require 2FA with tokens disallowed. Every later
 release goes through the workflow.
 
