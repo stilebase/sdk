@@ -65,8 +65,9 @@ provenance. Pushing the tag is the release: there's no approval step after it. T
 choice): the trusted publishers on npm and PyPI accept this repository's `release.yml` from any ref, so anything that
 can push a commit changing `.github/workflows/` to a branch here (people, GitHub Apps, tokens, write deploy keys)
 could publish from an edited copy, and the tag ruleset doesn't stop it. Keep write access to the admins: no app with
-contents:write, no write deploy key. (Dependabot's branches edit only the pinned actions; review them as code.) The
-publishers must be registered without an environment: one that names an environment matches no run. Bump the version
+contents:write, no write deploy key. Dependabot is the exception: its branches change dependency versions (lockfiles,
+action SHAs in the workflows) and never triggers; review its workflow edits as code. Never push a branch that changes
+`release.yml`'s triggers, its `if:` conditions or its "on main" check: pushing it can publish. The publishers must be registered without an environment: one that names an environment matches no run. Bump the version
 and `CHANGELOG.md` in a pull request first. **Don't push a tag while any item in `TODO.md` under "Before releasing <that
 version>" is open**: they're what has to be true at Stilebase for the release to work (a gate whose calls fail lets
 everyone through).
@@ -80,17 +81,19 @@ npm: 0.2.1 was published by hand (npm configures trusted publishing only on an e
 environment) is set, with 2FA required and tokens disallowed, so every later release goes through the workflow. (By
 hand, the `./` in `npm publish ./<file>.tgz` matters: npm reads `dir/file.tgz` as a GitHub repository.) The package
 also lists `0.0.0-stage`, a placeholder npm created when the package was set up ("Temporary package placeholder for
-staged publishing"); it isn't `latest`. If a workflow publish is ever held for approval (staged publishing), turn that
-off in the package's settings.
+staged publishing"); it isn't `latest`; deprecate it (`npm deprecate @stilebase/sdk@0.0.0-stage "placeholder"`). If npm ever holds a workflow publish for approval, approve
+it there after checking it came from a tag's run.
 
 PyPI: the `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched owner `stilebase`, repo `sdk`, workflow
-`release.yml`), so `stilebase-sdk` doesn't exist yet. Register a pending trusted publisher for project `stilebase-sdk`
-(owner `stilebase`, repo `sdk`, workflow `release.yml`, environment left empty) right before the tag; the first
-successful run creates the project. A pending publisher doesn't reserve the name, so don't leave it waiting. The
-existing tag points at `c0f5662`, whose `release.yml` predates this one, and nothing was published from it: delete its
-failed run (a re-run would publish 0.2.1 from the old `release.yml`), delete the tag, and push it again on a commit of
-`main` whose `sdk-python/` is the 0.2.1 that was reviewed (`git diff c0f5662 <commit> -- sdk-python conformance` is
-empty), or bump the version if it isn't.
+`release.yml`), so `stilebase-sdk` doesn't exist yet. The tag points at `c0f5662`, whose `release.yml` predates this
+one, and nothing was published from it. In this order:
+
+1. Delete the failed `sdk-py-v0.2.1` run (a re-run would publish 0.2.1 from the old `release.yml`).
+2. Delete the tag.
+3. Register a pending trusted publisher for project `stilebase-sdk` (owner `stilebase`, repo `sdk`, workflow
+   `release.yml`, environment left empty). It doesn't reserve the name, so go straight on.
+4. Push the tag again on a commit of `main` whose `sdk-python/` is the 0.2.1 that was reviewed (`git diff c0f5662
+   <commit> -- sdk-python conformance` is empty), or bump the version if it isn't. Its run creates the project.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`

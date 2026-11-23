@@ -59,8 +59,8 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
   npm and PyPI trusted publishers accept any run of `release.yml`, from any branch, so anything that can push here
   could publish; and only `release.yml`'s `if:` conditions keep a run for one package from publishing the other.
   Per-package environments (`release-npm` for `sdk-js-v*`, `release-pypi` for `sdk-py-v*`), each publisher registered
-  to its own, would tie each to its tags. *Waits:* the admins chose no environment; write access is the two admins, with
-  no app installed and no deploy key (checked November 23, 2026); Dependabot's branches are reviewed as code.
+  to its own, would tie each to its tags. *Waits:* the admins chose no environment; write access is kept to them
+  (CLAUDE.md, "Releases").
 
 ## At Stilebase, not in the SDKs
 
