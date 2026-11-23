@@ -63,9 +63,10 @@ These are what the reviews check first. Breaking one is a blocking finding.
 publish job gets only the built files and publishes them through trusted publishing (no stored tokens), with
 provenance. Pushing the tag is the release: there's no approval step after it. There's no deployment environment: the
 trusted publishers on npm and PyPI accept this repository's `release.yml` from any ref, so anyone who can push a branch
-here could publish from an edited copy. Keep write access to this repository to the admins. Bump the version and `CHANGELOG.md` in a pull request first. **Don't push a tag while any item
-in `TODO.md` under "Before releasing <that version>" is open**: they're what has to be true at Stilebase for the
-release to work (a gate whose calls fail lets everyone through).
+here could publish from an edited copy. Keep write access to this repository to the admins. Bump the version and
+`CHANGELOG.md` in a pull request first. **Don't push a tag while any item in `TODO.md` under "Before releasing <that
+version>" is open**: they're what has to be true at Stilebase for the release to work (a gate whose calls fail lets
+everyone through).
 
 Before pushing a tag, check that the tagged commit is on `main` and that its `release.yml` is the same as on the head
 of `main` (or that you understand every difference): the tagged commit's copy is the one that runs, its "on main"
