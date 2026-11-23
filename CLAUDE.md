@@ -67,7 +67,8 @@ can push a commit changing `.github/workflows/` to a branch here (people, GitHub
 could publish from an edited copy, and the tag ruleset doesn't stop it. Keep write access to the admins: no app with
 contents:write, no write deploy key. Dependabot is the exception: its branches change dependency versions (lockfiles,
 action SHAs in the workflows) and never triggers; review its workflow edits as code. Never push a branch that changes
-`release.yml`'s triggers, its `if:` conditions or its "on main" check: pushing it can publish. The publishers must be registered without an environment: one that names an environment matches no run. Bump the version
+`release.yml`'s triggers, its `if:` conditions or its "on main" check: pushing it can publish. The publishers must
+be registered without an environment: one that names an environment matches no run. Bump the version
 and `CHANGELOG.md` in a pull request first. **Don't push a tag while any item in `TODO.md` under "Before releasing <that
 version>" is open**: they're what has to be true at Stilebase for the release to work (a gate whose calls fail lets
 everyone through).
@@ -81,8 +82,8 @@ npm: 0.2.1 was published by hand (npm configures trusted publishing only on an e
 environment) is set, with 2FA required and tokens disallowed, so every later release goes through the workflow. (By
 hand, the `./` in `npm publish ./<file>.tgz` matters: npm reads `dir/file.tgz` as a GitHub repository.) The package
 also lists `0.0.0-stage`, a placeholder npm created when the package was set up ("Temporary package placeholder for
-staged publishing"); it isn't `latest`; deprecate it (`npm deprecate @stilebase/sdk@0.0.0-stage "placeholder"`). If npm ever holds a workflow publish for approval, approve
-it there after checking it came from a tag's run.
+staged publishing"); it isn't `latest`; deprecate it (`npm deprecate @stilebase/sdk@0.0.0-stage "placeholder"`).
+If npm ever holds a workflow publish for approval, approve it there after checking it came from a tag's run.
 
 PyPI: the `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched owner `stilebase`, repo `sdk`, workflow
 `release.yml`), so `stilebase-sdk` doesn't exist yet. The tag points at `c0f5662`, whose `release.yml` predates this
