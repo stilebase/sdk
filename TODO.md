@@ -53,11 +53,6 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
 - **A rewrite before the gate:** Express names the visitor's page (originalUrl), while WSGI, and ASGI without
   `raw_path`, name the path after the rewrite. *Waits:* WSGI and ASGI hand the app no original URL to read; mount the
   gate before rewrites.
-- **One environment for both packages:** `release` admits both tag patterns, so the npm and PyPI trusted publishers
-  are tied to the same environment, and only `release.yml`'s `if:` conditions keep an `sdk-js-v*` run from publishing
-  to PyPI. Two environments (`release-npm` for `sdk-js-v*`, `release-pypi` for `sdk-py-v*`), each publisher registered
-  to its own, would tie each package to its own tags. *Waits:* the tagged commit's `release.yml` is checked before
-  every tag (CLAUDE.md, "Releases"); register the publishers first.
 
 ## At Stilebase, not in the SDKs
 
