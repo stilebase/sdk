@@ -3,10 +3,12 @@
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
 (`.claude/rules/development-workflow.md`) go here.
 
-## Released 0.2.1 (the thin gate; 0.2.0 was never released)
+## 0.2.1 (the thin gate; 0.2.0 was never released): on npm, not yet on PyPI
 
-Nothing open. Stilebase's production API serves the thin gate's calls (`/v1/gate/sites/{id}/settings`, `/decide`,
-`/settle`): checked November 22, 2026 (an unknown site answers "No Stilebase gateway for this site", not a missing
+`@stilebase/sdk@0.2.1` is on npm (November 23, 2026, published by hand: CLAUDE.md, "Releases"). `stilebase-sdk` 0.2.1
+waits for the PyPI publisher and its tag pushed again on `main` (CLAUDE.md, "Releases"). Nothing else open.
+Stilebase's production API serves the thin gate's calls (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`):
+checked November 22, 2026 (an unknown site answers "No Stilebase gateway for this site", not a missing
 route). Also done: Stilebase's payment journal; the end-to-end run on dev through every adapter (November 20, 2026; its
 first run found a decision cut off at 300 ms aborted the connection it was opening, so after 5 s idle every agent passed
 free: fixed with a 1 s budget, calls not aborted, connections kept; the rerun passed); AgentView's collector among
@@ -53,11 +55,12 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
 - **A rewrite before the gate:** Express names the visitor's page (originalUrl), while WSGI, and ASGI without
   `raw_path`, name the path after the rewrite. *Waits:* WSGI and ASGI hand the app no original URL to read; mount the
   gate before rewrites.
-- **One environment for both packages:** `release` admits both tag patterns, so the npm and PyPI trusted publishers
-  are tied to the same environment, and only `release.yml`'s `if:` conditions keep an `sdk-js-v*` run from publishing
-  to PyPI. Two environments (`release-npm` for `sdk-js-v*`, `release-pypi` for `sdk-py-v*`), each publisher registered
-  to its own, would tie each package to its own tags. *Waits:* the tagged commit's `release.yml` is checked before
-  every tag (CLAUDE.md, "Releases"); register the publishers first.
+- **Publishing isn't tied to the release tags:** without a deployment environment (a choice, November 23, 2026), the
+  npm and PyPI trusted publishers accept any run of `release.yml`, from any branch, so anything that can push here
+  could publish; and only `release.yml`'s `if:` conditions keep a run for one package from publishing the other.
+  Per-package environments (`release-npm` for `sdk-js-v*`, `release-pypi` for `sdk-py-v*`), each publisher registered
+  to its own, would tie each to its tags. *Waits:* the admins chose no environment; write access is kept to them
+  (CLAUDE.md, "Releases").
 
 ## At Stilebase, not in the SDKs
 

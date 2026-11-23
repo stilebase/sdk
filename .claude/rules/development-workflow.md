@@ -51,7 +51,9 @@ design. Tell them what's left, why, the options, and your recommendation. Don't 
 Push the branch and open a pull request. Squash-merge it only when every CI check on it is green and the last review
 is clean. A red or still-running check means no merge: fix it on the branch and push again.
 
-Merging doesn't publish anything; a release tag does (CLAUDE.md, "Releases"). Say in the pull request what changes for
+Merging doesn't publish anything; a release tag does (CLAUDE.md, "Releases"). There's no environment tying publishing
+to the tags, so never push a branch that changes `release.yml`'s triggers, its `if:` conditions or its "on main" check:
+pushing it can publish. Say in the pull request what changes for
 sites using the package once it's released.
 
 ## 6. Report
