@@ -61,9 +61,12 @@ These are what the reviews check first. Breaking one is a blocking finding.
 `.github/workflows/release.yml`, on tags `sdk-js-v<version>` and `sdk-py-v<version>`. Only admins can create those tags
 (a ruleset). A build job checks that the tag is the package's version and on `main`, runs the checks and builds; the
 publish job gets only the built files and publishes them through trusted publishing (no stored tokens), with
-provenance. Pushing the tag is the release: there's no approval step after it. There's no deployment environment: the
-trusted publishers on npm and PyPI accept this repository's `release.yml` from any ref, so anyone who can push a branch
-here could publish from an edited copy. Keep write access to this repository to the admins. Bump the version and
+provenance. Pushing the tag is the release: there's no approval step after it. There's no deployment environment (a
+choice): the trusted publishers on npm and PyPI accept this repository's `release.yml` from any ref, so anything that
+can push a branch here (people, GitHub Apps, tokens with contents:write) could publish from an edited copy, and the tag
+ruleset doesn't stop it. Keep write access to this repository to the admins, and install no app with contents:write.
+The publishers must be registered without an environment: one that names an environment matches no run. Bump the
+version and
 `CHANGELOG.md` in a pull request first. **Don't push a tag while any item in `TODO.md` under "Before releasing <that
 version>" is open**: they're what has to be true at Stilebase for the release to work (a gate whose calls fail lets
 everyone through).
@@ -72,18 +75,17 @@ Before pushing a tag, check that the tagged commit is on `main` and that its `re
 of `main` (or that you understand every difference): the tagged commit's copy is the one that runs, its "on main"
 check included. To abandon a release whose run didn't publish, delete the run (a re-run would publish it).
 
-The first npm release can't use trusted publishing yet (npm configures it on an existing package). First create the
-free npm organisation `stilebase` (it owns the `@stilebase` scope; do it early, it publishes nothing). Push the first
-version's tag (`sdk-js-v<version>`, today 0.2.1) and let the workflow build, check and smoke-test it; its publish step
-fails. Download that run's `npm-package` artifact, check its SHA-256 against the build job's output, and publish
-exactly that file by hand: `npm publish ./stilebase-sdk-<version>.tgz --access public --ignore-scripts` (logged in with
-2FA; the `./` matters: npm reads `dir/file.tgz` as a GitHub repository). Then add the trusted
-publisher (`stilebase/sdk`, `release.yml`, no environment) and require 2FA with tokens disallowed. Every later
-release goes through the workflow.
+npm: 0.2.1 was published by hand (npm configures trusted publishing only on an existing package): the tarball the
+`sdk-js-v0.2.1` run built, checked against its SHA-256. The trusted publisher (`stilebase/sdk`, `release.yml`, no
+environment) is set, with 2FA required and tokens disallowed, so every later release goes through the workflow. (By
+hand, the `./` in `npm publish ./<file>.tgz` matters: npm reads `dir/file.tgz` as a GitHub repository.)
 
-PyPI: right before the first `sdk-py-v*` tag, register a pending trusted publisher for project `stilebase-sdk` (owner
-`stilebase`, repo `sdk`, workflow `release.yml`, environment left empty); the first tag then creates the project. A
-pending publisher doesn't reserve the name, so don't leave it waiting.
+PyPI: the `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched owner `stilebase`, repo `sdk`, workflow
+`release.yml`), so `stilebase-sdk` doesn't exist yet. Register a pending trusted publisher for project `stilebase-sdk`
+(owner `stilebase`, repo `sdk`, workflow `release.yml`, environment left empty) right before the tag; the first
+successful run creates the project. A pending publisher doesn't reserve the name, so don't leave it waiting. The
+existing tag points at a commit whose `release.yml` predates this one, so don't re-run its run: delete the tag and push
+it again on the head of `main` (nothing was published from it).
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`

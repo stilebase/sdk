@@ -6,9 +6,10 @@
 # check, builds and records the built files' hashes; it has no publishing rights. The smoke job installs exactly those
 # files as users get them, apart from where they were built. The publish job runs none of the package's code: it gets
 # the built files, checks their hashes, and publishes through trusted publishing (OIDC: no tokens stored anywhere), with
-# provenance. Pushing the tag is the release: there's no approval step. There's no deployment environment: the trusted
-# publishers on npm and PyPI accept this repository's `release.yml` from any ref, so only people who can push to this
-# repository can publish. CLAUDE.md ("Releases") has what to check before pushing a tag.
+# provenance. Pushing the tag is the release: there's no approval step. There's no deployment environment (a choice):
+# the trusted publishers on npm and PyPI accept this repository's `release.yml` from any ref, so anything that can push
+# a branch here (people, apps, tokens with contents:write) could publish from an edited copy; the admins-only tag
+# ruleset doesn't limit that. CLAUDE.md ("Releases") has what to check before pushing a tag.
 
 name: Release
 
