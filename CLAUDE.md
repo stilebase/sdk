@@ -78,8 +78,10 @@ of `main` (or that you understand every difference): the tagged commit's copy is
 check included. To abandon a release whose run didn't publish, delete the run (a re-run would publish it).
 
 npm: 0.2.1 was published by hand (npm configures trusted publishing only on an existing package): the tarball the
-`sdk-js-v0.2.1` run built, checked against its SHA-256. The trusted publisher (`stilebase/sdk`, `release.yml`, no
-environment) is set, with 2FA required and tokens disallowed, so every later release goes through the workflow. (By
+`sdk-js-v0.2.1` run built, checked against its SHA-256
+(`59f4caab832038430bc664e4900d4ca8495701638dc9674f1422a9c0e7aa000b`; npm's SHA-1 for the same file is
+`48eb93476e011a52bf6d5965d0e4f480c23c4a9d`). The trusted publisher (`stilebase/sdk`, `release.yml`, no environment) is
+set, with 2FA required and tokens disallowed, so every later release goes through the workflow. (By
 hand, the `./` in `npm publish ./<file>.tgz` matters: npm reads `dir/file.tgz` as a GitHub repository.) The package
 also lists `0.0.0-stage`, a placeholder npm created when the package was set up ("Temporary package placeholder for
 staged publishing"); it isn't `latest`; deprecate it (`npm deprecate @stilebase/sdk@0.0.0-stage "placeholder"`).
@@ -88,13 +90,20 @@ If npm ever holds a workflow publish for approval, approve it there after checki
 PyPI: the first `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched). After the publisher
 (`stilebase`, `sdk`, `release.yml`, no environment) was fixed, the failed run was deleted and the tag pushed again on
 `e329e45` (its `sdk-python/` and `conformance/` the same as the tagged `c0f5662`); that run created the project.
-Every release goes through the workflow, from an annotated tag (`git tag -a`; `sdk-py-v0.2.1` is a lightweight one).
+Every release goes through the workflow. Prefer annotated tags (`git tag -a`): they record who tagged and when
+(`sdk-py-v0.2.1` is a lightweight one).
 
-If a tag's run fails before publishing anything: when the tagged commit's `release.yml` is the same as on the head of
-`main`, re-run it. Otherwise delete the run and the tag, and push the tag again on a commit of `main` where
-`git diff <tagged commit> <new commit> -- sdk-<js|python> conformance` is empty, or bump the version if it isn't; clones
-that fetched the old tag need `git fetch --tags --force`. If it published part of a release (the wheel but not the
-sdist, say), bump the version: a registry never takes the same file twice.
+If a tag's run fails, check the registry first:
+
+- **The version is there, whole or in part:** keep the tag and delete the run. A missing file means a new version: a
+  registry never takes the same file twice.
+- **It isn't, and the tagged code failed** (a test, the version check, the smoke test): fix it on `main` and release a
+  new version.
+- **It isn't, and something outside the code failed** (the publisher's setup, the registry, the runner): if the tagged
+  commit's `release.yml` is the same as on the head of `main` and the run is under 7 days old (its artifacts' life),
+  "Re-run all jobs". Otherwise delete the run and the tag, and push the tag again on a commit of `main` where
+  `git diff <tagged commit> <new commit> -- sdk-<js|python> conformance` is empty (or release a new version); clones
+  that fetched the old tag need `git fetch --tags --force`.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`
