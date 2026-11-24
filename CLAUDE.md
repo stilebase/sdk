@@ -93,17 +93,16 @@ PyPI: the first `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher ma
 Every release goes through the workflow. Prefer annotated tags (`git tag -a`): they record who tagged and when
 (`sdk-py-v0.2.1` is a lightweight one).
 
-If a tag's run fails, check the registry first:
+If a tag's run fails, check the registry first. A hash check that fails means a built file changed between jobs: stop
+and find out why before anything else.
 
-- **The version is there, whole or in part:** keep the tag and delete the run. A missing file means a new version: a
-  registry never takes the same file twice.
-- **It isn't, and the tagged code failed** (a test, the version check, the smoke test): fix it on `main` and release a
-  new version.
-- **It isn't, and something outside the code failed** (the publisher's setup, the registry, the runner): if the tagged
-  commit's `release.yml` is the same as on the head of `main` and the run is under 7 days old (its artifacts' life),
-  "Re-run all jobs". Otherwise delete the run and the tag, and push the tag again on a commit of `main` where
-  `git diff <tagged commit> <new commit> -- sdk-<js|python> conformance` is empty (or release a new version); clones
-  that fetched the old tag need `git fetch --tags --force`.
+- **It published something:** keep the run (the provenance links to it) and the tag. A PyPI release missing a file is
+  finished by "Re-run failed jobs" within 7 days (PyPI skips the identical file already there); otherwise, and on npm,
+  release a new version.
+- **It published nothing:** delete the run (a re-run could still publish it, from that commit's `release.yml`) and the
+  tag. Fix what failed, then tag again: the same version on a commit of `main` where `git diff <old commit> <new
+  commit> -- sdk-<js|python> conformance` is empty, a new version otherwise. Clones that fetched the old tag need
+  `git fetch --tags --force`.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`

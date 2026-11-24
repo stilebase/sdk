@@ -6,10 +6,17 @@ What's known and not yet done, each with why it waits. Review findings that aren
 ## Released 0.2.1 (the thin gate; 0.2.0 was never released)
 
 `@stilebase/sdk@0.2.1` is on npm (November 23, 2026, published by hand: CLAUDE.md, "Releases"); `stilebase-sdk` 0.2.1
-is on PyPI (November 24, 2026, through the workflow). Open: delete the failed `sdk-js-v0.2.1` run (45022097362),
-keeping its tag (npm has 0.2.1, from that run's tarball, whose hash CLAUDE.md records). Until then a re-run mints an npm
-publish token and runs the old `npm publish release/*.tgz`, which npm reads as a GitHub repository. And deprecate npm's
-`0.0.0-stage` placeholder. *Waits:* a repository admin, and an npm owner with 2FA.
+is on PyPI (November 24, 2026, through the workflow).
+
+Open:
+
+- **Delete the failed `sdk-js-v0.2.1` run (45022097362)**, keeping its tag: npm has 0.2.1 from that run's tarball (its
+  hash is in CLAUDE.md, "Releases"). A re-run would run the old `npm publish release/*.tgz`, which npm reads as the
+  GitHub repository `release/stilebase-sdk-0.2.1.tgz` and would publish whatever that holds. Save its build and smoke
+  logs first (the record that the tarball passed every check). *Waits:* a repository admin.
+- **Deprecate npm's `0.0.0-stage` placeholder** (`npm deprecate @stilebase/sdk@0.0.0-stage "placeholder"`). *Waits:* an
+  npm owner with 2FA.
+
 Stilebase's production API serves the thin gate's calls (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`):
 checked November 22, 2026 (an unknown site answers "No Stilebase gateway for this site", not a missing
 route). Also done: Stilebase's payment journal; the end-to-end run on dev through every adapter (November 20, 2026; its
