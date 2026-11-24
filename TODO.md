@@ -3,10 +3,10 @@
 What's known and not yet done, each with why it waits. Review findings that aren't blocking
 (`.claude/rules/development-workflow.md`) go here.
 
-## 0.2.1 (the thin gate; 0.2.0 was never released): on npm, not yet on PyPI
+## Released 0.2.1 (the thin gate; 0.2.0 was never released)
 
-`@stilebase/sdk@0.2.1` is on npm (November 23, 2026, published by hand: CLAUDE.md, "Releases"). `stilebase-sdk` 0.2.1
-waits for the PyPI publisher and its tag pushed again on `main` (CLAUDE.md, "Releases"). Nothing else open.
+`@stilebase/sdk@0.2.1` is on npm (November 23, 2026, published by hand: CLAUDE.md, "Releases"); `stilebase-sdk` 0.2.1
+is on PyPI (November 24, 2026, through the workflow). Nothing open.
 Stilebase's production API serves the thin gate's calls (`/v1/gate/sites/{id}/settings`, `/decide`, `/settle`):
 checked November 22, 2026 (an unknown site answers "No Stilebase gateway for this site", not a missing
 route). Also done: Stilebase's payment journal; the end-to-end run on dev through every adapter (November 20, 2026; its

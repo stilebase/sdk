@@ -85,16 +85,12 @@ also lists `0.0.0-stage`, a placeholder npm created when the package was set up 
 staged publishing"); it isn't `latest`; deprecate it (`npm deprecate @stilebase/sdk@0.0.0-stage "placeholder"`).
 If npm ever holds a workflow publish for approval, approve it there after checking it came from a tag's run.
 
-PyPI: the `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched owner `stilebase`, repo `sdk`, workflow
-`release.yml`), so `stilebase-sdk` doesn't exist yet. The tag points at `c0f5662`, whose `release.yml` predates this
-one, and nothing was published from it. In this order:
-
-1. Delete the failed `sdk-py-v0.2.1` run (a re-run would publish 0.2.1 from the old `release.yml`).
-2. Delete the tag.
-3. Register a pending trusted publisher for project `stilebase-sdk` (owner `stilebase`, repo `sdk`, workflow
-   `release.yml`, environment left empty). It doesn't reserve the name, so go straight on.
-4. Push the tag again on a commit of `main` whose `sdk-python/` is the 0.2.1 that was reviewed (`git diff c0f5662
-   <commit> -- sdk-python conformance` is empty), or bump the version if it isn't. Its run creates the project.
+PyPI: the first `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched). After the publisher
+(`stilebase`, `sdk`, `release.yml`, no environment) was fixed, the failed run was deleted and the tag pushed again on
+`e329e45` (its `sdk-python/` and `conformance/` the same as the tagged `c0f5662`); that run created the project.
+Every release goes through the workflow. If a tag's run fails before publishing, don't re-run it from an older
+`release.yml`: delete the run and the tag, and push the tag again on `main` if the package hasn't changed since;
+otherwise bump the version.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`
