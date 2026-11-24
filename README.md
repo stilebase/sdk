@@ -10,9 +10,6 @@ it, and the site's owner sees every payment and agent on their dashboard.
 
 If Stilebase can't be reached, everyone gets the site as usual: the gate never breaks it.
 
-> **`@stilebase/sdk` is on npm; `stilebase-sdk` reaches PyPI with its first release.** Until then, Python sites can
-> use Stilebase's Cloudflare Worker or the copy-paste code on its gateway page.
-
 | Package | Install | Works with |
 | --- | --- | --- |
 | [`@stilebase/sdk`](sdk-js) | `npm i @stilebase/sdk` | Express, Cloudflare Workers, Hono, Bun, Deno (Node 20+, no dependencies) |
