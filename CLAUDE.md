@@ -88,9 +88,13 @@ If npm ever holds a workflow publish for approval, approve it there after checki
 PyPI: the first `sdk-py-v0.2.1` run failed (`invalid-publisher`: no publisher matched). After the publisher
 (`stilebase`, `sdk`, `release.yml`, no environment) was fixed, the failed run was deleted and the tag pushed again on
 `e329e45` (its `sdk-python/` and `conformance/` the same as the tagged `c0f5662`); that run created the project.
-Every release goes through the workflow. If a tag's run fails before publishing, don't re-run it from an older
-`release.yml`: delete the run and the tag, and push the tag again on `main` if the package hasn't changed since;
-otherwise bump the version.
+Every release goes through the workflow, from an annotated tag (`git tag -a`; `sdk-py-v0.2.1` is a lightweight one).
+
+If a tag's run fails before publishing anything: when the tagged commit's `release.yml` is the same as on the head of
+`main`, re-run it. Otherwise delete the run and the tag, and push the tag again on a commit of `main` where
+`git diff <tagged commit> <new commit> -- sdk-<js|python> conformance` is empty, or bump the version if it isn't; clones
+that fetched the old tag need `git fetch --tags --force`. If it published part of a release (the wheel but not the
+sdist, say), bump the version: a registry never takes the same file twice.
 
 Each package sends its version in `Stilebase-Client`. The JS version is `package.json`'s (built into
 `sdk-js/src/version.ts`); the Python version is `sdk-python/src/stilebase_sdk/_version.py`, which `pyproject.toml`
