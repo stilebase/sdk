@@ -17,6 +17,14 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
 
 ## Both SDKs
 
+- **Releases: check that Stilebase serves the version's calls** (priority: medium). A gate whose calls fail lets
+  everyone through, so a version published before Stilebase's production API (`https://stilebase.com`, the SDKs'
+  default) serves every endpoint it calls would let every agent read free, with no error anywhere. Today that's
+  checked by hand before tagging (the "Before releasing <version>" items, CLAUDE.md "Releases"). A step in
+  `release.yml`'s build jobs would make it automatic: call each endpoint the version uses with a malformed site id,
+  and refuse to publish if any answers as a missing route (a bare 404) rather than rejecting the id (422). It changes
+  `release.yml`: review it as CLAUDE.md, "Releases", says. *Waits:* 0.2.1's calls are served (checked November 22,
+  2026); add it before the first version that calls an endpoint Stilebase doesn't serve yet.
 - **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
   runs on up to 5 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
   calls pass uncounted (`NOT_ASKED`); a cap on calls running late, or counting pool waits while some run late. JS
