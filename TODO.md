@@ -17,26 +17,27 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
 
 ## Both SDKs
 
-- **Releases: check that Stilebase serves the version's calls** (priority: medium). A gate whose calls fail lets
-  everyone through, so a version published before Stilebase's production API (`https://stilebase.com`, the SDKs'
-  default) serves the calls it makes would let every agent read free. Sites would log a misleading warning (a missing
-  settings route reads as "no gateway for this site key") and Stilebase would see nothing. Today it's checked by hand
-  before tagging (the "Before releasing <version>" items). A step in `release.yml`'s build jobs could catch a missing
-  route:
-  - Probe every call a gate makes on its own (today `settings`, `decide`, `settle`; not `captures`, sent only when
-    Stilebase's answer asks for a capture, and not served yet), each with the method the version uses, from a list a
-    test checks against the SDKs' own paths.
-  - Require Stilebase's own answer to each probe and refuse on anything else, a framework's bare "Not Found", a 405, a
-    5xx or a timeout included. Today a well-formed unknown site's `settings` answers 404 "No Stilebase gateway for this
-    site", and `decide`/`settle` with an empty body answer 422 (checked November 25, 2026). SPEC.md doesn't promise
-    these answers yet: write them there first.
-  - It shows only that the routes exist, not that Stilebase accepts the version's requests: the "Before releasing"
-    items stay.
-  - The step goes in the build jobs only, with no secrets and no `id-token` (the probes need no site key), and leaves
-    `release.yml`'s triggers, `if:` conditions and "on main" check alone (CLAUDE.md, "Releases").
+- **Releases: check that Stilebase serves the version's calls** (priority: medium). A gate whose calls fail, or that
+  can't read Stilebase's answers, lets everyone through, so a version published before Stilebase's production API
+  (`https://stilebase.com`, the SDKs' default) serves it would let every agent read free; sites would only log "no
+  gateway for this site key". Today the releaser checks by hand. Wanted: a step in `release.yml`'s build jobs that
+  sends production the version's own requests (method, path and body, from conformance) for a well-formed unknown
+  site, for each call whose failure changes what visitors get (`settings`, `decide`, `settle`; a failed capture
+  changes nothing, SPEC.md section 9), and publishes only on Stilebase's own answer to each: today 404 "No Stilebase
+  gateway for this site", for all three, before any signature is checked. What the design has to settle (from the
+  reviews of this item):
+  - The expected answers go in a conformance case Stilebase's tests run, so neither side changes them alone.
+  - Retry a transient failure (5xx, timeout) before refusing: a refused run means deleting it and tagging again.
+  - It shows the requests are routed and their bodies accepted, not that the version reads Stilebase's answers (a new
+    settings format, for example): that stays a check by hand.
+  - Build jobs only, with no secrets and no `id-token` (the probes need no site key); `release.yml`'s triggers, `if:`
+    conditions and "on main" check stay as they are (CLAUDE.md, "Releases").
+  - The end-to-end test below ("An end-to-end test against a running Stilebase API") would cover all of it; this is the
+    cheaper first step.
 
-  *Waits:* 0.2.1's calls are served (checked November 22 and 25, 2026); add it before the first version that calls
-  an endpoint Stilebase doesn't serve yet.
+  *Waits:* 0.2.1's calls are served (the 0.2.1 section above); due before the next release that changes a call's
+  path, method or body, or the settings format.
+
 - **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
   runs on up to 5 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
   calls pass uncounted (`NOT_ASKED`); a cap on calls running late, or counting pool waits while some run late. JS
