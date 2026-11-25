@@ -19,12 +19,24 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
 
 - **Releases: check that Stilebase serves the version's calls** (priority: medium). A gate whose calls fail lets
   everyone through, so a version published before Stilebase's production API (`https://stilebase.com`, the SDKs'
-  default) serves every endpoint it calls would let every agent read free, with no error anywhere. Today that's
-  checked by hand before tagging (the "Before releasing <version>" items, CLAUDE.md "Releases"). A step in
-  `release.yml`'s build jobs would make it automatic: call each endpoint the version uses with a malformed site id,
-  and refuse to publish if any answers as a missing route (a bare 404) rather than rejecting the id (422). It changes
-  `release.yml`: review it as CLAUDE.md, "Releases", says. *Waits:* 0.2.1's calls are served (checked November 22,
-  2026); add it before the first version that calls an endpoint Stilebase doesn't serve yet.
+  default) serves the calls it makes would let every agent read free. Sites would log a misleading warning (a missing
+  settings route reads as "no gateway for this site key") and Stilebase would see nothing. Today it's checked by hand
+  before tagging (the "Before releasing <version>" items). A step in `release.yml`'s build jobs could catch a missing
+  route:
+  - Probe every call a gate makes on its own (today `settings`, `decide`, `settle`; not `captures`, sent only when
+    Stilebase's answer asks for a capture, and not served yet), each with the method the version uses, from a list a
+    test checks against the SDKs' own paths.
+  - Require Stilebase's own answer to each probe and refuse on anything else, a framework's bare "Not Found", a 405, a
+    5xx or a timeout included. Today a well-formed unknown site's `settings` answers 404 "No Stilebase gateway for this
+    site", and `decide`/`settle` with an empty body answer 422 (checked November 25, 2026). SPEC.md doesn't promise
+    these answers yet: write them there first.
+  - It shows only that the routes exist, not that Stilebase accepts the version's requests: the "Before releasing"
+    items stay.
+  - The step goes in the build jobs only, with no secrets and no `id-token` (the probes need no site key), and leaves
+    `release.yml`'s triggers, `if:` conditions and "on main" check alone (CLAUDE.md, "Releases").
+
+  *Waits:* 0.2.1's calls are served (checked November 22 and 25, 2026); add it before the first version that calls
+  an endpoint Stilebase doesn't serve yet.
 - **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
   runs on up to 5 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
   calls pass uncounted (`NOT_ASKED`); a cap on calls running late, or counting pool waits while some run late. JS
