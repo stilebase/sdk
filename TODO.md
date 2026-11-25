@@ -17,26 +17,31 @@ case, which Stilebase only asks for from AgentView's continuous mode; until then
 
 ## Both SDKs
 
-- **Releases: check that Stilebase serves the version's calls** (priority: medium). A gate whose calls fail, or that
-  can't read Stilebase's answers, lets everyone through, so a version published before Stilebase's production API
-  (`https://stilebase.com`, the SDKs' default) serves it would let every agent read free; sites would only log "no
-  gateway for this site key". Today the releaser checks by hand. Wanted: a step in `release.yml`'s build jobs that
-  sends production the version's own requests (method, path and body, from conformance) for a well-formed unknown
-  site, for each call whose failure changes what visitors get (`settings`, `decide`, `settle`; a failed capture
-  changes nothing, SPEC.md section 9), and publishes only on Stilebase's own answer to each: today 404 "No Stilebase
-  gateway for this site", for all three, before any signature is checked. What the design has to settle (from the
-  reviews of this item):
-  - The expected answers go in a conformance case Stilebase's tests run, so neither side changes them alone.
-  - Retry a transient failure (5xx, timeout) before refusing: a refused run means deleting it and tagging again.
-  - It shows the requests are routed and their bodies accepted, not that the version reads Stilebase's answers (a new
-    settings format, for example): that stays a check by hand.
-  - Build jobs only, with no secrets and no `id-token` (the probes need no site key); `release.yml`'s triggers, `if:`
-    conditions and "on main" check stay as they are (CLAUDE.md, "Releases").
-  - The end-to-end test below ("An end-to-end test against a running Stilebase API") would cover all of it; this is the
-    cheaper first step.
+- **Releases: check that Stilebase serves the version's calls** (priority: medium). A gate whose calls fail lets
+  everyone through, so a version published before Stilebase's production API (`https://stilebase.com`, the SDKs'
+  default) serves its calls would let every agent read free, and sites would log errors that don't say why (a missing
+  settings route reads as "no gateway for this site key"). Today the releaser checks by hand. Wanted: a step in
+  `release.yml` that, before publishing, sends production the version's `settings`, `decide` and `settle` requests
+  (method, path and body as the SDKs build them) for a well-formed unknown site, and publishes only on Stilebase's own
+  answer to each: today 404 "No Stilebase gateway for this site", for all three. (`captures` is left out: a failed
+  capture changes nothing for visitors, SPEC.md section 9.) What the design has to settle (from the reviews of this
+  item):
+  - Driving the built package wouldn't send `decide` or `settle` (after a settings 404 a gate stops asking), so the
+    requests have to come from the SDKs' own code another way. The expected answers have to be written where
+    Stilebase's tests read them. A public endpoint listing the calls Stilebase serves would be sturdier than relying
+    on the order of its checks.
+  - It shows only that the calls are routed and their bodies parse. It doesn't check signing (answered before any
+    signature is checked), renamed or dropped fields (unknown fields are ignored) or a new settings format: those
+    stay a check by hand.
+  - A refused run can be re-run once production serves the calls; retry a transient failure (5xx, timeout) first.
+  - It checks once, at release: production later deployed from an older commit would go unnoticed (a scheduled
+    probe of the published versions would catch it).
+  - No secrets and no `id-token` (the probes need no site key); `release.yml`'s triggers, `if:` conditions and "on
+    main" check stay as they are (CLAUDE.md, "Releases").
+  - "An end-to-end test against a running Stilebase API" (below) covers more, but against a test instance, not
+    production.
 
-  *Waits:* 0.2.1's calls are served (the 0.2.1 section above); due before the next release that changes a call's
-  path, method or body, or the settings format.
+  *Waits:* 0.2.1's calls are served (the 0.2.1 section above); due before the next release that adds or moves a call.
 
 - **Late decisions, from the budget fix (November 20, 2026; review findings, none blocking):** a call past its budget
   runs on up to 5 s and holds a pool connection (Python: 1000): with Stilebase half slow, the pool can fill and new
